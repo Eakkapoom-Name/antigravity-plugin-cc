@@ -1,0 +1,8 @@
+{
+  "name": "agy",
+  "version": "1.0.0",
+  "description": "Use Google Antigravity CLI (agy) from Claude Code to delegate tasks or review code.",
+  "author": {
+    "name": "toaster"
+  }
+}

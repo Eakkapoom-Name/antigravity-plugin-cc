@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "antigravity-plugin-cc",
+  "description": "Use Google Antigravity CLI (agy) from Claude Code: delegate tasks, resume conversations, review code.",
+  "owner": {
+    "name": "toaster"
+  },
+  "plugins": [
+    {
+      "name": "agy",
+      "description": "Use Google Antigravity CLI (agy) from Claude Code to delegate tasks or review code.",
+      "source": "./",
+      "category": "productivity"
+    }
+  ]
+}

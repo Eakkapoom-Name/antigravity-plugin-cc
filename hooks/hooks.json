@@ -1,0 +1,16 @@
+{
+  "description": "Optional stop-time review gate backed by the Antigravity CLI (agy).",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/stop-review-gate-hook.mjs\"",
+            "timeout": 660
+          }
+        ]
+      }
+    ]
+  }
+}

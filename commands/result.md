@@ -18,5 +18,5 @@ Target selection:
 Presentation:
 
 - Retrieve the stored result (TaskOutput, or the task notification already received this session).
-- Present it per the `agy-result-handling` skill: the full agy `response` verbatim, no summarizing or condensing, file paths and line numbers exactly as reported, and the `conversation_id` on its own line at the end, labeled as resumable via `/agy:delegate --resume`.
+- Present it per the `agy-result-handling` skill: the full agy `response` verbatim, no summarizing or condensing, file paths and line numbers exactly as reported, and the `conversation_id` on its own line at the end, labeled as resumable via `/agy:rescue --resume`.
 - If the run failed, report the failure verbatim with the most actionable error line and stop. Do not turn a failed agy run into a Claude-side implementation attempt.

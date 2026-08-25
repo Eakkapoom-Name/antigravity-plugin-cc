@@ -12,6 +12,6 @@ Check agy readiness:
 agy -p "Reply with exactly: OK" --output-format json --print-timeout 2m
 ```
 
-3. If the probe returns JSON with `"status":"SUCCESS"`, report: agy version, probe round-trip time (`duration_seconds`), and that delegation via `/agy:delegate` is ready.
+3. If the probe returns JSON with `"status":"SUCCESS"`, report: agy version, probe round-trip time (`duration_seconds`), and that delegation via `/agy:rescue` is ready.
 4. If the probe fails with an authentication or login error, tell the user to run `agy` once interactively in a terminal (suggest typing `! agy` in the prompt) to complete authentication, then rerun `/agy:setup`.
 5. Report any other failure verbatim, including the decisive stderr line.

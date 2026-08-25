@@ -9,7 +9,7 @@ user-invocable: false
 When an `/agy:*` command or the `agy:agy-rescue` subagent returns agy JSON output:
 
 - Parse the JSON and present the `response` field as the primary content. Preserve its structure: verdicts, findings, file paths, line numbers, and section ordering stay as agy wrote them.
-- Always report the `conversation_id` on its own line at the end, labeled as resumable via `/agy:delegate --resume`.
+- Always report the `conversation_id` on its own line at the end, labeled as resumable via `/agy:rescue --resume`.
 - If `status` is not `SUCCESS`, report the failure verbatim with the most actionable error line, and stop. Do not turn a failed agy run into a Claude-side implementation attempt.
 - If agy was never successfully invoked, do not generate a substitute answer.
 - If agy made edits, say so explicitly and list touched files when the response names them.

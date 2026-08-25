@@ -9,7 +9,7 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 
 ## Commands
 
-- `/agy:delegate [flags] <task>`: hand a task to agy through the `agy-rescue` subagent.
+- `/agy:rescue [flags] <task>`: hand a task to agy through the `agy-rescue` subagent.
   - `--background` / `--wait`: Claude-side execution mode (default foreground)
   - `--resume` / `--fresh`: continue the last agy conversation, or start a new one
   - `--model <name>`, `--effort <low|medium|high>`: passed through to agy
@@ -24,14 +24,14 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 
 Thin by design: no broker process, no job files. Every delegation is one `agy -p … --output-format json` call. Write-capable runs use `--mode accept-edits`; reviews run read-only. Foreground runs are capped near 9 minutes by the Bash tool ceiling; split longer work or use `--background`.
 
-Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read Claude Code's own background task tracking instead of a job store, so they cover the current session only. Cross-session continuity lives agy-side via `conversation_id` and `/agy:delegate --resume`.
+Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read Claude Code's own background task tracking instead of a job store, so they cover the current session only. Cross-session continuity lives agy-side via `conversation_id` and `/agy:rescue --resume`.
 
 ## Layout
 
 ```
 .claude-plugin/plugin.json   manifest (plugin name: agy)
 agents/agy-rescue.md         forwarding subagent
-commands/                    delegate, review, adversarial-review, status, result, cancel, setup
+commands/                    rescue, review, adversarial-review, status, result, cancel, setup
 schemas/                     adversarial review output shape
 skills/agy-cli-runtime/      CLI call contract
 skills/agy-result-handling/  output presentation rules

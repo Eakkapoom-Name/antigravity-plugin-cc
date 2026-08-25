@@ -54,5 +54,5 @@ Presenting the result (per the `agy-result-handling` skill):
 
 - Parse the review JSON out of agy's `response`. Render: verdict line, summary, then findings ordered by severity, each as `file:line_start-line_end severity (confidence): title. body. recommendation.`, then next steps. Keep agy's wording; do not soften or editorialize.
 - If the response is not valid JSON, present it verbatim and say the structured format was not followed.
-- Report the `conversation_id` on its own line at the end, resumable via `/agy:delegate --resume`.
+- Report the `conversation_id` on its own line at the end, resumable via `/agy:rescue --resume`.
 - Delete the temp diff file.

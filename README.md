@@ -8,7 +8,8 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 - `/agy:adversarial-review` for challenge-based review
 - `/agy:rescue`, `/agy:status`, `/agy:result`, and `/agy:cancel` for task delegation and job management
 - `/agy:transfer` to hand the current session over to a resumable agy conversation
-- `/agy:setup` for installation and authentication checks
+- `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
+- An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
 ## Requirements
 
@@ -58,9 +59,17 @@ Stops a running background delegation (the agy conversation stays resumable).
 
 Seeds a fresh agy conversation with a handoff brief of the current session (goal, state, decisions, open items). Returns the `conversation_id` and both resume paths: `agy --conversation <id>` in a terminal, or `/agy:rescue --resume` from Claude Code.
 
-### `/agy:setup`
+### `/agy:setup [gate on|off|status]`
 
-Checks that agy is installed and authenticated.
+Checks that agy is installed and authenticated. With a `gate` argument, toggles the stop-review gate for the current project.
+
+## Stop-Review Gate
+
+Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately.
+
+- Toggle per project with `/agy:setup gate on` / `gate off`; state lives in `.claude/agy.local.md` (`stop_review_gate: true`).
+- If agy is missing, the gate skips with a note instead of blocking.
+- Review failures and timeouts block with guidance to run `/agy:review` manually or turn the gate off.
 
 ## Typical Flows
 
@@ -84,6 +93,8 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 .claude-plugin/plugin.json   manifest (plugin name: agy)
 agents/agy-rescue.md         forwarding subagent
 commands/                    rescue, review, adversarial-review, status, result, cancel, transfer, setup
+hooks/hooks.json             Stop hook wiring for the stop-review gate
+scripts/                     stop-review-gate-hook.mjs (dependency-free node)
 schemas/                     adversarial review output shape
 skills/agy-cli-runtime/      CLI call contract
 skills/agy-result-handling/  output presentation rules

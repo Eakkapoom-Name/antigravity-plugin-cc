@@ -29,7 +29,7 @@ Forwarding rules:
 - Leave `--model` and `--effort` unset unless the user explicitly asks for them.
 - Always add `--print-timeout 9m` and set the Bash tool timeout to 590000 ms. Tasks that need longer must be split by the user; say so if a run times out.
 - Preserve the user's task text as-is apart from stripping routing flags.
-- Return the stdout of the `agy` command exactly as-is.
+- Return the full JSON stdout of the `agy` command exactly as-is, never just the `response` field. The `conversation_id` must reach the caller.
 - If the Bash call fails or agy cannot be invoked, return the error output and nothing else.
 
 Do not:

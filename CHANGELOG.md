@@ -5,6 +5,15 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-08-26
+
+### Fixed
+
+- Stop-review gate: agy launched from a hook has no workspace (its shell sits
+  in the agy scratch dir), so the reviewer saw an empty workspace and allowed
+  everything. The hook now passes `--add-dir <project>` and states the
+  repository root in the review prompt.
+
 ## [1.4.0] - 2026-08-26
 
 ### Added
@@ -61,6 +70,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/agy:delegate`, `/agy:review`, `/agy:setup`, the `agy-rescue` subagent,
   and the `agy-cli-runtime` / `agy-result-handling` internal skills.
 
+[1.4.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.2.0...v1.3.0

@@ -40,6 +40,8 @@ Result JSON shape (verified on agy 1.1.20):
 }
 ```
 
+Print-mode slash commands (verified on agy 1.1.20): `agy -p "/usage" --output-format json` (also `/help`, `/changelog`, `/permissions`, `/hooks`, `/config`) answers instantly with a structured payload under a top-level `command` object, spends no quota, and leaves no conversation behind. Detect support by checking that `command.name` matches the requested command; older agy versions treat the text as a normal prompt.
+
 Rules:
 
 - One `agy` invocation per handoff. No retries without being asked.

@@ -7,6 +7,7 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 - `/agy:review` for standard read-only code review
 - `/agy:adversarial-review` for challenge-based review
 - `/agy:rescue`, `/agy:status`, `/agy:result`, and `/agy:cancel` for task delegation and job management
+- `/agy:transfer` to hand the current session over to a resumable agy conversation
 - `/agy:setup` for installation and authentication checks
 
 ## Requirements
@@ -53,6 +54,10 @@ Shows the stored final output of a finished background delegation.
 
 Stops a running background delegation (the agy conversation stays resumable).
 
+### `/agy:transfer [--model <model>] [extra context]`
+
+Seeds a fresh agy conversation with a handoff brief of the current session (goal, state, decisions, open items). Returns the `conversation_id` and both resume paths: `agy --conversation <id>` in a terminal, or `/agy:rescue --resume` from Claude Code.
+
 ### `/agy:setup`
 
 Checks that agy is installed and authenticated.
@@ -65,6 +70,8 @@ Checks that agy is installed and authenticated.
 
 **Long-running tasks:** use `--background`, then check with `/agy:status` and `/agy:result`
 
+**Move to agy entirely:** `/agy:transfer`, then continue in a terminal with `agy --conversation <id>`
+
 ## Design
 
 Thin by design: no broker process, no job files. Every delegation is one `agy -p … --output-format json` call. Write-capable runs use `--mode accept-edits`; reviews run read-only. Foreground runs are capped near 9 minutes by the Bash tool ceiling; split longer work or use `--background`.
@@ -76,7 +83,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 ```
 .claude-plugin/plugin.json   manifest (plugin name: agy)
 agents/agy-rescue.md         forwarding subagent
-commands/                    rescue, review, adversarial-review, status, result, cancel, setup
+commands/                    rescue, review, adversarial-review, status, result, cancel, transfer, setup
 schemas/                     adversarial review output shape
 skills/agy-cli-runtime/      CLI call contract
 skills/agy-result-handling/  output presentation rules

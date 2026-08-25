@@ -17,6 +17,7 @@ const MAX_RESPONSE_CHARS = 8000;
 
 const PROMPT_TEMPLATE = `<task>
 Run a stop-gate review of the previous Claude turn.
+The repository under review is at {{REPO_ROOT}}. It is part of your workspace; inspect its state (working tree, diffs, files) from that absolute path.
 Only review the work from the previous Claude turn.
 Only review it if Claude actually did code changes in that turn.
 Pure status, setup, or reporting output does not count as reviewable work.
@@ -123,7 +124,7 @@ function lastAssistantMessageFromTranscript(transcriptPath) {
   return last;
 }
 
-function buildPrompt(input) {
+function buildPrompt(cwd, input) {
   let lastMessage = String(input.last_assistant_message ?? "").trim();
   if (!lastMessage && input.transcript_path) {
     lastMessage = lastAssistantMessageFromTranscript(input.transcript_path);
@@ -132,7 +133,7 @@ function buildPrompt(input) {
     lastMessage = `${lastMessage.slice(0, MAX_RESPONSE_CHARS)}\n[truncated]`;
   }
   const block = lastMessage ? `Previous Claude response:\n${lastMessage}` : "";
-  return PROMPT_TEMPLATE.replace("{{CLAUDE_RESPONSE_BLOCK}}", block);
+  return PROMPT_TEMPLATE.replace("{{REPO_ROOT}}", cwd).replace("{{CLAUDE_RESPONSE_BLOCK}}", block);
 }
 
 function parseReviewResponse(response) {
@@ -163,10 +164,13 @@ function parseReviewResponse(response) {
 }
 
 function runStopReview(cwd, input) {
-  const prompt = buildPrompt(input);
+  const prompt = buildPrompt(cwd, input);
+  // agy started by a hook has no workspace of its own (its shell sits in the
+  // agy scratch dir), so the project must be added explicitly or the reviewer
+  // sees an empty workspace and allows everything.
   const result = spawnSync(
     "agy",
-    ["-p", prompt, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
+    ["-p", prompt, "--add-dir", cwd, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
     { cwd, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
   );
 

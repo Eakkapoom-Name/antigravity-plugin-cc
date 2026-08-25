@@ -5,7 +5,7 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2026-08-26
+## [0.5.0] - 2026-08-26
 
 ### Added
 
@@ -13,13 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/agy:quota`: show remaining Antigravity model quota per bucket with reset times, via the quota-free print-mode `agy -p "/usage"` command.
 - `agy-cli-runtime` skill: documented the print-mode slash-command contract (structured `command` payload, no quota spend, no conversation left behind).
 
-## [1.4.2] - 2026-08-26
+## [0.4.2] - 2026-08-26
 
 ### Changed
 
 - License from Apache-2.0 to MIT; removed the `NOTICE` file.
 
-## [1.4.1] - 2026-08-26
+## [0.4.1] - 2026-08-26
 
 ### Fixed
 
@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything. The hook now passes `--add-dir <project>` and states the
   repository root in the review prompt.
 
-## [1.4.0] - 2026-08-26
+## [0.4.0] - 2026-08-26
 
 ### Added
 
@@ -37,14 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end. Off by default; toggled per project with `/agy:setup gate on|off|status`
   via `.claude/agy.local.md`.
 
-## [1.3.1] - 2026-08-26
+## [0.3.1] - 2026-08-26
 
 ### Added
 
-- `CHANGELOG.md` backfilled to v1.0.0.
+- `CHANGELOG.md` backfilled to v0.0.0.
 - Apache-2.0 `LICENSE` and `NOTICE`.
 
-## [1.3.0] - 2026-08-26
+## [0.3.0] - 2026-08-26
 
 ### Added
 
@@ -56,13 +56,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README restructured along the codex-plugin-cc layout (#3).
 - Review-output schema pretty-printed (#5).
 
-## [1.2.0] - 2026-08-25
+## [0.2.0] - 2026-08-25
 
 ### Changed
 
 - `/agy:delegate` renamed to `/agy:rescue` (#2).
 
-## [1.1.0] - 2026-08-25
+## [0.1.0] - 2026-08-25
 
 ### Added
 
@@ -70,13 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/agy:adversarial-review`: agy review that challenges implementation
   approach and design choices (#1).
 
-## [1.0.1] - 2026-08-25
+## [0.0.1] - 2026-08-25
 
 ### Fixed
 
 - Return full agy JSON stdout so `conversation_id` survives delegation.
 
-## [1.0.0] - 2026-08-25
+## [0.0.0] - 2026-08-25
 
 ### Added
 
@@ -84,11 +84,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/agy:delegate`, `/agy:review`, `/agy:setup`, the `agy-rescue` subagent,
   and the `agy-cli-runtime` / `agy-result-handling` internal skills.
 
-[1.4.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.4.0...v1.4.1
-[1.4.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.3.1...v1.4.0
-[1.3.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.3.0...v1.3.1
-[1.3.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.2.0...v1.3.0
-[1.2.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.1.0...v1.2.0
-[1.1.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.0.1...v1.1.0
-[1.0.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v1.0.0...v1.0.1
-[1.0.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/releases/tag/v1.0.0
+[0.4.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.0.1...v0.1.0
+[0.0.1]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/compare/v0.0.0...v0.0.1
+[0.0.0]: https://github.com/Eakkapoom-Name/antigravity-plugin-cc/releases/tag/v0.0.0

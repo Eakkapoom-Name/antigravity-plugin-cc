@@ -7,6 +7,8 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 - `/agy:review` for standard read-only code review
 - `/agy:adversarial-review` for challenge-based review
 - `/agy:rescue`, `/agy:status`, `/agy:result`, and `/agy:cancel` for task delegation and job management
+- `/agy:continue` to follow up in an existing agy conversation
+- `/agy:quota` to check remaining Antigravity model quota
 - `/agy:transfer` to hand the current session over to a resumable agy conversation
 - `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
@@ -34,6 +36,14 @@ Hands a task to agy through the `agy-rescue` subagent.
 - `--background` / `--wait`: Claude-side execution mode (default foreground)
 - `--resume` / `--fresh`: continue the last agy conversation, or start a new one
 - `--model <name>`, `--effort <low|medium|high>`: passed through to agy
+
+### `/agy:continue [conversation-id] [flags] <follow-up>`
+
+Sends a follow-up into an existing agy conversation instead of starting a new one. With no id, continues the most recent conversation from this session. Same `--background`/`--wait`, `--model`, `--effort` flags as `/agy:rescue`.
+
+### `/agy:quota`
+
+Shows remaining Antigravity model quota per bucket (Gemini and third-party groups, 5-hour and weekly windows) with reset times. Instant and quota-free (`agy -p "/usage"` print-mode command).
 
 ### `/agy:review [staged|branch|<base-ref>] [focus]`
 

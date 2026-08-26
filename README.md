@@ -287,7 +287,11 @@ Then check in with:
 /agy:transfer
 ```
 
-Then continue in a terminal with `agy --conversation <id>`.
+Then continue in a terminal with:
+
+```bash
+agy --conversation <id>
+```
 
 ## How to Delegate
 
@@ -338,15 +342,38 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 ## Layout
 
 ```
-.claude-plugin/plugin.json   manifest (plugin name: agy)
-agents/agy-rescue.md         forwarding subagent
-commands/                    rescue, review, adversarial-review, status, result, cancel, continue, quota, transfer, setup
-hooks/hooks.json             Stop hook wiring for the stop-review gate
-scripts/                     agy-setup.mjs, stop-review-gate-hook.mjs, npx-install.mjs (dependency-free node)
-schemas/                     adversarial review output shape
-skills/agy-cli-runtime/      CLI call contract
-skills/agy-result-handling/  output presentation rules
-package.json                 npm package (agy-plugin-cc) for the npx installer
+.
+├── .claude-plugin/
+│   ├── marketplace.json               marketplace catalog
+│   └── plugin.json                    manifest (plugin name: agy)
+├── agents/
+│   └── agy-rescue.md                  forwarding subagent
+├── commands/
+│   ├── adversarial-review.md
+│   ├── cancel.md
+│   ├── continue.md
+│   ├── quota.md
+│   ├── rescue.md
+│   ├── result.md
+│   ├── review.md
+│   ├── setup.md
+│   ├── status.md
+│   └── transfer.md
+├── hooks/
+│   └── hooks.json                     Stop hook wiring for the stop-review gate
+├── schemas/
+│   └── review-output.schema.json      adversarial review output shape
+├── scripts/
+│   ├── agy-setup.mjs                  /agy:setup readiness report
+│   ├── npx-install.mjs                npx agy-plugin-cc installer
+│   └── stop-review-gate-hook.mjs      stop-review gate (dependency-free node)
+├── skills/
+│   ├── agy-cli-runtime/               CLI call contract
+│   └── agy-result-handling/           output presentation rules
+├── CHANGELOG.md
+├── LICENSE
+├── README.md
+└── package.json                       npm package (agy-plugin-cc) for the npx installer
 ```
 
 ## FAQ
@@ -355,7 +382,7 @@ package.json                 npm package (agy-plugin-cc) for the npx installer
 
 If you are already signed into agy on this machine, that account works immediately here too. This plugin uses your local Antigravity CLI authentication.
 
-If you have not used Antigravity yet, install the CLI and run `!agy` once to sign in with your Google account, then run `/agy:setup` to confirm everything is ready.
+If you have not used Antigravity yet, [install the CLI](#install) and run `!agy` once to sign in with your Google account, then run [`/agy:setup`](#agysetup) to confirm everything is ready.
 
 ### Does the plugin use a separate Antigravity runtime?
 
@@ -363,12 +390,12 @@ No. Every delegation is a call to the same local `agy` binary you would use dire
 
 ### Will it use the same agy settings I already have?
 
-Yes. The plugin picks up your existing configuration in `~/.gemini/antigravity-cli/settings.json`, including `permissions.allow` rules. Headless runs auto-deny tools not covered by those rules; `/agy:setup` detects this and shows the fix.
+Yes. The plugin picks up your existing configuration in `~/.gemini/antigravity-cli/settings.json`, including `permissions.allow` rules. Headless runs auto-deny tools not covered by those rules; [`/agy:setup`](#agysetup) detects this and shows the fix.
 
 ### Does it spend my Antigravity quota?
 
-Yes. Delegations, reviews, and stop-review gate runs all contribute to your Antigravity usage limits. `/agy:quota` shows what is left per bucket and is itself quota-free.
+Yes. Delegations, reviews, and stop-review gate runs all contribute to your Antigravity usage limits. [`/agy:quota`](#agyquota) shows what is left per bucket and is itself quota-free.
 
 ### What does `npx agy-plugin-cc` actually do?
 
-It runs `claude plugin marketplace add Eakkapoom-Name/antigravity-plugin-cc` and `claude plugin install agy@antigravity-plugin-cc` through your local `claude` CLI, then points you at `/agy:setup`. It is safe to rerun.
+It runs `claude plugin marketplace add Eakkapoom-Name/antigravity-plugin-cc` and `claude plugin install agy@antigravity-plugin-cc` through your local `claude` CLI, then points you at [`/agy:setup`](#agysetup). It is safe to rerun. See [Install](#install) for the manual steps.

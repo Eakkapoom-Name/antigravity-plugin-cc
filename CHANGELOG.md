@@ -5,6 +5,29 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-08-26
+
+### Added
+
+- npm installer: `npx agy-plugin-cc` registers the marketplace and installs
+  the plugin through the local `claude` CLI (`package.json` +
+  `scripts/npx-install.mjs`; safe to rerun).
+- README: FAQ and How to Delegate sections.
+
+### Changed
+
+- README restructured along the codex-plugin-cc layout: audience line,
+  trimmed Requirements, line-by-line Install (npx one-liner, marketplace
+  commands, official agy install commands), per-command Usage with copyable
+  examples, and Typical Flows.
+
+- `/agy:setup` readiness check now runs through a companion script
+  (`scripts/agy-setup.mjs`), matching the codex-plugin setup contract: the
+  script performs every check itself (agy on PATH, auth probe, tool-exercising
+  probe, stop-review gate state) and prints a single JSON report with `ready`,
+  per-check sections, `reviewGateEnabled`, and `nextSteps`; the command now
+  just runs it and presents the result.
+
 ## [0.5.1] - 2026-08-26
 
 ### Fixed

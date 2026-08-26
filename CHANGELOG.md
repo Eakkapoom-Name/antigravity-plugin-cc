@@ -5,6 +5,19 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-26
+
+### Fixed
+
+- Headless permission denial went undetected (#12): the `/agy:setup` probe was
+  tool-free, so it reported ready while every real delegation was auto-denied
+  under a narrow agy `permissions.allow` list, returning an empty `response`
+  (with `status` observed as both `SUCCESS` and `CANCELED`) and the failure
+  visible only in a stderr line starting `jetski: no output produced`. Setup
+  now runs a second, tool-exercising probe and explains the permission fix;
+  result handling treats an empty `response` as a failure and surfaces the
+  stderr line; the rescue agent forwards stderr when the response is empty.
+
 ## [0.5.0] - 2026-08-26
 
 ### Added

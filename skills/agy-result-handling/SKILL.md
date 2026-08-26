@@ -11,6 +11,7 @@ When an `/agy:*` command or the `agy:agy-rescue` subagent returns agy JSON outpu
 - Parse the JSON and present the `response` field as the primary content. Preserve its structure: verdicts, findings, file paths, line numbers, and section ordering stay as agy wrote them.
 - Always report the `conversation_id` on its own line at the end, labeled as resumable via `/agy:rescue --resume`.
 - If `status` is not `SUCCESS`, report the failure verbatim with the most actionable error line, and stop. Do not turn a failed agy run into a Claude-side implementation attempt.
+- An empty `response` is a failure even when `status` says `SUCCESS`. Headless permission denial is the usual cause: agy prints a stderr line starting with `jetski: no output produced` saying a tool permission was auto-denied (observed with both `SUCCESS` and `CANCELED` statuses on agy 1.1.20). Report it as a permission failure, quote that stderr line, and point the user at `permissions.allow` (or a permissive `toolPermission` setting) in `~/.gemini/antigravity-cli/settings.json`. Never present an empty response as a successful run.
 - If agy was never successfully invoked, do not generate a substitute answer.
 - If agy made edits, say so explicitly and list touched files when the response names them.
 - Preserve evidence boundaries: keep agy's inferences, uncertainties, and open questions marked as such.

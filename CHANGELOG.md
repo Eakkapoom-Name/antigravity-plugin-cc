@@ -5,6 +5,20 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-08-26
+
+### Added
+
+- README: note that the project is an open-source, third-party community
+  project not affiliated with, endorsed by, or sponsored by Anthropic or
+  Google.
+
+### Changed
+
+- README: the `agy --conversation <id>` resume command sits in its own
+  copyable block, FAQ answers link to the Install, `/agy:setup`, and
+  `/agy:quota` sections, and Layout is a full tree listing.
+
 ## [0.6.0] - 2026-08-26
 
 ### Added

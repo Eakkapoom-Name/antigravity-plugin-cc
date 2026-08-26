@@ -4,6 +4,9 @@ Use Google's Antigravity CLI (`agy`) from inside Claude Code: delegate tasks to 
 
 This plugin is for Claude Code users who want an easy way to start using Antigravity from the workflow they already have.
 
+> [!NOTE]
+> This is an open-source, third-party community project. It is not affiliated with, endorsed by, or sponsored by Anthropic or Google.
+
 ## What You Get
 
 - `/agy:review` for standard read-only code review

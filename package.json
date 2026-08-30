@@ -1,6 +1,6 @@
 {
   "name": "agy-plugin-cc",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Installer for the agy Claude Code plugin: use Google's Antigravity CLI (agy) from Claude Code to delegate tasks or review code.",
   "bin": {
     "agy-plugin-cc": "scripts/npx-install.mjs"

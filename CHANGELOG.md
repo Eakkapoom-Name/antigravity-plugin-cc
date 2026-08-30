@@ -5,6 +5,34 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-08-30
+
+### Added
+
+- Test suite (`tests/`, run with `npm test`) covering command frontmatter
+  contracts, plugin and marketplace manifest shape, hook wiring and timeouts,
+  version and changelog sync, agent skill references, script syntax, and the
+  setup tool-probe path detection.
+- Pull request CI workflow running the suite on Node 22 with SHA-pinned
+  actions, on pull requests and pushes to main.
+- `.gitignore`, covering `.claude/agy.local.md`, the per-project gate settings
+  file that is documented as not meant to be committed.
+
+### Fixed
+
+- `/agy:setup` runs the readiness script with an explicit 400000 ms Bash
+  timeout. The two agy probes can take about 6.5 minutes, so the default
+  120000 ms timeout killed the script before it printed its report, which was
+  indistinguishable from a broken install.
+- The tool-permission probe accepts a filesystem path that agy wraps in
+  backticks, quotes, or brackets, and Windows drive-letter paths. Previously
+  those shapes reported a working setup as broken.
+
+### Changed
+
+- `scripts/agy-setup.mjs` exports its path detection and only runs the probes
+  when invoked as a script, so tests can import it without spawning agy.
+
 ## [0.6.1] - 2026-08-26
 
 ### Added

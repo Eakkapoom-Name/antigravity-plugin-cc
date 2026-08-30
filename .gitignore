@@ -42,3 +42,10 @@ node_modules/
 
 # Per-project plugin settings written by /agy:setup gate; local, not committed
 .claude/agy.local.md
+
+# Local-only project skills and worktrees
+.claude/skills/
+.claude/worktrees/
+
+# Local working notes; the open-work rules they point at are local too
+CLAUDE.md

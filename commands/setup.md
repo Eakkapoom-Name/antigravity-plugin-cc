@@ -27,6 +27,8 @@ Otherwise check agy readiness. Run:
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-setup.mjs"
 ```
 
+Run it with an explicit Bash `timeout` of `400000` ms. The script fires two agy probes back to back, each with its own 3 minute spawn timeout, so a slow-but-working setup can take about 6 minutes. The default 120000 ms Bash timeout would kill the script before it prints its report, which looks identical to a broken install.
+
 The script runs every check itself (agy on PATH, an auth probe, a tool-exercising probe that detects headless permission auto-denial, and the stop-review gate state) and prints one JSON report:
 
 - `ready`: true only when `agy`, `auth`, and `toolPermissions` are all available.

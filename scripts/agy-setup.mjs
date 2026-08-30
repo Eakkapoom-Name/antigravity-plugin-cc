@@ -8,6 +8,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const AGY_PRINT_TIMEOUT = "2m";
 const SPAWN_TIMEOUT_MS = 3 * 60 * 1000;
@@ -113,6 +114,16 @@ function checkAuth() {
 // settings, and the tool-free auth probe cannot detect that. The probe passes
 // only when the response contains a filesystem path (agy runs the command in
 // its own scratch directory, so the current project path is not expected).
+// A path can come back bare, quoted, backtick-wrapped, or bracketed, and on
+// Windows it is a drive-letter path rather than a POSIX one. Only characters
+// that cannot start a path are rejected before the match, so "and/or" and
+// "24/7" still do not count as paths.
+const FILESYSTEM_PATH = /(?:^|[\s'"`([<])(?:\/[^\s'"`)\]>]+|[A-Za-z]:[\\/][^\s'"`)\]>]*)/;
+
+export function containsFilesystemPath(response) {
+  return FILESYSTEM_PATH.test(String(response ?? ""));
+}
+
 function checkToolPermissions() {
   const probe = runProbe(TOOL_PROBE_PROMPT);
   const line = decisiveStderrLine(probe.stderr);
@@ -125,7 +136,7 @@ function checkToolPermissions() {
   }
   const response = String(probe.payload?.response ?? "").trim();
   const duration = probe.payload?.duration_seconds ?? null;
-  const hasPath = /(?:^|\s)\/[^\s'"]+/.test(response);
+  const hasPath = containsFilesystemPath(response);
   if (!response || !hasPath) {
     return {
       available: false,
@@ -221,18 +232,25 @@ function main() {
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 
-try {
-  main();
-} catch (error) {
-  process.stdout.write(
-    `${JSON.stringify(
-      {
-        ready: false,
-        error: error instanceof Error ? error.message : String(error)
-      },
-      null,
-      2
-    )}\n`
-  );
-  process.exitCode = 1;
+// Only run the probes when invoked as a script; importing this module (for
+// tests) must not spawn agy.
+if (
+  process.argv[1] &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
+) {
+  try {
+    main();
+  } catch (error) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ready: false,
+          error: error instanceof Error ? error.message : String(error)
+        },
+        null,
+        2
+      )}\n`
+    );
+    process.exitCode = 1;
+  }
 }

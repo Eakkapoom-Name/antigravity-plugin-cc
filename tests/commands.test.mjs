@@ -62,6 +62,42 @@ for (const name of COMMANDS) {
   });
 }
 
+// Commands that stage a brief or a diff in a temp file, feed it to agy through
+// `$(cat ...)`, and delete it afterwards. Derived from the bodies rather than
+// hardcoded, so a command that grows a temp-file step is caught rather than
+// silently skipped.
+const TEMP_FILE_COMMANDS = COMMANDS.filter((name) =>
+  /temp (?:brief |diff )?file/i.test(read(`commands/${name}`))
+);
+
+test("the commands with temp file steps are the ones expected", () => {
+  // Equality in both directions: a new one must be added deliberately, and a
+  // step removed from an existing one must not go unnoticed either.
+  assert.deepEqual(TEMP_FILE_COMMANDS, [
+    "adversarial-review.md",
+    "review.md",
+    "transfer.md"
+  ]);
+});
+
+for (const name of TEMP_FILE_COMMANDS) {
+  test(`${name} grants the tools its temp file steps actually need`, () => {
+    const fields = parseFrontmatter(read(`commands/${name}`));
+    const tools = fields["allowed-tools"].split(",").map((entry) => entry.trim());
+    assert.ok(tools.includes("Write"), `${name} writes a temp file but does not grant Write`);
+    assert.ok(
+      tools.some((tool) => /^Bash\(rm:/.test(tool)),
+      `${name} deletes its temp file but grants no scoped rm`
+    );
+    // The brief or diff reaches agy through a `$(cat <file>)` substitution
+    // inside the agy command line, so cat is part of the call, not incidental.
+    assert.ok(
+      tools.some((tool) => /^Bash\(cat:/.test(tool)),
+      `${name} interpolates its temp file with cat but grants no scoped cat`
+    );
+  });
+}
+
 test("setup command runs the readiness script with a timeout that outlasts both probes", () => {
   const source = read("commands/setup.md");
   assert.match(source, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/agy-setup\.mjs/);

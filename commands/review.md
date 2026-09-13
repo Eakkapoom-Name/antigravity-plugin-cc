@@ -1,7 +1,7 @@
 ---
 description: Ask Antigravity (agy) for an independent read-only review of the current changes
 argument-hint: "[staged|branch|<base-ref>] [extra focus instructions]"
-allowed-tools: Bash(agy:*), Bash(git:*)
+allowed-tools: Write, Bash(agy:*), Bash(git:*), Bash(cat:*), Bash(rm:*)
 ---
 
 Run a read-only agy code review of the current git changes.

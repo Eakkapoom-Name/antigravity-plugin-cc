@@ -27,6 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a check that passes. The remedies are `/permissions`, which has worked every
   reported time, and rewording the task text, which is cheaper but has failed
   before.
+- `/agy:transfer`, `/agy:review`, and `/agy:adversarial-review` now grant the
+  tools their own steps need. Each one writes a brief or a diff to a temp file,
+  feeds it to agy, and deletes it afterwards, but none of them granted `Write`
+  or any form of `rm`; `/agy:transfer` granted only `Bash(agy:*)`. They now also
+  grant `Bash(cat:*)`, since the file reaches agy through a `$(cat <file>)`
+  substitution inside the agy command line. The suite asserts these grants for
+  every command whose body has a temp file step, a check that was held back
+  until the grants existed.
+
 - A write-capable run that answers with a plan ending in a question, such as
   `Proceed with implementation?`, is no longer presented as a finished task. It
   touched no files, so the result now says so and hands over the

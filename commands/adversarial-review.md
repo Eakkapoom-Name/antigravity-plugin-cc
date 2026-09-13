@@ -1,7 +1,7 @@
 ---
 description: Run an agy review that challenges the implementation approach and design choices
 argument-hint: "[--wait|--background] [staged|branch|<base-ref>] [focus ...]"
-allowed-tools: Read, Bash(agy:*), Bash(git:*), AskUserQuestion, Agent
+allowed-tools: Read, Write, Bash(agy:*), Bash(git:*), Bash(cat:*), Bash(rm:*), AskUserQuestion, Agent
 ---
 
 Run an adversarial agy review of the current git changes. Position it as a challenge review: does the chosen approach hold up, what assumptions does it depend on, where do the design and tradeoffs fail under real-world conditions. It is not just a stricter pass over implementation defects.

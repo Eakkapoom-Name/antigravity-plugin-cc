@@ -1,7 +1,7 @@
 ---
 description: Transfer the current Claude Code session into a resumable agy conversation
 argument-hint: "[--model <model>] [extra context or focus]"
-allowed-tools: Bash(agy:*)
+allowed-tools: Write, Bash(agy:*), Bash(cat:*), Bash(rm:*)
 ---
 
 Hand the current session's context to Antigravity (agy) so work can continue there, in a fresh agy conversation seeded with a handoff brief.

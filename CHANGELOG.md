@@ -5,7 +5,7 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.3] - 2026-09-14
 
 ### Added
 
@@ -78,9 +78,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CLAUDE_PROJECT_DIR`, which differ when the session sits in a subdirectory.
 - Commands resolve `agy`, `claude`, and `git` through `PATH` and `PATHEXT`
   rather than spawning a bare name, so the `.cmd` shims npm installs on Windows
-  are found. The Unix-only `which` call is gone. Spawning still never uses a
-  shell: these commands are handed prompt text and diffs, and a shell would turn
-  that data into syntax.
+  are found, and a resolved `.cmd` is handed to `cmd.exe` rather than exec'd
+  directly, which Windows cannot do and Node refuses to attempt since the fix
+  for CVE-2024-27980. The Unix-only `which` call is gone. Spawning still never
+  uses a shell: these commands are handed prompt text and diffs, and a shell
+  would turn that data into syntax.
+- `/agy:status` and `/agy:result` report backgrounded companion reviews as well
+  as `agy:agy-rescue` subagent delegations. A backgrounded
+  `/agy:adversarial-review` is a Claude Code background task, not a subagent, so
+  a status built only on `ListAgents` made it look like it never started.
+- `/agy:transfer` accepts `--model` and `--effort` again. Both were documented
+  in the README while the command had stopped parsing them.
 - The npx installer ships `scripts/lib/process.mjs` alongside itself, which it
   now imports. Without it `npx agy-plugin-cc` would fail on a missing module.
 - A write-capable run that answers with a plan ending in a question, such as
@@ -115,7 +123,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   constraint that slash commands are unavailable under stream-json input, which
   is why `/agy:quota` keeps the argv form.
 - `npm test` runs `node --test` with no shell glob, so the suite runs on Windows
-  as well as Linux.
+  as well as Linux. CI runs three legs: Ubuntu on Node 22 and Node 18, and
+  Windows on Node 22. The Node 18 leg exists so the `engines: ">=18"` claim is
+  tested rather than asserted, and the Windows leg executes a real `.cmd` shim
+  rather than only resolving one.
+- README: `git` is listed as a requirement, since the companion collects diffs
+  itself; `/agy:status` and `/agy:result` describe both kinds of background run;
+  and `/agy:setup` explains that a failed probe names which of three causes it
+  hit rather than assuming a login problem.
 
 ## [0.6.2] - 2026-08-30
 

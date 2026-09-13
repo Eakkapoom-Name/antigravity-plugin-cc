@@ -5,10 +5,12 @@
 // Usage: node agy-setup.mjs [--json]   (output is always JSON)
 
 import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+import { gateEnabled } from "./lib/state.mjs";
+import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const AGY_PRINT_TIMEOUT = "2m";
 const SPAWN_TIMEOUT_MS = 3 * 60 * 1000;
@@ -177,23 +179,10 @@ function checkToolPermissions() {
   };
 }
 
-function reviewGateEnabled(cwd) {
-  const settingsFile = path.join(cwd, ".claude", "agy.local.md");
-  let raw;
-  try {
-    raw = fs.readFileSync(settingsFile, "utf8");
-  } catch {
-    return false;
-  }
-  const frontmatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!frontmatter) {
-    return false;
-  }
-  return /^stop_review_gate:\s*true\s*$/m.test(frontmatter[1]);
-}
-
 function main() {
-  const cwd = process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Same resolution the stop hook uses, so the two never disagree about which
+  // workspace they are reporting on.
+  const cwd = resolveWorkspaceRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const node = checkNode();
   const agy = checkAgy();
 
@@ -244,9 +233,9 @@ function main() {
     }
   }
 
-  const gateEnabled = reviewGateEnabled(cwd);
+  const gateOn = gateEnabled(cwd);
   const ready = agy.available && auth.available && toolPermissions.available;
-  if (ready && !gateEnabled) {
+  if (ready && !gateOn) {
     nextSteps.push(
       "Optional: run `/agy:setup gate on` to require a stop-time agy review before the session can end."
     );
@@ -258,7 +247,7 @@ function main() {
     agy,
     auth,
     toolPermissions,
-    reviewGateEnabled: gateEnabled,
+    reviewGateEnabled: gateOn,
     actionsTaken: [],
     nextSteps
   };

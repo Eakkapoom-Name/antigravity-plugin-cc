@@ -1,58 +1,22 @@
 #!/usr/bin/env node
 
 // Stop-time review gate for the agy plugin.
-// Off by default; enabled per project via `stop_review_gate: true` in the
-// YAML frontmatter of <project>/.claude/agy.local.md (see /agy:setup).
+// Off by default; enabled per workspace via /agy:setup gate on, which stores
+// the flag outside the repository (see scripts/lib/state.mjs).
 // When enabled, the previous Claude turn is handed to a read-only agy run
 // that must answer ALLOW:/BLOCK: on its first output line.
 
 import fs from "node:fs";
-import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+
+import { gateEnabled } from "./lib/state.mjs";
+import { renderPrompt } from "./lib/prompts.mjs";
+import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const AGY_PRINT_TIMEOUT = "9m";
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_CHARS = 8000;
-
-const PROMPT_TEMPLATE = `<task>
-Run a stop-gate review of the previous Claude turn.
-The repository under review is at {{REPO_ROOT}}. It is part of your workspace; inspect its state (working tree, diffs, files) from that absolute path.
-Only review the work from the previous Claude turn.
-Only review it if Claude actually did code changes in that turn.
-Pure status, setup, or reporting output does not count as reviewable work.
-For example, the output of /agy:setup or /agy:status does not count.
-Only direct edits made in that specific turn count.
-If the previous Claude turn was only a status update, a summary, a setup/login check, a review result, or output from a command that did not itself make direct edits in that turn, return ALLOW immediately and do no further work.
-Challenge whether that specific work and its design choices should ship.
-
-{{CLAUDE_RESPONSE_BLOCK}}
-</task>
-
-<compact_output_contract>
-Return a compact final answer.
-Your first line must be exactly one of:
-- ALLOW: <short reason>
-- BLOCK: <short reason>
-Do not put anything before that first line.
-</compact_output_contract>
-
-<default_follow_through_policy>
-Use ALLOW if the previous turn did not make code changes or if you do not see a blocking issue.
-Use ALLOW immediately, without extra investigation, if the previous turn was not an edit-producing turn.
-Use BLOCK only if the previous turn made code changes and you found something that still needs to be fixed before stopping.
-</default_follow_through_policy>
-
-<grounding_rules>
-Ground every blocking claim in the repository context or tool outputs you inspected during this run.
-Do not treat the previous Claude response as proof that code changes happened; verify that from the repository state before you block.
-Do not block based on older edits from earlier turns when the immediately previous turn did not itself make direct edits.
-</grounding_rules>
-
-<dig_deeper_nudge>
-If the previous turn did make code changes, check for second-order failures, empty-state behavior, retries, stale state, rollback risk, and design tradeoffs before you finalize.
-</dig_deeper_nudge>
-`;
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -70,21 +34,6 @@ function logNote(message) {
   if (message) {
     process.stderr.write(`${message}\n`);
   }
-}
-
-function gateEnabled(cwd) {
-  const settingsFile = path.join(cwd, ".claude", "agy.local.md");
-  let raw;
-  try {
-    raw = fs.readFileSync(settingsFile, "utf8");
-  } catch {
-    return false;
-  }
-  const frontmatter = raw.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!frontmatter) {
-    return false;
-  }
-  return /^stop_review_gate:\s*true\s*$/m.test(frontmatter[1]);
 }
 
 function lastAssistantMessageFromTranscript(transcriptPath) {
@@ -133,7 +82,10 @@ function buildPrompt(cwd, input) {
     lastMessage = `${lastMessage.slice(0, MAX_RESPONSE_CHARS)}\n[truncated]`;
   }
   const block = lastMessage ? `Previous Claude response:\n${lastMessage}` : "";
-  return PROMPT_TEMPLATE.replace("{{REPO_ROOT}}", cwd).replace("{{CLAUDE_RESPONSE_BLOCK}}", block);
+  return renderPrompt("stop-review-gate", {
+    REPO_ROOT: cwd,
+    CLAUDE_RESPONSE_BLOCK: block
+  });
 }
 
 function parseReviewResponse(response) {
@@ -220,7 +172,9 @@ function main() {
     return;
   }
 
-  const cwd = input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
+  // Anchored on the repository root so this agrees with /agy:setup even when
+  // the session cwd is a subdirectory of the project.
+  const cwd = resolveWorkspaceRoot(input.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd());
   if (!gateEnabled(cwd)) {
     return;
   }

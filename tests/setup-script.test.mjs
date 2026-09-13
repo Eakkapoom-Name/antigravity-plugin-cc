@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { containsFilesystemPath } from "../scripts/agy-setup.mjs";
+import { classifyProbeFailure, containsFilesystemPath } from "../scripts/agy-setup.mjs";
 
 // The tool-permission probe asks agy to run `pwd`. agy formats that answer in
 // several ways, and a false negative here reports a working install as broken.
@@ -45,6 +45,71 @@ for (const response of NON_PATH_RESPONSES) {
 test("containsFilesystemPath tolerates null and undefined", () => {
   assert.equal(containsFilesystemPath(null), false);
   assert.equal(containsFilesystemPath(undefined), false);
+});
+
+// A failed auth probe has three causes and three remedies. Classifying a
+// sandboxed run as an auth failure sends the user to re-authenticate an account
+// that was never broken, which is what GitHub issue #19 reported.
+const ENVIRONMENT_STDERR = [
+  // The exact line quoted in issue #19.
+  "listen tcp 127.0.0.1:0: socket: operation not permitted",
+  "listen tcp 127.0.0.1:43111: bind: permission denied",
+  "Error: connect EPERM 127.0.0.1:8080",
+  "open /run/user/1000/agy.sock: EACCES",
+  "listen EADDRNOTAVAIL: address not available",
+  "socket: EAFNOSUPPORT"
+];
+
+for (const stderr of ENVIRONMENT_STDERR) {
+  test(`classifyProbeFailure calls ${JSON.stringify(stderr)} an environment failure`, () => {
+    assert.equal(classifyProbeFailure(stderr), "environment");
+  });
+}
+
+const AUTH_STDERR = [
+  "Error: not authenticated. Run agy to sign in.",
+  "login required",
+  "invalid credentials",
+  "unauthorized: token expired",
+  "Unauthenticated request"
+];
+
+for (const stderr of AUTH_STDERR) {
+  test(`classifyProbeFailure calls ${JSON.stringify(stderr)} an auth failure`, () => {
+    assert.equal(classifyProbeFailure(stderr), "auth");
+  });
+}
+
+const UNKNOWN_STDERR = [
+  "",
+  "   ",
+  "jetski: no output produced",
+  "unexpected end of JSON input",
+  // A tool denial says "permission denied" too, so a bare match on that phrase
+  // would steal this case from the unknown bucket.
+  "tool call was denied: permission denied"
+];
+
+for (const stderr of UNKNOWN_STDERR) {
+  test(`classifyProbeFailure cannot classify ${JSON.stringify(stderr)}`, () => {
+    assert.equal(classifyProbeFailure(stderr), "unknown");
+  });
+}
+
+test("classifyProbeFailure puts the environment cause ahead of an auth symptom", () => {
+  // A sandboxed run fails the downstream auth step as a symptom. The sandbox is
+  // the cause worth reporting, so it must win even with auth words present.
+  assert.equal(
+    classifyProbeFailure(
+      "listen tcp 127.0.0.1:0: socket: operation not permitted\nauth handshake failed: unauthenticated"
+    ),
+    "environment"
+  );
+});
+
+test("classifyProbeFailure tolerates null and undefined", () => {
+  assert.equal(classifyProbeFailure(null), "unknown");
+  assert.equal(classifyProbeFailure(undefined), "unknown");
 });
 
 test("importing the setup script does not run the probes", () => {

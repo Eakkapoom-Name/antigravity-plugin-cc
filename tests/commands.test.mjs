@@ -79,6 +79,25 @@ test("setup command runs the readiness script with a timeout that outlasts both 
   );
 });
 
+test("setup command branches on the auth failure kind instead of always saying sign in", () => {
+  const source = read("commands/setup.md");
+  // The script classifies three causes; the doc is what actually decides what
+  // the user is told, so it has to name all three and the field to branch on.
+  assert.match(source, /auth\.failureKind/);
+  for (const kind of ["environment", "auth", "unknown"]) {
+    assert.match(source, new RegExp("`" + kind + "`"));
+  }
+  assert.match(source, /not a login failure/i);
+});
+
+test("setup command keeps the permission guidance honest", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /command\(\*\)/);
+  assert.match(source, /unverified/i);
+  // A permission denial must never be presented as an auth problem.
+  assert.match(source, /never tell the user to sign in again/i);
+});
+
 test("setup command documents the gate toggle contract", () => {
   const source = read("commands/setup.md");
   assert.match(source, /\.claude\/agy\.local\.md/);

@@ -71,8 +71,32 @@ function decisiveStderrLine(stderr) {
   );
 }
 
-function looksLikeAuthFailure(stderr) {
-  return /auth|login|credential|unauthenticated|unauthorized/i.test(stderr);
+// A failed probe has three distinct causes and three different remedies, and
+// the stderr line is the only evidence available. Reporting all of them as a
+// login failure sends users to re-authenticate an account that is already fine.
+//
+// "environment" is the invoking shell blocking a syscall agy needs, most often
+// a sandbox that refuses the loopback listener: agy prints
+// `listen tcp 127.0.0.1:0: socket: operation not permitted`. Rerunning outside
+// the restriction is the fix; the credentials are untouched.
+//
+// The patterns stay anchored to the syscall and network shape rather than
+// matching a bare "permission denied", which agy also prints for tool denials.
+const ENVIRONMENT_FAILURE =
+  /listen tcp|socket: operation not permitted|bind:|EPERM|EACCES|EADDRNOTAVAIL|EAFNOSUPPORT/;
+const AUTH_FAILURE = /auth|login|credential|unauthenticated|unauthorized/i;
+
+export function classifyProbeFailure(stderr) {
+  const text = String(stderr ?? "");
+  // Environment wins over auth: a sandboxed run can fail a downstream auth step
+  // as a symptom, and the sandbox is the cause worth reporting.
+  if (ENVIRONMENT_FAILURE.test(text)) {
+    return "environment";
+  }
+  if (AUTH_FAILURE.test(text)) {
+    return "auth";
+  }
+  return "unknown";
 }
 
 function checkAuth() {
@@ -83,7 +107,7 @@ function checkAuth() {
       available: false,
       loggedIn: false,
       detail: line || `auth probe failed (${probe.failure})`,
-      authFailure: looksLikeAuthFailure(probe.stderr),
+      failureKind: classifyProbeFailure(probe.stderr),
       durationSeconds: null
     };
   }
@@ -97,7 +121,7 @@ function checkAuth() {
       detail:
         line ||
         `auth probe ended with status ${probe.payload?.status ?? "unknown"} and empty response`,
-      authFailure: looksLikeAuthFailure(probe.stderr),
+      failureKind: classifyProbeFailure(probe.stderr),
       durationSeconds: duration
     };
   }
@@ -105,7 +129,7 @@ function checkAuth() {
     available: true,
     loggedIn: true,
     detail: `auth probe OK in ${Number(duration).toFixed(1)}s`,
-    authFailure: false,
+    failureKind: null,
     durationSeconds: duration
   };
 }
@@ -178,7 +202,7 @@ function main() {
     available: false,
     loggedIn: false,
     detail: "not checked; agy is not installed",
-    authFailure: false,
+    failureKind: null,
     durationSeconds: null
   };
   let toolPermissions = {
@@ -195,16 +219,26 @@ function main() {
     auth = checkAuth();
     if (!auth.available) {
       toolPermissions.detail = "not checked; auth probe failed";
-      if (auth.authFailure) {
+      // One remedy per cause. A non-ready report must never leave nextSteps
+      // empty, so the unknown case still says what to do next.
+      if (auth.failureKind === "environment") {
+        nextSteps.push(
+          "This is not a login failure. The shell that ran the probe blocked a syscall agy needs, usually a sandbox refusing its local loopback listener. Your credentials are untouched. Rerun /agy:setup from an unrestricted terminal, outside any sandbox, container, or seccomp wrapper."
+        );
+      } else if (auth.failureKind === "auth") {
         nextSteps.push(
           "Run `agy` once interactively in a terminal (type `! agy` in the prompt) to complete authentication, then rerun /agy:setup."
+        );
+      } else {
+        nextSteps.push(
+          "The auth probe failed without naming a cause. Run `agy -p \"Reply with exactly: OK\" --output-format json` in a terminal to see the full error, then rerun /agy:setup."
         );
       }
     } else {
       toolPermissions = checkToolPermissions();
       if (!toolPermissions.available) {
         nextSteps.push(
-          "Headless delegation is blocked until agy's permission settings allow tools: add allow-rules under `permissions.allow` in ~/.gemini/antigravity-cli/settings.json (agy's denial message shows the exact rule syntax, for example `command(<target>)`) or use a permissive `toolPermission` there."
+          "Headless delegation is blocked until agy's permission settings allow tools. agy cannot prompt in headless mode, so any tool not covered by a rule is auto-denied. Fix it in ~/.gemini/antigravity-cli/settings.json one of two ways. Broad: {\"permissions\": {\"allow\": [\"command(*)\"]}}. Warning: `command(*)` lets agy run every terminal command headlessly, with no prompt. Narrow: allow only the targets you need, for example {\"permissions\": {\"allow\": [\"command(git *)\", \"command(npm *)\"]}}; that narrower form is unverified on this agy version, so copy the exact target string out of agy's own denial line, which shows the rule syntax it expects. The alternative is a permissive `toolPermission` value in the same file, which carries the same risk as `command(*)`."
         );
       }
     }
@@ -218,7 +252,6 @@ function main() {
     );
   }
 
-  delete auth.authFailure;
   const report = {
     ready,
     node,

@@ -1,6 +1,6 @@
 ---
 description: Transfer the current Claude Code session into a resumable agy conversation
-argument-hint: "[extra context or focus]"
+argument-hint: "[--model <model>] [--effort <low|medium|high>] [extra context or focus]"
 allowed-tools: Write, Bash(node:*)
 ---
 
@@ -22,8 +22,10 @@ $ARGUMENTS
 3. Pass the script the **path**, never the brief text:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" transfer "<path to the brief file>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" transfer "<path to the brief file>" [--model <model>] [--effort <low|medium|high>]
 ```
+
+Pass `--model` or `--effort` through only if the user supplied them; strip them from the text you fold into the brief so they are not mistaken for context.
 
 Set the Bash tool timeout to 590000 ms. The script reads the brief, sends it to agy on stdin, and deletes the file afterwards, so the brief never passes through a command line whatever its length.
 

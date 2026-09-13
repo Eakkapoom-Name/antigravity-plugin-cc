@@ -18,7 +18,7 @@ import {
   runCommand
 } from "../scripts/lib/process.mjs";
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
-import { parseReviewArguments } from "../scripts/agy-companion.mjs";
+import { parseReviewArguments, parseTransferArguments } from "../scripts/agy-companion.mjs";
 import { ROOT } from "./helpers.mjs";
 
 // Captured verbatim from agy 1.2.2. The terminal event carries the same object
@@ -282,4 +282,29 @@ test("a resolved .cmd on PATH is executable, not just findable", { skip: process
   } finally {
     process.env.PATH = previous;
   }
+});
+
+// /agy:transfer documents --model and --effort. The companion parses them out
+// of the argument string so they reach agy as flags instead of being taken for
+// part of the brief path.
+test("transfer arguments separate the brief path from the routing flags", () => {
+  assert.deepEqual(parseTransferArguments("/tmp/brief.md"), {
+    briefPath: "/tmp/brief.md",
+    model: undefined,
+    effort: undefined
+  });
+  assert.deepEqual(parseTransferArguments("/tmp/brief.md --model fast --effort high"), {
+    briefPath: "/tmp/brief.md",
+    model: "fast",
+    effort: "high"
+  });
+  // Flags first still finds the path.
+  assert.equal(parseTransferArguments("--model fast /tmp/brief.md").briefPath, "/tmp/brief.md");
+  // A flag with no value must not swallow the path or invent one.
+  assert.deepEqual(parseTransferArguments("/tmp/brief.md --model"), {
+    briefPath: "/tmp/brief.md",
+    model: undefined,
+    effort: undefined
+  });
+  assert.equal(parseTransferArguments("").briefPath, "");
 });

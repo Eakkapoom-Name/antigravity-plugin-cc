@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   ci:
-    name: CI (${{ matrix.os }})
+    name: CI (${{ matrix.os }}, node ${{ matrix.node }})
     # F4 was a suspicion for as long as CI only ran Linux: the spawn helper
     # resolves .cmd shims through PATHEXT, and this leg is what proves it.
     runs-on: ${{ matrix.os }}
@@ -20,6 +20,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        node: [22]
+        include:
+          # package.json claims engines >=18, so the floor is tested rather than
+          # asserted. Linux only: the point is the language level, not the OS.
+          - os: ubuntu-latest
+            node: 18
 
     steps:
       - name: Check out repository
@@ -28,7 +34,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
 
       # The plugin has no runtime or dev dependencies, so there is nothing to
       # install; the suite only reads the repository and parses its scripts.
@@ -40,4 +46,4 @@ jobs:
       # mismatch instead of failing inside a test.
       - name: Check version metadata
         run: npm run check-version
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.node == 22

@@ -104,6 +104,30 @@ function review({ argument, adversarial }) {
   };
 }
 
+// `transfer <brief-path> [--model <name>] [--effort <level>]`. The routing
+// flags are split out here so they reach agy as flags rather than being
+// mistaken for part of the path.
+export function parseTransferArguments(argument) {
+  const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
+  const parsed = { briefPath: "", model: undefined, effort: undefined };
+
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (token === "--model" || token === "--effort") {
+      const value = tokens[i + 1];
+      if (value && !value.startsWith("--")) {
+        parsed[token === "--model" ? "model" : "effort"] = value;
+        i += 1;
+      }
+      continue;
+    }
+    if (!parsed.briefPath) {
+      parsed.briefPath = token;
+    }
+  }
+  return parsed;
+}
+
 function transfer(argument) {
   const cwd = workspace();
   if (!agyAvailable()) {
@@ -113,7 +137,7 @@ function transfer(argument) {
   // The brief is written by the model, since it summarizes a conversation the
   // script cannot see. Only the path crosses the boundary, so the brief never
   // touches argv however long it is.
-  const briefPath = String(argument ?? "").trim();
+  const { briefPath, model, effort } = parseTransferArguments(argument);
   if (!briefPath) {
     return { ok: false, error: "transfer needs the path to a handoff brief file." };
   }
@@ -124,7 +148,12 @@ function transfer(argument) {
     return { ok: false, error: `Could not read the handoff brief: ${error.message}` };
   }
 
-  const run = runPrompt(renderPrompt("transfer", { BRIEF: brief }), { cwd, addDir: [cwd] });
+  const run = runPrompt(renderPrompt("transfer", { BRIEF: brief }), {
+    cwd,
+    addDir: [cwd],
+    model,
+    effort
+  });
   try {
     fs.rmSync(briefPath, { force: true });
   } catch {

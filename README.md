@@ -23,6 +23,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - **Google account for Antigravity sign-in.**
   - Delegations contribute to your Antigravity usage limits. Check them anytime with `/agy:quota`.
 - **Node.js 18 or later**
+- **git**, for the review commands. The companion script collects the diff itself, so a missing git is reported as `git is not installed or not on PATH` rather than an empty review.
 
 ## Install
 
@@ -67,6 +68,8 @@ On Windows (PowerShell):
 ```powershell
 irm https://antigravity.google/cli/install.ps1 | iex
 ```
+
+The plugin's own test suite runs on Windows as well as Linux in CI, including a check that it can actually execute the `.cmd` shims npm installs there.
 
 If agy is installed but not signed in yet, run it once interactively:
 
@@ -200,7 +203,7 @@ Afterwards, continue in a terminal with `agy --conversation <id>`, or from Claud
 
 ### `/agy:status`
 
-Shows active and recent background agy delegations in this session.
+Shows active and recent background agy work in this session. Two kinds appear, and both are listed: `agy:agy-rescue` subagent delegations from `/agy:rescue --background`, and backgrounded companion runs from `/agy:adversarial-review --background`, which are Claude Code background tasks rather than subagents.
 
 Examples:
 
@@ -217,7 +220,7 @@ Use it to:
 
 ### `/agy:result`
 
-Shows the stored final output of a finished background delegation, including the `conversation_id` so you can reopen that run with `/agy:continue` or `agy --conversation <id>`.
+Shows the stored final output of a finished background run, subagent delegation or companion review alike, including the `conversation_id` so you can reopen that run with `/agy:continue` or `agy --conversation <id>`.
 
 Examples:
 
@@ -240,6 +243,8 @@ Examples:
 ### `/agy:setup`
 
 Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, tool-exercising probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
+
+When a probe fails, the report says which of three things went wrong rather than assuming a login problem: a real authentication failure, a restricted environment where the invoking shell blocked a syscall agy needs, or an unknown cause. Only the first is fixed by signing in again.
 
 You can also use `/agy:setup` to manage the optional stop-review gate.
 

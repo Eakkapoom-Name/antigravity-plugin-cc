@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { read } from "./helpers.mjs";
+import { parseFrontmatter, read } from "./helpers.mjs";
 
 // Claude Code's own guidance writes the bang form with a space. The repository
 // used both spellings, which reads like two different commands.
@@ -41,4 +41,19 @@ test("the agy version claims do not drift apart", () => {
 test("an unverified version claim says it is unverified", () => {
   const source = read("skills/agy-result-handling/SKILL.md");
   assert.match(source, /agy 1\.1\.20; not re-checked since/);
+});
+
+// The README documented `/agy:transfer --model <model>` while the command had
+// quietly dropped it. A documented flag has to survive in the argument hint.
+test("the README does not document flags the commands no longer accept", () => {
+  const readme = read("README.md");
+  const transferExample = readme.match(/\/agy:transfer --(\w+)/g) ?? [];
+  const hint = parseFrontmatter(read("commands/transfer.md"))["argument-hint"];
+  for (const example of transferExample) {
+    const flag = example.split("--")[1];
+    assert.ok(
+      hint.includes(`--${flag}`),
+      `README shows /agy:transfer --${flag} but the command's argument-hint does not accept it`
+    );
+  }
 });

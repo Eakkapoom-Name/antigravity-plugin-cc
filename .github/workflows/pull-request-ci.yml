@@ -10,9 +10,16 @@ permissions:
 
 jobs:
   ci:
-    name: CI
-    runs-on: ubuntu-latest
+    name: CI (${{ matrix.os }})
+    # F4 was a suspicion for as long as CI only ran Linux: the spawn helper
+    # resolves .cmd shims through PATHEXT, and this leg is what proves it.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Check out repository
@@ -33,3 +40,4 @@ jobs:
       # mismatch instead of failing inside a test.
       - name: Check version metadata
         run: npm run check-version
+        if: runner.os == 'Linux'

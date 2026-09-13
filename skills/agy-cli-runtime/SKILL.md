@@ -27,7 +27,17 @@ Flag contract (verified against agy 1.2.2):
 - `--agent <name>`: select an agy-side agent. List with `agy agents`. Leave unset by default.
 - Never pass `--dangerously-skip-permissions` unless the user explicitly asked for it in this session.
 
-Result JSON shape (verified on agy 1.2.2):
+Flags that exist on 1.2.2 and are worth knowing:
+
+- `--input-format <text|stream-json>`: `stream-json` reads one NDJSON message per line from stdin and requires `--output-format stream-json`. The input line is `{"event":"user","message":{"role":"user","content":"..."}}`; the `event` key is required and a `type` key is rejected. This is how the companion script sends prompts, because argv is capped (2097152 bytes on a typical Linux box) and a branch diff can exceed it. `-p` still needs an argument in this mode, so it is passed as `-p=`.
+- `--json-schema <string or path>`: enforces structured output. For stream-json it applies to the final result. `/agy:adversarial-review` uses it so its review object is enforced rather than merely requested in prose.
+- `--mode <accept-edits|plan>`: `plan` is a second mode next to `accept-edits`. Unexplored here; it may be the supported way to ask for a plan without edits, instead of detecting a plan-shaped answer afterwards.
+- `--sandbox`: runs agy with terminal restrictions enabled. A plausible source of the environment failure `/agy:setup` classifies as `environment`.
+- `--disable-slash-commands`: turns off slash command and skill expansion in print mode. `/agy:quota` depends on that expansion, so this flag breaks it.
+
+Constraint worth remembering: slash commands are answered by the CLI itself and are **unavailable** under `--input-format stream-json`. agy says so explicitly. Anything needing `/usage` or another slash command must use the argv form with `--output-format json`.
+
+Result JSON shape (verified on agy 1.2.2). Under `--output-format stream-json` the terminal `{"event":"result","result":{...}}` carries this same object, plus an `error` field when it failed, which is why both transports feed the same result handling:
 
 ```json
 {

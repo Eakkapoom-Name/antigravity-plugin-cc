@@ -5,15 +5,18 @@
 // through the user's local `claude` CLI. Safe to rerun.
 
 import fs from "node:fs";
-import { spawnSync } from "node:child_process";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+import { runCommand } from "./lib/process.mjs";
 
 const MARKETPLACE = "Eakkapoom-Name/antigravity-plugin-cc";
 const PLUGIN = "agy@antigravity-plugin-cc";
 
 function run(args) {
-  const result = spawnSync("claude", args, { encoding: "utf8" });
+  // Resolved through PATH and PATHEXT so the claude.cmd shim npm installs on
+  // Windows is found; a bare spawn of "claude" cannot execute it.
+  const result = runCommand("claude", args, { encoding: "utf8" });
   return {
     ok: result.status === 0,
     enoent: result.error?.code === "ENOENT",
@@ -46,6 +49,10 @@ function main() {
       "The `claude` CLI was not found on PATH. Install Claude Code first: https://code.claude.com/docs"
     );
   }
+  // Kept for claude CLI releases where a duplicate add exits non-zero. On the
+  // version this was measured against, both duplicate cases exit 0, so this
+  // branch is unreachable there and the message below is what reports the
+  // no-op. Removing it would break older installs for no gain.
   if (!add.ok && !alreadyDone(add.output)) {
     fail(`Could not add the marketplace:\n${add.output}`);
   }

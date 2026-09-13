@@ -6,9 +6,9 @@
 
 import fs from "node:fs";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { resolveCommand, runCommand } from "./lib/process.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -24,9 +24,11 @@ function checkNode() {
 }
 
 function checkAgy() {
-  const which = spawnSync("which", ["agy"], { encoding: "utf8" });
-  const agyPath = which.status === 0 ? which.stdout.trim() : null;
-  const version = spawnSync("agy", ["--version"], {
+  // `which` is Unix-only, and it was the reason this check could not work on
+  // Windows at all. Resolving through PATH and PATHEXT covers both, and finds
+  // the .cmd shim npm installs on Windows.
+  const agyPath = resolveCommand("agy");
+  const version = runCommand("agy", ["--version"], {
     encoding: "utf8",
     timeout: 30 * 1000
   });
@@ -41,7 +43,9 @@ function checkAgy() {
 }
 
 function runProbe(prompt) {
-  const result = spawnSync(
+  // The setup probes stay on the argv transport: both prompts are short fixed
+  // literals, so there is no size risk, and this path is the one under test.
+  const result = runCommand(
     "agy",
     ["-p", prompt, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
     { encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }

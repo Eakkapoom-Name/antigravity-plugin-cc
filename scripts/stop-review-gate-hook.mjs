@@ -8,8 +8,7 @@
 
 import fs from "node:fs";
 import process from "node:process";
-import { spawnSync } from "node:child_process";
-
+import { runCommand } from "./lib/process.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
@@ -120,7 +119,7 @@ function runStopReview(cwd, input) {
   // agy started by a hook has no workspace of its own (its shell sits in the
   // agy scratch dir), so the project must be added explicitly or the reviewer
   // sees an empty workspace and allows everything.
-  const result = spawnSync(
+  const result = runCommand(
     "agy",
     ["-p", prompt, "--add-dir", cwd, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
     { cwd, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }

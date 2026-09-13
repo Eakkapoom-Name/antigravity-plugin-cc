@@ -28,7 +28,9 @@ Set the Bash tool timeout to 590000 ms.
 
 Background flow:
 
-- Run the same command with `run_in_background: true`. Then tell the user: "agy adversarial review started in the background. Check `/agy:status` for progress, `/agy:result` for the output." Do not wait or poll in this turn.
+- Run the same command with `run_in_background: true`. This is a Claude Code background *task*, not an `agy:agy-rescue` subagent, and the two are tracked differently.
+- Do not route the background path through the `agy:agy-rescue` subagent to make it look like a delegation. That subagent passes its task text as an argument, which is exactly the size limit this command avoids by letting the companion stream the diff on stdin.
+- Then tell the user: "agy adversarial review started in the background. Its output returns to this session when it finishes; `/agy:status` lists it alongside any subagent delegations." Do not wait or poll in this turn.
 
 The script collects the diff, renders the prompt, and passes the diff to agy on stdin, so size is not a constraint. It also passes `--json-schema` pointing at `schemas/review-output.schema.json`, so the structured shape is enforced by agy rather than only requested in the prompt.
 

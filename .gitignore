@@ -39,6 +39,7 @@ node_modules/
 
 # Local editor/backup scratch
 *.bak
+*.bak[0-9]
 
 # Per-project plugin settings written by /agy:setup gate; local, not committed
 .claude/agy.local.md

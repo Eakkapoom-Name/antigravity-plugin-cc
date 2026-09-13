@@ -60,10 +60,50 @@ export function commandAvailable(name, env = process.env) {
   return resolveCommand(name, env) !== null;
 }
 
+const WINDOWS_BATCH = /\.(cmd|bat)$/i;
+
+// Resolving the shim is only half the job: Windows cannot exec a .cmd or .bat
+// image at all, and since the fix for CVE-2024-27980 Node refuses to try,
+// throwing EINVAL. Such a file has to be handed to cmd.exe.
+//
+// cmd.exe is invoked explicitly rather than through `shell: true` because the
+// difference is what stays fixed. Here the interpreter and the command file are
+// decided by this function and only the arguments are quoted. With
+// `shell: true` the whole line, command included, would be assembled from
+// caller-supplied text.
+export function quoteForCmd(value) {
+  const text = String(value ?? "");
+  // Windows argument rules: backslashes are literal unless they precede a
+  // quote, where they must be doubled.
+  const escaped = text.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, "$1$1");
+  return `"${escaped}"`;
+}
+
+export function buildCmdInvocation(target, args, env = process.env) {
+  // /d skips AutoRun commands from the registry, /s fixes how the outer quotes
+  // around the whole command are parsed, /c runs it and exits.
+  return {
+    file: env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", `"${[target, ...args].map(quoteForCmd).join(" ")}"`]
+  };
+}
+
 // Spawns without a shell, always. When the command cannot be resolved the raw
 // name is passed through so the caller still gets a normal ENOENT result rather
 // than a different error shape from this layer.
 export function runCommand(name, args, options = {}) {
   const resolved = resolveCommand(name) ?? name;
+
+  if (process.platform === "win32" && WINDOWS_BATCH.test(resolved)) {
+    const invocation = buildCmdInvocation(resolved, args);
+    return spawnSync(invocation.file, invocation.args, {
+      ...options,
+      shell: false,
+      // The argument vector is already quoted for cmd.exe above; letting Node
+      // quote it again would double the escaping.
+      windowsVerbatimArguments: true
+    });
+  }
+
   return spawnSync(resolved, args, { ...options, shell: false });
 }

@@ -11,7 +11,12 @@ import {
   buildStreamInput,
   normalizeStreamOutput
 } from "../scripts/lib/agy.mjs";
-import { resolveCommand } from "../scripts/lib/process.mjs";
+import {
+  buildCmdInvocation,
+  quoteForCmd,
+  resolveCommand,
+  runCommand
+} from "../scripts/lib/process.mjs";
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
 import { parseReviewArguments } from "../scripts/agy-companion.mjs";
 import { ROOT } from "./helpers.mjs";
@@ -226,4 +231,55 @@ test("review arguments split into a scope and free-text focus", () => {
   });
   assert.deepEqual(parseReviewArguments(""), { scope: "", focus: "" });
   assert.deepEqual(parseReviewArguments("  main  "), { scope: "main", focus: "" });
+});
+
+// Resolving a Windows shim is only half the job. Windows cannot exec a .cmd
+// image, and Node refuses to try since the fix for CVE-2024-27980, so the file
+// has to reach cmd.exe. This ran green on Linux CI while being broken on
+// Windows, because nothing here actually executed a .cmd.
+test("a .cmd target is handed to cmd.exe rather than exec'd directly", () => {
+  const invocation = buildCmdInvocation("C:\\tools\\agy.cmd", ["--flag", "value"], {
+    ComSpec: "C:\\Windows\\system32\\cmd.exe"
+  });
+  assert.equal(invocation.file, "C:\\Windows\\system32\\cmd.exe");
+  assert.deepEqual(invocation.args.slice(0, 3), ["/d", "/s", "/c"]);
+  assert.match(invocation.args[3], /^".*"$/);
+  assert.ok(invocation.args[3].includes("agy.cmd"));
+});
+
+test("quoting survives spaces, quotes and trailing backslashes", () => {
+  assert.equal(quoteForCmd("plain"), '"plain"');
+  assert.equal(quoteForCmd("has space"), '"has space"');
+  assert.equal(quoteForCmd('say "hi"'), '"say \\"hi\\""');
+  // A trailing backslash before the closing quote would escape it, so they are
+  // doubled.
+  assert.equal(quoteForCmd("C:\\path\\"), '"C:\\path\\\\"');
+});
+
+// The real check. It only means anything on the Windows CI leg, which is the
+// whole reason that leg exists.
+test("a real .cmd executes and receives its arguments intact", { skip: process.platform !== "win32" }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cmd-"));
+  const shim = path.join(dir, "echoargs.cmd");
+  fs.writeFileSync(shim, "@echo off\r\necho ARG1=[%~1]\r\necho ARG2=[%~2]\r\n");
+
+  const result = runCommand(shim, ["plain value", "with space"], { encoding: "utf8" });
+  assert.equal(result.error, undefined, `spawning the .cmd failed: ${result.error?.code}`);
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /ARG1=\[plain value\]/);
+  assert.match(result.stdout, /ARG2=\[with space\]/);
+});
+
+test("a resolved .cmd on PATH is executable, not just findable", { skip: process.platform !== "win32" }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cmdpath-"));
+  fs.writeFileSync(path.join(dir, "faketool.cmd"), "@echo off\r\necho ran ok\r\n");
+  const previous = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${previous}`;
+  try {
+    const result = runCommand("faketool", [], { encoding: "utf8" });
+    assert.equal(result.error, undefined, `resolved but could not execute: ${result.error?.code}`);
+    assert.match(result.stdout, /ran ok/);
+  } finally {
+    process.env.PATH = previous;
+  }
 });

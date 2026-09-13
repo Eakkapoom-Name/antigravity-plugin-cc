@@ -11,7 +11,8 @@ Argument: `$ARGUMENTS`
 Target selection:
 
 - If an agent or task id was given, use that run.
-- If no argument was given, use the most recently finished `agy:agy-rescue` background run in this session.
+- If no argument was given, use the most recently finished background agy run in this session. That may be an `agy:agy-rescue` subagent or a backgrounded companion review from `/agy:adversarial-review --background`; both count.
+- A companion run returns the script's JSON, so read `result` out of it and present that. A subagent run returns agy's JSON directly.
 - If the target is still running, say so and point to `/agy:status`; do not wait or poll.
 - If no finished run exists, say so.
 

@@ -207,3 +207,23 @@ test("quota command keeps the argv form and refuses to spend quota on a retry", 
   assert.match(source, /slash commands are answered by the CLI itself/i);
   assert.match(source, /would spend quota/);
 });
+
+// A backgrounded /agy:adversarial-review is a Bash task, not an agy-rescue
+// subagent, so a status command that only calls ListAgents reports nothing and
+// the review looks like it never started.
+test("status and result cover both kinds of background run", () => {
+  for (const name of ["status.md", "result.md"]) {
+    const source = read(`commands/${name}`);
+    assert.match(source, /agy:agy-rescue/, `${name} does not mention subagent runs`);
+    assert.match(source, /companion/i, `${name} does not mention backgrounded companion runs`);
+  }
+  assert.match(read("commands/status.md"), /`ListAgents` will not list it/);
+});
+
+test("adversarial-review does not route its background path through the subagent", () => {
+  const source = read("commands/adversarial-review.md");
+  // The subagent passes task text as an argument, which is the size limit the
+  // companion exists to avoid.
+  assert.match(source, /Do not route the background path through the `agy:agy-rescue` subagent/);
+  assert.match(source, /run_in_background: true/);
+});

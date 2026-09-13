@@ -24,5 +24,7 @@ Operating rules:
 - The subagent is a thin forwarder only: one `Bash` call to `agy -p`, stdout returned as-is.
 - Present the result using the `agy-result-handling` skill. Do not silently rewrite agy's answer.
 - Always report the returned `conversation_id` so the user can resume with `--resume`.
-- If agy is missing or errors out immediately, stop and tell the user to run `/agy:setup`.
+- If the `Agent` call itself, or the text it returns, carries `denied by the Claude Code auto mode classifier`, agy never ran. Stop and report it as a host permission block, following the `agy-result-handling` skill: name `/permissions` as the reliable fix and rewording the task text as the cheaper first try. Do not send the user to `/agy:setup` for this, and do not relaunch the subagent, which is denied again.
+- If the response is a plan ending in a question and no files were touched, say the run made no edits and give the user the `/agy:continue <conversation_id> Yes, proceed.` follow-up, per the `agy-result-handling` skill.
+- If agy itself is missing or errors out immediately, stop and tell the user to run `/agy:setup`. This covers agy's own failures only, not a Claude Code denial.
 - If the user did not supply a request, ask what agy should investigate or fix.

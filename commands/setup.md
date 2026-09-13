@@ -39,7 +39,7 @@ The script runs every check itself (agy on PATH, an auth probe, a tool-exercisin
 
 Present the final report to the user:
 
-- If `ready` is true, report the agy version, both probe round-trip times, that delegation via `/agy:rescue` is ready, and the gate state.
+- If `ready` is true, report the agy version, both probe round-trip times, that delegation via `/agy:rescue` is ready, and the gate state. Add one line for auto mode sessions: a ready agy can still have its `/agy:rescue` launch refused by Claude Code's own auto mode classifier, one layer before agy runs, and the remedy for that is `/permissions`, not this command.
 - If `agy.available` is false, tell the user to install the Antigravity CLI; do not guess an install command, point them to the official Antigravity documentation.
 - If `auth.available` is false, quote `auth.detail`, then branch on `auth.failureKind`. These are three different problems and only one of them is a login problem, so do not offer the sign-in fix for all three:
   - `environment`: say plainly that this is not a login failure and that the user's credentials are fine. The shell that ran the probe blocked a syscall agy needs, usually a sandbox refusing its local loopback listener (`listen tcp 127.0.0.1:0: socket: operation not permitted`). Relay the `nextSteps` guidance to rerun from an unrestricted terminal.

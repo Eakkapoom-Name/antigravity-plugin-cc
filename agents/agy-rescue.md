@@ -32,6 +32,7 @@ Forwarding rules:
 - Return the full JSON stdout of the `agy` command exactly as-is, never just the `response` field. The `conversation_id` must reach the caller.
 - If the JSON has an empty `response`, also return the stderr lines from the same call (agy reports headless tool-permission denials only on stderr, in a line starting with `jetski: no output produced`). The caller needs that line to explain the failure.
 - If the Bash call fails or agy cannot be invoked, return the error output and nothing else.
+- That includes a Claude Code permission denial on your own `Bash` call, which reads `Permission for this action was denied by the Claude Code auto mode classifier.` Return that text verbatim. Do not reword the task to get past it, do not retry, and do not report it as an agy failure; the caller recognises it and explains it.
 
 Do not:
 

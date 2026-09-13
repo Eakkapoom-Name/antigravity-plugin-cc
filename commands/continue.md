@@ -28,5 +28,6 @@ Operating rules:
 - The subagent is a thin forwarder only: one `Bash` call to `agy -p`, stdout returned as-is.
 - Present the result using the `agy-result-handling` skill. Do not silently rewrite agy's answer.
 - Always report the returned `conversation_id` so the user can keep the thread going with another `/agy:continue`.
-- If agy is missing or errors out immediately, stop and tell the user to run `/agy:setup`.
+- If the `Agent` call itself, or the text it returns, carries `denied by the Claude Code auto mode classifier`, agy never ran. Stop and report it as a host permission block, following the `agy-result-handling` skill: name `/permissions` as the reliable fix and rewording the follow-up text as the cheaper first try. Approving a plan is a common reason to reach this command, and an approval relaunch is exactly what has been denied before, so expect it here.
+- If agy itself is missing or errors out immediately, stop and tell the user to run `/agy:setup`. This covers agy's own failures only, not a Claude Code denial.
 - If the user supplied no follow-up text (or only a conversation id), ask what agy should do next in that conversation.

@@ -125,7 +125,36 @@ for (const name of ["rescue.md", "continue.md"]) {
     assert.match(source, /not a skill/i);
     assert.match(source, /Do not call it through the `Skill` tool/);
   });
+
+  test(`${name} separates a Claude Code denial from an agy failure`, () => {
+    const source = read(`commands/${name}`);
+    assert.match(source, /denied by the Claude Code auto mode classifier/);
+    assert.match(source, /`\/permissions`/);
+    // The setup branch used to swallow this case, since a denial is an
+    // immediate error. It has to be scoped to agy's own failures now.
+    assert.match(source, /agy itself is missing or errors out immediately/);
+    assert.match(source, /not a Claude Code denial/);
+  });
 }
+
+test("rescue command points a plan-only run at the continue command", () => {
+  const source = read("commands/rescue.md");
+  assert.match(source, /plan ending in a question/);
+  assert.match(source, /no edits/);
+  assert.match(source, /\/agy:continue <conversation_id>/);
+});
+
+test("rescue agent returns a Claude Code denial verbatim without retrying", () => {
+  const source = read("agents/agy-rescue.md");
+  assert.match(source, /denied by the Claude Code auto mode classifier/);
+  assert.match(source, /Do not reword the task to get past it, do not retry/);
+});
+
+test("setup command warns that a ready agy can still be denied in auto mode", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /auto mode classifier/);
+  assert.match(source, /`\/permissions`, not this command/);
+});
 
 test("quota command runs exactly one agy call", () => {
   const source = read("commands/quota.md");

@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `permissions.allow` block, warns that `command(*)` grants every terminal
   command, and says the narrow form is unverified on this agy version so the
   exact target belongs to agy's own denial line.
+- A `/agy:rescue` or `/agy:continue` launch refused by Claude Code's own auto
+  mode classifier is now reported as a host permission block rather than an agy
+  failure. The refusal lands one layer before agy runs, so there is no JSON and
+  no `conversation_id`, and the old advice to run `/agy:setup` sent the user to
+  a check that passes. The remedies are `/permissions`, which has worked every
+  reported time, and rewording the task text, which is cheaper but has failed
+  before.
+- A write-capable run that answers with a plan ending in a question, such as
+  `Proceed with implementation?`, is no longer presented as a finished task. It
+  touched no files, so the result now says so and hands over the
+  `/agy:continue <conversation_id> Yes, proceed.` follow-up. Pre-approving the
+  plan inside the original task text is called out as the wrong fix, since that
+  phrasing is what trips the classifier above.
 
 ## [0.6.2] - 2026-08-30
 

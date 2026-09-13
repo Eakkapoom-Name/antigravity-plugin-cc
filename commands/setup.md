@@ -6,20 +6,16 @@ allowed-tools: Bash(node:*), Read, Write, Edit
 
 If $ARGUMENTS starts with `gate`, manage the stop-review gate and skip the readiness check:
 
-- The gate is a Stop hook that hands the previous Claude turn to a read-only agy review before the session is allowed to end. It is off by default and per project.
-- The toggle lives in `.claude/agy.local.md` in the project root, as `stop_review_gate: true` (or `false`) in the YAML frontmatter. Create the file if missing:
-
-```markdown
----
-stop_review_gate: true
----
-
-Local agy plugin settings for this project. Not meant to be committed.
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" gate "<on|off|status>"
 ```
 
-- `gate on`: set `stop_review_gate: true`. Warn the user that ending a turn can now take up to the agy review round-trip, and that the review only blocks when the previous turn made code changes with unresolved issues.
-- `gate off`: set `stop_review_gate: false`.
-- `gate status` (or bare `gate`): report the current value, or "off (no settings file)".
+- The gate is a Stop hook that hands the previous Claude turn to a read-only agy review before the session is allowed to end. It is off by default and per workspace.
+- The flag is stored outside the repository, keyed by a hash of the workspace root, so it is no longer a file you can accidentally commit. The script reports the exact `stateFile` it wrote.
+- A gate enabled under the old `.claude/agy.local.md` file is still honoured until you set it through this command; after that, the stored value wins.
+- `gate off`: turn the gate off for this workspace.
+- `gate on`: warn the user that ending a turn can now take up to the agy review round-trip, and that the review only blocks when the previous turn made code changes with unresolved issues.
+- `gate status` (or bare `gate`): report `enabled` and the `workspace` it applies to.
 
 Otherwise check agy readiness. Run:
 
@@ -34,7 +30,7 @@ The script runs every check itself (agy on PATH, an auth probe, a tool-exercisin
 - `ready`: true only when `agy`, `auth`, and `toolPermissions` are all available.
 - `agy` / `auth` / `toolPermissions`: each has `available` and a `detail` line; probe sections also carry `durationSeconds`. On failure, `detail` quotes the decisive stderr line when there is one.
 - `auth.failureKind`: why the auth probe failed, or `null` when it passed. One of `environment` (the invoking shell blocked a syscall agy needs, typically a sandbox refusing its loopback listener), `auth` (a real sign-in problem), or `unknown` (the stderr named no cause). Never guess a remedy from `detail` alone; branch on this field.
-- `reviewGateEnabled`: current stop-review gate state.
+- `reviewGateEnabled`: current stop-review gate state, read from the same stored state the Stop hook reads, resolved from the same workspace root. The two can no longer disagree when the session sits in a subdirectory.
 - `nextSteps`: the remediation or optional follow-up commands to relay.
 
 Present the final report to the user:

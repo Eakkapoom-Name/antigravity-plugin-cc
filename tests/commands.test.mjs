@@ -62,39 +62,31 @@ for (const name of COMMANDS) {
   });
 }
 
-// Commands that stage a brief or a diff in a temp file, feed it to agy through
-// `$(cat ...)`, and delete it afterwards. Derived from the bodies rather than
-// hardcoded, so a command that grows a temp-file step is caught rather than
-// silently skipped.
-const TEMP_FILE_COMMANDS = COMMANDS.filter((name) =>
-  /temp (?:brief |diff )?file/i.test(read(`commands/${name}`))
-);
-
-test("the commands with temp file steps are the ones expected", () => {
-  // Equality in both directions: a new one must be added deliberately, and a
-  // step removed from an existing one must not go unnoticed either.
-  assert.deepEqual(TEMP_FILE_COMMANDS, [
-    "adversarial-review.md",
-    "review.md",
-    "transfer.md"
-  ]);
+// After the companion port only /agy:transfer still writes a file model-side,
+// because the handoff brief summarizes a conversation the script cannot see.
+// It hands the script a path, so the brief never reaches a command line.
+test("transfer writes its brief with the Write tool and passes only a path", () => {
+  const fields = parseFrontmatter(read("commands/transfer.md"));
+  const source = read("commands/transfer.md");
+  const tools = fields["allowed-tools"].split(",").map((entry) => entry.trim());
+  assert.ok(tools.includes("Write"), "transfer.md writes a brief but does not grant Write");
+  assert.match(source, /Pass the script the \*\*path\*\*, never the brief text/);
+  assert.match(source, /agy-companion\.mjs" transfer/);
 });
 
-for (const name of TEMP_FILE_COMMANDS) {
-  test(`${name} grants the tools its temp file steps actually need`, () => {
+// The old shape: every command shelled out to agy itself, so each needed its own
+// agy, git, cat and rm grants. The companion owns those calls now, so a command
+// that still grants Bash(agy:*) is reaching around it.
+for (const name of ["review.md", "adversarial-review.md", "transfer.md", "quota.md"]) {
+  test(`${name} goes through the companion rather than calling agy itself`, () => {
     const fields = parseFrontmatter(read(`commands/${name}`));
-    const tools = fields["allowed-tools"].split(",").map((entry) => entry.trim());
-    assert.ok(tools.includes("Write"), `${name} writes a temp file but does not grant Write`);
+    const source = read(`commands/${name}`);
     assert.ok(
-      tools.some((tool) => /^Bash\(rm:/.test(tool)),
-      `${name} deletes its temp file but grants no scoped rm`
+      !fields["allowed-tools"].includes("Bash(agy:"),
+      `${name} still grants Bash(agy:*); the companion runs agy now`
     );
-    // The brief or diff reaches agy through a `$(cat <file>)` substitution
-    // inside the agy command line, so cat is part of the call, not incidental.
-    assert.ok(
-      tools.some((tool) => /^Bash\(cat:/.test(tool)),
-      `${name} interpolates its temp file with cat but grants no scoped cat`
-    );
+    assert.match(fields["allowed-tools"], /Bash\(node:\*\)/);
+    assert.match(source, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/agy-companion\.mjs/);
   });
 }
 
@@ -134,13 +126,19 @@ test("setup command keeps the permission guidance honest", () => {
   assert.match(source, /never tell the user to sign in again/i);
 });
 
-test("setup command documents the gate toggle contract", () => {
+test("setup command routes the gate toggle through the companion", () => {
   const source = read("commands/setup.md");
-  assert.match(source, /\.claude\/agy\.local\.md/);
-  assert.match(source, /stop_review_gate:\s*true/);
+  assert.match(source, /agy-companion\.mjs" gate/);
   assert.match(source, /gate on/);
   assert.match(source, /gate off/);
   assert.match(source, /gate status/);
+  // The flag left the repository, so the command must not tell users to edit a
+  // file in their project any more.
+  assert.ok(
+    !/Create the file if missing/.test(source),
+    "setup.md still instructs the model to write the in-repository settings file"
+  );
+  assert.match(source, /stored outside the repository/);
 });
 
 for (const name of ["review.md", "adversarial-review.md"]) {
@@ -149,8 +147,6 @@ for (const name of ["review.md", "adversarial-review.md"]) {
     assert.match(source, /read-only/i);
     assert.match(source, /STOP/);
     assert.match(source, /before touching a single file/i);
-    // A review must never hand agy a write mode.
-    assert.match(source, /no `--mode` flag/);
   });
 }
 
@@ -204,7 +200,10 @@ test("setup command warns that a ready agy can still be denied in auto mode", ()
   assert.match(source, /`\/permissions`, not this command/);
 });
 
-test("quota command runs exactly one agy call", () => {
+test("quota command keeps the argv form and refuses to spend quota on a retry", () => {
   const source = read("commands/quota.md");
-  assert.match(source, /Run exactly one command/);
+  // Slash commands are answered by the CLI itself and are unavailable under
+  // --input-format stream-json, so this one call stays on the classic form.
+  assert.match(source, /slash commands are answered by the CLI itself/i);
+  assert.match(source, /would spend quota/);
 });

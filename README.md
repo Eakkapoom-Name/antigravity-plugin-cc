@@ -332,7 +332,7 @@ Either way, the result comes back with a `conversation_id`, so the thread stays 
 
 Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately.
 
-- Toggle per project with `/agy:setup gate on` / `gate off`; state lives in `.claude/agy.local.md` (`stop_review_gate: true`).
+- Toggle per workspace with `/agy:setup gate on` / `gate off`. The flag is stored outside the repository, under `CLAUDE_PLUGIN_DATA` and keyed by a hash of the workspace root, so there is nothing in your project to commit by mistake. A gate enabled under the older in-repository `.claude/agy.local.md` is still honoured until you set it through the command.
 - If agy is missing, the gate skips with a note instead of blocking.
 - Review failures and timeouts block with guidance to run `/agy:review` manually or turn the gate off.
 
@@ -364,15 +364,30 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   └── transfer.md
 ├── hooks/
 │   └── hooks.json                     Stop hook wiring for the stop-review gate
+├── prompts/
+│   ├── adversarial-review.md          challenge-review prompt
+│   ├── review.md                      code-review prompt
+│   ├── stop-review-gate.md            stop-gate prompt
+│   └── transfer.md                    session handoff prompt
 ├── schemas/
 │   └── review-output.schema.json      adversarial review output shape
 ├── scripts/
+│   ├── lib/
+│   │   ├── agy.mjs                    agy invocation and result normalizing
+│   │   ├── git.mjs                    diff collection
+│   │   ├── process.mjs                spawn without a shell, Windows shims
+│   │   ├── prompts.mjs                prompt loader
+│   │   ├── state.mjs                  per-workspace state
+│   │   └── workspace.mjs              repository root resolution
+│   ├── agy-companion.mjs              review, transfer, quota, gate subcommands
 │   ├── agy-setup.mjs                  /agy:setup readiness report
+│   ├── bump-version.mjs               version metadata check and bump
 │   ├── npx-install.mjs                npx agy-plugin-cc installer
 │   └── stop-review-gate-hook.mjs      stop-review gate (dependency-free node)
 ├── skills/
 │   ├── agy-cli-runtime/               CLI call contract
 │   └── agy-result-handling/           output presentation rules
+├── tests/                             node --test suite, run with npm test
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md

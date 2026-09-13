@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/agy-companion.mjs`, a companion script that owns the deterministic
+  half of the plugin: diff collection, prompt construction, the agy call, and
+  result normalizing, behind `review`, `adversarial-review`, `transfer`,
+  `quota`, and `gate` subcommands. The commands that used to spell that work out
+  as prose now call it, so the behaviour can be tested rather than only the
+  wording. `/agy:status`, `/agy:result`, and `/agy:cancel` are deliberately
+  unchanged: this plugin keeps no job store by design, and those three
+  orchestrate Claude Code's own background tasks.
+- `scripts/bump-version.mjs` with a `--check` mode, wired into CI as
+  `npm run check-version`. A release is now one command that sets
+  `package.json`, `.claude-plugin/plugin.json`, and the CHANGELOG heading
+  together, instead of three hand edits that can drift.
+- Prompts live in `prompts/` and are loaded through `scripts/lib/prompts.mjs`,
+  which fails loudly when a placeholder is missing or unused rather than
+  shipping a literal `{{REPO_ROOT}}` to the model.
+- CI runs on `windows-latest` as well as `ubuntu-latest`. Windows support was a
+  suspicion for as long as CI only ran Linux; this leg is what turns it into a
+  result.
+- `.claude-plugin/plugin.json` carries `homepage`, `repository`, `license`, and
+  `keywords`.
+
 ### Fixed
 
 - `/agy:setup` no longer reports a restricted execution environment as a login
@@ -27,14 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a check that passes. The remedies are `/permissions`, which has worked every
   reported time, and rewording the task text, which is cheaper but has failed
   before.
-- `/agy:transfer`, `/agy:review`, and `/agy:adversarial-review` now grant the
-  tools their own steps need. Each one writes a brief or a diff to a temp file,
-  feeds it to agy, and deletes it afterwards, but none of them granted `Write`
-  or any form of `rm`; `/agy:transfer` granted only `Bash(agy:*)`. They now also
-  grant `Bash(cat:*)`, since the file reaches agy through a `$(cat <file>)`
-  substitution inside the agy command line. The suite asserts these grants for
-  every command whose body has a temp file step, a check that was held back
-  until the grants existed.
+- `/agy:transfer`, `/agy:review`, and `/agy:adversarial-review` no longer rely
+  on tool access they never declared. Each used to write a brief or a diff to a
+  temp file, read it back into an agy command line, and delete it, while
+  granting none of `Write`, `cat`, or `rm`; `/agy:transfer` granted only
+  `Bash(agy:*)`. The companion does that work now, so the two reviews write no
+  files at all and `/agy:transfer` declares the `Write` it uses for the one file
+  a script cannot produce.
 - The npx installer no longer treats any output containing the word "already"
   as a successful no-op. A genuine failure whose message happened to include it,
   such as "this error was already reported upstream", was reported as a rerun.
@@ -44,6 +66,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   changed and it printed "Marketplace added." either way.
 - `scripts/npx-install.mjs` only installs when invoked as a script, so importing
   it for tests no longer shells out to the `claude` CLI.
+- Large diffs no longer fail opaquely. The whole diff used to be interpolated
+  into the agy command line, which exceeds `ARG_MAX` (2097152 bytes on a typical
+  Linux box) and dies with `Argument list too long`. Diffs now reach agy on
+  stdin through `--input-format stream-json`, verified with a 7617893 byte diff
+  that passes as 9 arguments. The terminal `result` event carries the same
+  object `--output-format json` produces, so result handling is unchanged.
+- `/agy:setup` and the stop-review gate can no longer disagree about whether the
+  gate is on. Both now resolve the workspace root the same way and read the same
+  stored state, instead of one reading `input.cwd` and the other
+  `CLAUDE_PROJECT_DIR`, which differ when the session sits in a subdirectory.
+- Commands resolve `agy`, `claude`, and `git` through `PATH` and `PATHEXT`
+  rather than spawning a bare name, so the `.cmd` shims npm installs on Windows
+  are found. The Unix-only `which` call is gone. Spawning still never uses a
+  shell: these commands are handed prompt text and diffs, and a shell would turn
+  that data into syntax.
+- The npx installer ships `scripts/lib/process.mjs` alongside itself, which it
+  now imports. Without it `npx agy-plugin-cc` would fail on a missing module.
 - A write-capable run that answers with a plan ending in a question, such as
   `Proceed with implementation?`, is no longer presented as a finished task. It
   touched no files, so the result now says so and hands over the
@@ -61,6 +100,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `README.md` writes `! agy` with a space, matching the rest of the
   documentation; `/agy:rescue` and `/agy:continue` drop a `Bash(agy:*)` grant
   neither of them uses, since both delegate only through the `Agent` tool.
+- The stop-review gate flag moved out of the repository. It lives under
+  `CLAUDE_PLUGIN_DATA`, keyed by a hash of the workspace root and namespaced to
+  this plugin, with a temp-directory fallback when the variable is unset. A gate
+  enabled under the old `.claude/agy.local.md` is still honoured until it is set
+  through `/agy:setup gate`, so upgrading does not silently disable it.
+- `/agy:review`, `/agy:adversarial-review`, `/agy:transfer`, and `/agy:quota`
+  grant `Bash(node:*)` and call the companion, replacing the per-command `agy`,
+  `git`, `cat`, and `rm` grants they carried before. `/agy:adversarial-review`
+  passes `--json-schema`, so its review object is enforced by agy rather than
+  requested in prose.
+- The runtime contract documents `--input-format`, `--json-schema`,
+  `--mode plan`, `--sandbox`, and `--disable-slash-commands`, along with the
+  constraint that slash commands are unavailable under stream-json input, which
+  is why `/agy:quota` keeps the argv form.
+- `npm test` runs `node --test` with no shell glob, so the suite runs on Windows
+  as well as Linux.
 
 ## [0.6.2] - 2026-08-30
 

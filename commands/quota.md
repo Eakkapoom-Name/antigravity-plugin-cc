@@ -11,7 +11,7 @@ Run exactly one command:
 agy -p "/usage" --output-format json
 ```
 
-This is a print-mode slash command: it answers instantly, spends no quota, and leaves no conversation behind (verified on agy 1.1.20).
+This is a print-mode slash command: it answers instantly, spends no quota, and leaves no conversation behind (verified on agy 1.2.2).
 
 Parsing:
 

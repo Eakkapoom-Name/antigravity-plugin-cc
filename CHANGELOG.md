@@ -35,13 +35,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   substitution inside the agy command line. The suite asserts these grants for
   every command whose body has a temp file step, a check that was held back
   until the grants existed.
-
+- The npx installer no longer treats any output containing the word "already"
+  as a successful no-op. A genuine failure whose message happened to include it,
+  such as "this error was already reported upstream", was reported as a rerun.
+  Detection now matches the shape of a no-op, checked against the two messages
+  the `claude` CLI actually prints. The installer also reports a rerun honestly:
+  both duplicate cases exit 0, so the exit status never said whether anything
+  changed and it printed "Marketplace added." either way.
+- `scripts/npx-install.mjs` only installs when invoked as a script, so importing
+  it for tests no longer shells out to the `claude` CLI.
 - A write-capable run that answers with a plan ending in a question, such as
   `Proceed with implementation?`, is no longer presented as a finished task. It
   touched no files, so the result now says so and hands over the
   `/agy:continue <conversation_id> Yes, proceed.` follow-up. Pre-approving the
   plan inside the original task text is called out as the wrong fix, since that
   phrasing is what trips the classifier above.
+
+### Changed
+
+- The agy flag contract, the result JSON shape, and the print-mode slash command
+  list are re-verified against agy 1.2.2, replacing claims that had stood since
+  1.1.20. Every documented flag still exists and `--print-timeout` still
+  defaults to 5m. The one claim that could not be re-probed, the headless
+  permission denial text, keeps its 1.1.20 attribution and now says why.
+- `README.md` writes `! agy` with a space, matching the rest of the
+  documentation; `/agy:rescue` and `/agy:continue` drop a `Bash(agy:*)` grant
+  neither of them uses, since both delegate only through the `Agent` tool.
 
 ## [0.6.2] - 2026-08-30
 

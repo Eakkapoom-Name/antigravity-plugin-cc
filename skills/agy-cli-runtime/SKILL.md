@@ -14,7 +14,7 @@ Base invocation:
 agy -p "<task text>" --output-format json --print-timeout 9m
 ```
 
-Flag contract (verified against agy 1.1.20):
+Flag contract (verified against agy 1.2.2):
 
 - `-p` / `--print`: run one prompt non-interactively and print the response.
 - `--output-format json`: single JSON result object on stdout.
@@ -27,7 +27,7 @@ Flag contract (verified against agy 1.1.20):
 - `--agent <name>`: select an agy-side agent. List with `agy agents`. Leave unset by default.
 - Never pass `--dangerously-skip-permissions` unless the user explicitly asked for it in this session.
 
-Result JSON shape (verified on agy 1.1.20):
+Result JSON shape (verified on agy 1.2.2):
 
 ```json
 {
@@ -40,7 +40,7 @@ Result JSON shape (verified on agy 1.1.20):
 }
 ```
 
-Print-mode slash commands (verified on agy 1.1.20): `agy -p "/usage" --output-format json` (also `/help`, `/changelog`, `/permissions`, `/hooks`, `/config`) answers instantly with a structured payload under a top-level `command` object, spends no quota, and leaves no conversation behind. Detect support by checking that `command.name` matches the requested command; older agy versions treat the text as a normal prompt.
+Print-mode slash commands (verified on agy 1.2.2): `agy -p "/usage" --output-format json` (also `/help`, `/changelog`, `/permissions`, `/hooks`, `/config`) answers instantly with a structured payload under a top-level `command` object, spends no quota, and leaves no conversation behind. Detect support by checking that `command.name` matches the requested command; older agy versions treat the text as a normal prompt.
 
 Rules:
 

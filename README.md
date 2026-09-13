@@ -71,7 +71,7 @@ irm https://antigravity.google/cli/install.ps1 | iex
 If agy is installed but not signed in yet, run it once interactively:
 
 ```bash
-!agy
+! agy
 ```
 
 After install, you should see:
@@ -385,7 +385,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 
 If you are already signed into agy on this machine, that account works immediately here too. This plugin uses your local Antigravity CLI authentication.
 
-If you have not used Antigravity yet, [install the CLI](#install) and run `!agy` once to sign in with your Google account, then run [`/agy:setup`](#agysetup) to confirm everything is ready.
+If you have not used Antigravity yet, [install the CLI](#install) and run `! agy` once to sign in with your Google account, then run [`/agy:setup`](#agysetup) to confirm everything is ready.
 
 ### Does the plugin use a separate Antigravity runtime?
 

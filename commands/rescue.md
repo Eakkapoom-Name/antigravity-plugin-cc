@@ -1,7 +1,7 @@
 ---
 description: Delegate investigation, an explicit fix request, or follow-up work to the Antigravity (agy) rescue subagent
 argument-hint: "[--background|--wait] [--resume|--fresh] [--model <model>] [--effort <low|medium|high>] [what agy should investigate, solve, or continue]"
-allowed-tools: Bash(agy:*), AskUserQuestion, Agent
+allowed-tools: AskUserQuestion, Agent
 ---
 
 Invoke the `agy:agy-rescue` subagent via the `Agent` tool (`subagent_type: "agy:agy-rescue"`), forwarding the raw user request as the prompt.

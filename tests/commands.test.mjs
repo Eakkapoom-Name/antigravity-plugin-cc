@@ -162,6 +162,18 @@ for (const name of ["rescue.md", "continue.md"]) {
     assert.match(source, /Do not call it through the `Skill` tool/);
   });
 
+  test(`${name} grants no agy access it never uses`, () => {
+    const fields = parseFrontmatter(read(`commands/${name}`));
+    const source = read(`commands/${name}`);
+    // Both commands delegate through the Agent tool only; neither runs agy
+    // itself, so a Bash(agy:*) grant here is unused authority.
+    assert.ok(
+      !fields["allowed-tools"].includes("Bash(agy:"),
+      `${name} grants Bash(agy:*) but delegates only through the Agent tool`
+    );
+    assert.match(source, /subagent_type:\s*"agy:agy-rescue"/);
+  });
+
   test(`${name} separates a Claude Code denial from an agy failure`, () => {
     const source = read(`commands/${name}`);
     assert.match(source, /denied by the Claude Code auto mode classifier/);

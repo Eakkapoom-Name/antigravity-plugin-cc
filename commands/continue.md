@@ -1,7 +1,7 @@
 ---
 description: Send a follow-up into an existing agy conversation instead of starting a new one
 argument-hint: "[conversation-id] [--background|--wait] [--model <model>] [--effort <low|medium|high>] <follow-up for agy>"
-allowed-tools: Bash(agy:*), AskUserQuestion, Agent
+allowed-tools: AskUserQuestion, Agent
 ---
 
 Invoke the `agy:agy-rescue` subagent via the `Agent` tool (`subagent_type: "agy:agy-rescue"`), forwarding the follow-up as a continuation of an existing agy conversation.

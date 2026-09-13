@@ -4,5 +4,16 @@
   "description": "Use Google Antigravity CLI (agy) from Claude Code to delegate tasks or review code.",
   "author": {
     "name": "toaster"
-  }
+  },
+  "homepage": "https://github.com/Eakkapoom-Name/antigravity-plugin-cc",
+  "repository": "https://github.com/Eakkapoom-Name/antigravity-plugin-cc",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "claude-code-plugin",
+    "antigravity",
+    "agy",
+    "code-review",
+    "delegation"
+  ]
 }

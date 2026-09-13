@@ -26,6 +26,7 @@
   "author": "toaster",
   "license": "MIT",
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "check-version": "node scripts/bump-version.mjs --check"
   }
 }

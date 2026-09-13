@@ -27,3 +27,9 @@ jobs:
       # install; the suite only reads the repository and parses its scripts.
       - name: Run test suite
         run: npm test
+
+      # package.json, .claude-plugin/plugin.json, and the CHANGELOG heading have
+      # to agree. The suite asserts it too, but a standalone step names the
+      # mismatch instead of failing inside a test.
+      - name: Check version metadata
+        run: npm run check-version

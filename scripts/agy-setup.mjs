@@ -23,13 +23,14 @@ const AUTH_PROBE_PROMPT = "Reply with exactly: OK";
 const TOOL_PROBE_PROMPT =
   "Use your terminal command tool to run 'pwd' and reply with exactly its output.";
 // The read probe plants a nonce in a file inside the workspace root and asks
-// agy to read it back, which is what every rescue does first. Whether that is
-// permitted depends on `toolPermission`, not on workspace membership: measured
-// on agy 1.2.4 with an empty allow-list, `always-proceed` allowed it,
-// `request-review` allowed it only inside the workspace, and `strict` denied it
-// outright. An earlier version of this comment claimed in-workspace reads
-// always pass without a rule; that was true only because this machine runs
-// `always-proceed`, and issue #21 disproved it.
+// agy to read it back, which is what every rescue does first. Measured on agy
+// 1.2.4 with an empty allow-list, through the denial harness: this read passed
+// under `always-proceed`, `request-review`, `proceed-in-sandbox` and an
+// unrecognised mode, with the workspace trusted and untrusted alike.
+// Only `strict` denied it. Issue #21 reported it denied under `request-review` on a
+// machine that differs from ours in some way we have not found, so the probe
+// stays: it measures the machine it runs on rather than predicting from the
+// mode.
 function readProbePrompt(filePath) {
   return `Use your file viewing tool to read the file ${filePath} and reply with exactly its first line. Do not use the terminal command tool.`;
 }
@@ -298,7 +299,8 @@ export function evaluateReadProbe(probe, nonce) {
 //
 // Behaviour per mode, measured on agy 1.2.4 with an empty allow-list:
 //   always-proceed     everything approved, unsandboxed, including outside the workspace
-//   request-review     reads and commands denied; file writes were NOT denied
+//   request-review     commands denied; an in-workspace read was allowed;
+//                      file writes were NOT denied
 //   proceed-in-sandbox commands denied unless --sandbox is passed, which this plugin does not pass
 //   strict             denied even for a read inside the workspace
 export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
@@ -317,7 +319,7 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
     );
   } else if (mode === "request-review") {
     parts.push(
-      'Your `toolPermission` is `request-review`, agy\'s default. It gates reads and commands headlessly, where there is nobody to ask, so they are refused. File writes were not gated. Either add the rules below, or switch the mode to `always-proceed`.'
+      'Your `toolPermission` is `request-review`, agy\'s default. Measured on agy 1.2.4 with no allow-rules: commands were refused, a read of a file inside the workspace was allowed, and file writes were not gated. GitHub issue #21 reported an in-workspace read refused on this same default, on a machine that differs from ours in some way we have not identified, so do not count on reads passing. Either add the rules below, or switch the mode to `always-proceed`.'
     );
   }
 

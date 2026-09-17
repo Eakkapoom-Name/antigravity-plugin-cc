@@ -344,3 +344,32 @@ test("every remedy still says the edit is the user's manual step", () => {
     assert.match(step, /auto mode/, `${mode} remedy dropped the classifier warning`);
   }
 });
+
+// F24. The first full run of the denial harness contradicted what 0.6.5 was
+// about to ship: under `request-review` with an empty allow-list, the command
+// probe was denied and the in-workspace read probe passed, three runs out of
+// three, trusted workspace or not. Only `strict` denied an in-workspace read.
+test("the remedy for request-review reports the measured split, not a blanket read denial", () => {
+  const step = permissionNextStep(["command"], "request-review");
+  assert.match(step, /commands were refused/i);
+  assert.match(step, /inside the workspace was allowed/i);
+  assert.ok(
+    !/gates reads and commands/i.test(step),
+    "the request-review remedy still claims the mode refuses reads"
+  );
+});
+
+// F24, same overclaim four lines from the one already fixed: the comment above
+// the read probe blamed `always-proceed` for the read passing here. The harness
+// showed it passing under every mode but `strict`.
+test("the read probe comment does not blame always-proceed for a passing read", () => {
+  const source = fs.readFileSync(
+    new URL("../scripts/agy-setup.mjs", import.meta.url),
+    "utf8"
+  );
+  assert.ok(
+    !/true only because this machine runs/.test(source),
+    "the read probe comment still says always-proceed is why the read passed"
+  );
+  assert.match(source, /Only `strict` denied it/);
+});

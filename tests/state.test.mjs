@@ -16,6 +16,7 @@ import {
   setGate
 } from "../scripts/lib/state.mjs";
 import { resolveWorkspaceRoot } from "../scripts/lib/workspace.mjs";
+import { main } from "../scripts/agy-companion.mjs";
 
 // Each test gets its own CLAUDE_PLUGIN_DATA so nothing touches real state and
 // the tests cannot see each other's writes.
@@ -189,5 +190,29 @@ test("a legacy file without the flag, or without frontmatter, reads as unset", (
 
     fs.writeFileSync(file, "---\nstop_review_gate: false\n---\n");
     assert.equal(readLegacyGate(root), false);
+  });
+});
+
+// B3 shipped the state file outside the repository, and `commands/setup.md`
+// promises the script reports the exact file. Only `gate on` and `gate off` did
+// so, which left `gate status` unable to answer the one question B3 created:
+// which file is this workspace actually reading?
+test("gate status reports the state file it reads", () => {
+  withPluginData(() => {
+    const root = scratchRepo();
+    const previous = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = root;
+    try {
+      const status = main(["gate", "status"]);
+      assert.equal(status.ok, true);
+      assert.equal(status.action, "status");
+      assert.equal(status.stateFile, resolveStateFile(root));
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_PROJECT_DIR;
+      } else {
+        process.env.CLAUDE_PROJECT_DIR = previous;
+      }
+    }
   });
 });

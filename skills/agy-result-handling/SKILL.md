@@ -40,14 +40,33 @@ A denied action means a rule is missing in `~/.gemini/antigravity-cli/settings.j
 
 Measured on agy 1.2.4: what decides this is the `toolPermission` setting, not
 workspace membership. `always-proceed` approves everything with no rule;
-`request-review`, the default, refuses reads and commands; `proceed-in-sandbox`
-refuses commands unless agy is started with `--sandbox`, which this plugin does
-not pass; `strict` refuses even an in-workspace read. So name the rule for the
+`request-review`, the default, refuses commands, while
+a read of a file inside the workspace was allowed with no rule;
+`proceed-in-sandbox` refuses commands
+unless agy is started with `--sandbox`, which this plugin does not pass;
+`strict` refuses even an in-workspace read, and is the only mode that did.
+GitHub issue #21 reported an in-workspace read refused under the default, which
+has never reproduced here, so name the rule for whatever `denied_actions`
+actually reports rather than predicting it from the mode. So name the rule for the
 denied action, `read_file(*)` or `command(*)`, and also tell the user which mode
 they are in, which `/agy:setup` now reports. `read_file` covers directory
 listing too, reported as display name `ListDir`.
 
 When the user cannot or will not change the settings right now, one fallback is known to work, from the same issue: the operator runs the shell steps and does the reading, and agy only writes. Inline into the task text everything agy would otherwise have read (the relevant plan or spec sections, the full current contents of every file to edit), state plainly that it has no shell and no file-read access and must not attempt either, and run with `--mode accept-edits`, which allowed file writes without any rule. That works for plan-driven tasks whose context is already written down and not for exploratory ones. Offer it as a fallback, not as the fix.
+
+## A denied run is resumed once, automatically
+
+agy stops the conversation stream the moment it soft-denies a tool, so its model never sees the refusal. The conversation survives, though, and `/agy:review`, `/agy:adversarial-review` and `/agy:transfer` now spend one extra turn on the same `conversation_id`, stating the constraint and asking the model to finish without the refused tools. The stop-review gate does not: a review that lost its file reads has nothing to say, and a second turn would only delay the block.
+
+The companion reports what happened in a `recovery` object: `attempted`, `recovered`, `conversationId`, the `deniedActions` from the first turn, and `firstResult`. Read it before reporting the run.
+
+- `recovery.recovered: true`. The second turn ran without another denial. That is not the same as the task being finished: under the constraint the model may correctly answer that it cannot do the work without the tool it was refused, which is what it is told to do. Read the response before deciding. Either way, name the rule from `recovery.deniedActions`, because the next run will be denied the same way, and never present it as a clean run.
+- `recovery.recovered: false`. Both turns were denied. Report it as a denial and name the rule, exactly as if there had been no resume.
+
+Note that the top-level `deniedActions` describes the second turn, so it is empty on a recovered run. The rule to report always comes from `recovery.deniedActions`.
+- No `recovery` field. Nothing was denied, or there was no `conversation_id` to resume.
+
+One resume is the cap, and it is deliberate: a second refusal means the constraint did not help. Going further is a judgement call that belongs to you, not to the script, and it takes the one thing the script does not have. agy never says which file it wanted, only that `read_file` was refused, so only the caller who knows the task inputs can inline them. When you have those inputs, run `/agy:continue <conversation_id>` yourself with the file contents pasted in and the constraint restated. That is the reporter's workaround from GitHub issue #21 and it works; it is just not something a script can build unaided.
 
 ## A plan is not a result
 

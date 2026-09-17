@@ -132,6 +132,9 @@ test("setup command routes the gate toggle through the companion", () => {
   assert.match(source, /gate on/);
   assert.match(source, /gate off/);
   assert.match(source, /gate status/);
+  // The status branch names the state file too, so a reader can tell which file
+  // this workspace reads without turning the gate on and off to find out.
+  assert.match(source, /`gate status`[^\n]*`stateFile`/);
   // The flag left the repository, so the command must not tell users to edit a
   // file in their project any more.
   assert.ok(
@@ -284,4 +287,27 @@ test("setup command says an unrecognised mode falls back silently", () => {
   const source = read("commands/setup.md");
   assert.match(source, /declaredToolPermission/);
   assert.match(source, /silently|without an error/i);
+});
+
+// F21. A denied delegation is worth one resume: the conversation survives, and
+// the model finishes under a stated constraint. The gate is deliberately left
+// out, because a stop-time review that lost its file reads has nothing to say
+// and a second turn would only double the wait before the block.
+test("the companion delegates through the denial-recovering runner", () => {
+  const source = read("scripts/agy-companion.mjs");
+  assert.match(source, /runPromptWithDenialRecovery\(/);
+  assert.ok(
+    !/\brunPrompt\(/.test(source),
+    "the companion still calls runPrompt directly, so a denial there is abandoned"
+  );
+  // Both delegation paths, the reviews and the handoff, report what happened.
+  assert.match(source, /recovery: run\.recovery/);
+});
+
+test("the stop gate does not resume a denied review", () => {
+  const source = read("scripts/stop-review-gate-hook.mjs");
+  assert.ok(
+    !/runPromptWithDenialRecovery/.test(source),
+    "the stop gate resumes a denied review, doubling the wait before it blocks"
+  );
 });

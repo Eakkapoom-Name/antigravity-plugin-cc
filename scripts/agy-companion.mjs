@@ -16,9 +16,14 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { agyAvailable, effortRejected, runPrompt, runSlashCommand } from "./lib/agy.mjs";
+import {
+  agyAvailable,
+  effortRejected,
+  runPromptWithDenialRecovery,
+  runSlashCommand
+} from "./lib/agy.mjs";
 import { collectDiff, untrackedFiles } from "./lib/git.mjs";
-import { gateEnabled, setGate } from "./lib/state.mjs";
+import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
@@ -85,7 +90,9 @@ function review({ argument, adversarial }) {
   });
 
   // Read-only: no --mode. The diff rides on stdin, so its size is irrelevant.
-  const run = runPrompt(prompt, {
+  // A denial here is worth one resume: the diff is already in the prompt, so a
+  // reviewer refused its file reads can still finish on what it was given.
+  const run = runPromptWithDenialRecovery(prompt, {
     cwd,
     addDir: [cwd],
     // Structured output is enforced by agy for the adversarial review rather
@@ -100,6 +107,7 @@ function review({ argument, adversarial }) {
     diffBytes: Buffer.byteLength(collected.diff, "utf8"),
     result: run.result,
     deniedActions: run.deniedActions,
+    recovery: run.recovery,
     stderr: run.stderr,
     failure: run.failure
   };
@@ -150,14 +158,14 @@ function transfer(argument) {
   }
 
   const prompt = renderPrompt("transfer", { BRIEF: brief });
-  let run = runPrompt(prompt, { cwd, addDir: [cwd], model, effort });
+  let run = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model, effort });
   // Some models refuse --effort before any model call is made, so the flag is
   // dropped and the run repeated once. That rejection spends no quota, so this
   // is the one retry the runtime contract allows.
   let effortDropped = false;
   if (effort && effortRejected(run.result)) {
     effortDropped = true;
-    run = runPrompt(prompt, { cwd, addDir: [cwd], model });
+    run = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model });
   }
   try {
     fs.rmSync(briefPath, { force: true });
@@ -169,6 +177,7 @@ function transfer(argument) {
     ok: run.ok,
     result: run.result,
     deniedActions: run.deniedActions,
+    recovery: run.recovery,
     effortDropped,
     stderr: run.stderr,
     failure: run.failure
@@ -210,7 +219,16 @@ function gate(argument) {
   const cwd = workspace();
   const action = String(argument ?? "").trim().toLowerCase() || "status";
   if (action === "status") {
-    return { ok: true, action, enabled: gateEnabled(cwd), workspace: cwd };
+    // The state file is named here too, not only on a write: B3 moved it out of
+    // the repository, so the path is the only way to tell which file this
+    // workspace reads, and CLAUDE_PLUGIN_DATA is not always this plugin's.
+    return {
+      ok: true,
+      action,
+      enabled: gateEnabled(cwd),
+      workspace: cwd,
+      stateFile: resolveStateFile(cwd)
+    };
   }
   if (action === "on" || action === "off") {
     const { enabled, file } = setGate(cwd, action === "on");

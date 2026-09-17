@@ -17,6 +17,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accepted by agy and silently read back as `request-review`, so the report
   names the mismatch rather than letting a mode that never took effect look like
   one that did.
+- A denial harness, `npm run test:denials`. It builds a scratch `HOME` that
+  symlinks the real one except for `~/.gemini/antigravity-cli/settings.json`,
+  writes one permission mode per case, and runs the real `/agy:setup` and the
+  real Stop hook against it. Every permission claim in this plugin came from
+  probes typed by hand, and nothing in the suite could re-check them. It is opt
+  in and outside `npm test`, because each case spends agy quota.
+- A denied delegation is resumed once instead of being abandoned. agy ends the
+  conversation stream the moment it soft-denies a tool, so its model never sees
+  the refusal; the conversation itself survives. `/agy:review`,
+  `/agy:adversarial-review` and `/agy:transfer` now spend one more turn on the
+  same `conversation_id`, stating the constraint and asking the model to finish
+  without the refused tools, and report what happened in a `recovery` object.
+  The stop-review gate is deliberately left out: a review that lost its file
+  reads has nothing to say, and a second turn would only delay the block.
+- `/agy:setup gate status` reports the `stateFile` it read, not only `enabled`
+  and `workspace`. The gate flag lives outside the repository now, keyed by a
+  hash of the workspace root, so the path is the only way to tell which file a
+  workspace reads; `CLAUDE_PLUGIN_DATA` is not guaranteed to belong to this
+  plugin, and on this machine it does not.
 
 ### Fixed
 
@@ -33,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default mode, and measurement confirmed the mode is what governs it.
 - `read_file(*)` is documented as covering directory listing, which agy reports
   as the same `read_file` action under the display name `ListDir`.
+- Corrected the correction. 0.6.4 claimed in-workspace reads always pass; the
+  first fix said the default mode refuses them. The denial harness disagrees
+  with both: under `request-review` with no allow-rules, commands were refused
+  and a read of a file inside the workspace was allowed, three runs out of
+  three, whether or not the workspace was in agy's trusted list. `strict` is the
+  only mode that refused an in-workspace read. GitHub issue #21 still reported
+  one refused under the default, which has not reproduced here, so the guidance
+  now names what was measured, says the reporter saw otherwise, and tells the
+  reader to act on the `denied_actions` a run actually returns.
 
 ## [0.6.4] - 2026-09-17
 

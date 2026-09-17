@@ -15,7 +15,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" gate "<on|off|status>"
 - A gate enabled under the old `.claude/agy.local.md` file is still honoured until you set it through this command; after that, the stored value wins.
 - `gate off`: turn the gate off for this workspace.
 - `gate on`: warn the user that ending a turn can now take up to the agy review round-trip, and that the review only blocks when the previous turn made code changes with unresolved issues.
-- `gate status` (or bare `gate`): report `enabled` and the `workspace` it applies to.
+- `gate status` (or bare `gate`): report `enabled`, the `workspace` it applies to, and the `stateFile` it read.
 
 Otherwise check agy readiness. Run:
 

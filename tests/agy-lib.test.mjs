@@ -10,8 +10,10 @@ import {
   buildArgs,
   buildStreamInput,
   deniedActions,
+  denialConstraintPrompt,
   effortRejected,
-  normalizeStreamOutput
+  normalizeStreamOutput,
+  runPromptWithDenialRecovery
 } from "../scripts/lib/agy.mjs";
 import {
   buildCmdInvocation,
@@ -376,4 +378,113 @@ test("an effort rejection is recognised from the result agy prints before runnin
   assert.equal(effortRejected({ status: "ERROR", error: "boom" }), false);
   assert.equal(effortRejected(DENIED_READ_RESULT), false);
   assert.equal(effortRejected(null), false);
+});
+
+// F21. agy ends the conversation stream the moment it soft-denies, so the model
+// never sees the refusal and cannot adapt. The conversation itself survives: a
+// second turn on the same `conversation_id` keeps the task context and can
+// finish the job under a stated constraint. That is the reporter's manual
+// workaround in GitHub issue #21, and it is what this automates.
+
+function denied(conversationId, actions = ["read_file"]) {
+  return {
+    result: { status: "SUCCESS", conversation_id: conversationId, response: "", denied_actions: actions },
+    deniedActions: actions,
+    ok: false,
+    failure: "denied",
+    stderr: ""
+  };
+}
+
+function succeeded(conversationId, response = "done") {
+  return {
+    result: { status: "SUCCESS", conversation_id: conversationId, response },
+    deniedActions: [],
+    ok: true,
+    failure: null,
+    stderr: ""
+  };
+}
+
+test("the constraint prompt names every denied tool and forbids retrying it", () => {
+  const prompt = denialConstraintPrompt(["read_file", "command"]);
+  assert.match(prompt, /read_file/);
+  assert.match(prompt, /command/);
+  assert.match(prompt, /without/i);
+  // The model has to be able to say it is stuck rather than silently guessing.
+  assert.match(prompt, /say (so|what)/i);
+});
+
+test("a run that was not denied is returned untouched, with no second turn", () => {
+  const calls = [];
+  const out = runPromptWithDenialRecovery(
+    "do the thing",
+    {},
+    (prompt, options) => {
+      calls.push({ prompt, options });
+      return succeeded("conv-1");
+    }
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(out.ok, true);
+  assert.equal(out.recovery, undefined);
+});
+
+test("a denial is resumed once, on the same conversation, under a stated constraint", () => {
+  const calls = [];
+  const out = runPromptWithDenialRecovery(
+    "read src/index.js and summarize it",
+    { cwd: "/repo", addDir: ["/repo"] },
+    (prompt, options) => {
+      calls.push({ prompt, options });
+      return calls.length === 1 ? denied("conv-7") : succeeded("conv-7", "summary");
+    }
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].options.conversationId, "conv-7");
+  assert.equal(calls[1].options.cwd, "/repo");
+  assert.match(calls[1].prompt, /read_file/);
+  assert.equal(out.ok, true);
+  assert.equal(out.result.response, "summary");
+  assert.equal(out.recovery.attempted, true);
+  assert.deepEqual(out.recovery.deniedActions, ["read_file"]);
+  assert.equal(out.recovery.recovered, true);
+});
+
+test("a denial with no conversation id cannot be resumed, so it is not tried", () => {
+  const calls = [];
+  const out = runPromptWithDenialRecovery("do the thing", {}, (prompt, options) => {
+    calls.push({ prompt, options });
+    return denied("");
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(out.failure, "denied");
+  assert.equal(out.recovery, undefined);
+});
+
+test("a second denial ends it; the resumed turn is never itself resumed", () => {
+  const calls = [];
+  const out = runPromptWithDenialRecovery("do the thing", {}, (prompt, options) => {
+    calls.push({ prompt, options });
+    return denied("conv-9", ["command"]);
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(out.failure, "denied");
+  assert.equal(out.recovery.attempted, true);
+  assert.equal(out.recovery.recovered, false);
+});
+
+test("the caller can turn recovery off and get the first result back", () => {
+  const calls = [];
+  const out = runPromptWithDenialRecovery(
+    "do the thing",
+    { recoverFromDenial: false },
+    (prompt, options) => {
+      calls.push({ prompt, options });
+      return denied("conv-3");
+    }
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(out.recovery, undefined);
 });

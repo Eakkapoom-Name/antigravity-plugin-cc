@@ -190,3 +190,55 @@ export function runSlashCommand(name, options = {}) {
     return { payload: null, stderr, ok: false, failure: "invalid-json" };
   }
 }
+
+// agy stops the conversation stream the moment it soft-denies a tool, so the
+// model never sees the refusal and cannot adapt. That is not configurable. The
+// conversation survives, though: a second turn on the same `conversation_id`
+// keeps the task context, and stating the constraint is enough for the model to
+// finish without the tool it was refused. Verified on agy 1.2.4, and it is the
+// manual workaround the reporter of GitHub issue #21 was already doing by hand.
+export function denialConstraintPrompt(actions) {
+  const names = actions.length > 0 ? actions.join(", ") : "one or more tools";
+  return [
+    `Your previous turn was stopped because this environment refused these tools: ${names}.`,
+    "The refusal is a fixed property of the environment, so retrying them will fail again.",
+    "Continue the same task without them, using only what is already in this conversation.",
+    "If the task cannot be finished without them, do not guess: say what you needed and which tool you needed it from, and stop."
+  ].join(" ");
+}
+
+// One resume, never two. A resumed turn that is denied again is reported as the
+// denial it is, because the second refusal means the constraint did not help and
+// a third turn would spend quota to learn nothing.
+//
+// The runner is injectable so the recovery logic can be tested without spawning
+// agy; callers pass nothing and get the real `runPrompt`.
+export function runPromptWithDenialRecovery(prompt, options = {}, run = runPrompt) {
+  const first = run(prompt, options);
+
+  if (options.recoverFromDenial === false || first.failure !== "denied") {
+    return first;
+  }
+
+  const conversationId = first.result?.conversation_id;
+  if (!conversationId) {
+    return first;
+  }
+
+  const { recoverFromDenial, conversationId: _ignored, continueConversation, ...rest } = options;
+  const second = run(denialConstraintPrompt(first.deniedActions ?? []), {
+    ...rest,
+    conversationId
+  });
+
+  return {
+    ...second,
+    recovery: {
+      attempted: true,
+      recovered: second.ok === true,
+      conversationId,
+      deniedActions: first.deniedActions ?? [],
+      firstResult: first.result
+    }
+  };
+}

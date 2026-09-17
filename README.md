@@ -382,6 +382,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 ├── scripts/
 │   ├── lib/
 │   │   ├── agy.mjs                    agy invocation and result normalizing
+│   │   ├── denial-matrix.mjs          permission cases for the denial harness
 │   │   ├── git.mjs                    diff collection
 │   │   ├── process.mjs                spawn without a shell, Windows shims
 │   │   ├── prompts.mjs                prompt loader
@@ -398,6 +399,8 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   ├── agy-cli-runtime/               CLI call contract
 │   └── agy-result-handling/           output presentation rules
 ├── tests/                             node --test suite, run with npm test
+│   └── live/
+│       └── run-denial-matrix.mjs      opt-in permission harness, npm run test:denials
 ├── CHANGELOG.md
 ├── LICENSE
 ├── README.md
@@ -427,13 +430,18 @@ own `/config` screen. Measured on agy 1.2.4 with no allow-rules:
 | mode | headless behaviour |
 |---|---|
 | `always-proceed` | every tool approved, no sandbox, including reads and writes outside the workspace |
-| `request-review` | agy's default. Reads and commands are refused because there is nobody to ask. File writes are not refused |
+| `request-review` | agy's default. Commands are refused because there is nobody to ask. A read of a file inside the workspace was allowed with no rule, though GitHub issue #21 reported one refused, so do not count on it. File writes are not refused |
 | `proceed-in-sandbox` | approves commands only when agy is started with `--sandbox`, which this plugin does not pass, so commands stay refused |
-| `strict` | refuses even a read of a file inside the workspace |
+| `strict` | refuses even a read of a file inside the workspace, and is the only mode that did |
 
 Anything else, including a typo, is accepted and silently read back as
 `request-review`, so a mode that never takes effect looks the same as one that
 does.
+
+When a delegation is refused anyway, the plugin resumes that conversation once,
+stating the constraint, rather than throwing the turn away. The result carries a
+`recovery` object naming what was denied on the first turn. The stop-review gate
+does not resume: a review that lost its file reads has nothing to say.
 
 On top of the mode, `permissions.allow` rules grant individual tools. Headless
 runs auto-deny anything not covered, file reads (`read_file(*)`, which also

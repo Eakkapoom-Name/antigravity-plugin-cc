@@ -132,3 +132,41 @@ test("runtime contract records that agy has no per-invocation permission flag", 
   // variable, so the mode cannot be overridden for one run.
   assert.match(CLI_RUNTIME, /no .*flag|cannot be overridden|per-invocation/i);
 });
+
+// F24. Correcting 0.6.4's false claim went one step too far: both skills then
+// said the default mode refuses reads, which three live runs disproved.
+for (const [label, source] of [["result handling", RESULT_HANDLING], ["runtime contract", CLI_RUNTIME]]) {
+  test(`${label} does not claim the default mode refuses in-workspace reads`, () => {
+    assert.ok(
+      !/request-review[^.]*refuse[sd]? reads/i.test(source),
+      `${label} still says request-review refuses reads`
+    );
+    assert.match(source, /read of a file inside the workspace was allowed/i);
+    // The reporter did see one denied, so the measurement must not be presented
+    // as the whole truth either.
+    assert.match(source, /issue #21/);
+  });
+}
+
+// F21. The companion resumes a denied conversation once by itself. The skill has
+// to say what the resulting `recovery` field means, or a recovered run reads as
+// a plain success and the missing rule never reaches the user.
+test("result handling explains the automatic resume after a denial", () => {
+  assert.match(RESULT_HANDLING, /`recovery`/);
+  assert.match(RESULT_HANDLING, /conversation_id/);
+  // One resume is automatic; a second, with file contents inlined, is a choice
+  // only the caller can make, because agy never says which file it wanted.
+  assert.match(RESULT_HANDLING, /once/i);
+  assert.match(RESULT_HANDLING, /inline/i);
+});
+
+// A resumed turn that ran without a denial is not the same as a finished task:
+// the live probe came back `recovered: true` with the model saying it could not
+// do the work without the tool it was refused.
+test("result handling says what recovered actually means", () => {
+  assert.match(RESULT_HANDLING, /recovered.{0,120}without (a|another) denial/is);
+  assert.ok(
+    !/`recovery.recovered: true`\. The work was done/.test(RESULT_HANDLING),
+    "result handling still equates a resumed turn with a finished task"
+  );
+});

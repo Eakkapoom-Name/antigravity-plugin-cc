@@ -95,3 +95,13 @@ test("the README warns proceed-in-sandbox is not usable with this plugin", () =>
   assert.ok(index > -1);
   assert.match(readme.slice(index, index + 400), /--sandbox/);
 });
+
+// F24. The mode table said reads are refused under the default. They were not,
+// in three live runs of the denial harness.
+test("the README mode table does not claim the default mode refuses reads", () => {
+  const readme = read("README.md");
+  const row = readme.split("\n").find((line) => line.startsWith("| `request-review` |"));
+  assert.ok(row, "no request-review row in the README mode table");
+  assert.ok(!/Reads and commands are refused/i.test(row), `stale row: ${row}`);
+  assert.match(row, /inside the workspace was allowed/i);
+});

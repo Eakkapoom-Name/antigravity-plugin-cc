@@ -45,10 +45,13 @@ Interactive mode gotchas (1.2.4):
 Headless permission scope (measured on 1.2.4). What governs this is the
 `toolPermission` setting in `~/.gemini/antigravity-cli/settings.json`, not
 workspace membership. With no allow-rules: `always-proceed` approved everything
-including outside the workspace; `request-review`, the default, refused reads
-and commands but not file writes; `proceed-in-sandbox` refused commands unless
-agy was started with `--sandbox`, which this plugin does not pass; `strict`
-refused even an in-workspace read. Allow-rules layer on top: `read_file(*)`
+including outside the workspace; `request-review`, the default, refused commands
+while a read of a file inside the workspace was allowed, and file writes were not
+gated; `proceed-in-sandbox` refused commands unless agy was started with
+`--sandbox`, which this plugin does not pass; `strict` refused even an
+in-workspace read, and is the only mode that did. GitHub issue #21 reported an
+in-workspace read refused under the default mode, which no run here has
+reproduced, so treat a passing read as this machine's result and not a rule. Allow-rules layer on top: `read_file(*)`
 lifted a read denial under the default mode, and it covers directory listing,
 which agy reports as the same `read_file` action with display name `ListDir`. A
 narrow `command(pwd)` rule did not permit `pwd` while `command(*)` did, and agy

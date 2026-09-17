@@ -82,12 +82,27 @@ function runProbe(prompt) {
   return { ok: true, failure: null, stderr, payload };
 }
 
-function decisiveStderrLine(stderr) {
+// Lines agy logs while it shuts down, after the run has already failed: the
+// telemetry client flushing its queue. In a network-isolated sandbox those
+// flushes fail to dial out, so they carry `dial tcp` themselves and would win
+// any ranking that only looks for a network failure, while saying nothing about
+// why the run failed.
+const SHUTDOWN_NOISE = /shutdown|telemetry|g3syslog/i;
+
+// The last line of stderr is whatever agy happened to log last, which is
+// usually that shutdown noise, so taking it reported the least useful line on
+// offer. Rank instead, and drop the shutdown lines before ranking: the decisive
+// line is the one that names the error.
+export function decisiveStderrLine(stderr) {
   const lines = String(stderr ?? "")
     .split(/\r?\n/)
     .filter((line) => line.trim());
+  const signal = lines.filter((line) => !SHUTDOWN_NOISE.test(line));
   return (
     lines.find((line) => line.startsWith("jetski: no output produced")) ??
+    signal.find((line) => line.startsWith("Error:")) ??
+    signal.find((line) => ENVIRONMENT_FAILURE.test(line)) ??
+    signal.slice(-1)[0] ??
     lines.slice(-1)[0] ??
     ""
   );

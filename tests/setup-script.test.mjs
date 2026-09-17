@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   classifyProbeFailure,
   containsFilesystemPath,
+  decisiveStderrLine,
   evaluateCommandProbe,
   evaluateReadProbe,
   permissionNextStep,
@@ -405,4 +406,54 @@ test("a logged-out user with working network is still an auth failure", () => {
     ),
     "auth"
   );
+});
+
+// F27. The reported detail came from the last stderr line, which in the F25
+// sandbox run was the telemetry client failing to flush after the run had
+// already lost. The classification and the remedy were both right; the one line
+// the user was shown was the least useful one present.
+test("a shutdown-time telemetry line loses to the error that caused the failure", () => {
+  const stderr = [
+    "W0917 14:32:08.563519 46 cache.go:135] Singleflight refresh failed: error getting token source: You are not logged into Antigravity.",
+    "Error: authentication timed out.",
+    'Failed to shutdown telemetry client: Post "https://play.googleapis.com/log": dial tcp: lookup play.googleapis.com: no such host'
+  ].join("\n");
+  assert.equal(decisiveStderrLine(stderr), "Error: authentication timed out.");
+});
+
+// The telemetry lines carry `dial tcp` themselves, so ranking on the network
+// pattern alone would still pick one of them.
+test("a network failure in a shutdown line loses to the same failure in a real one", () => {
+  const stderr = [
+    "dial tcp 142.250.66.106:443: connect: network is unreachable",
+    'E0917 14:32:03.578718 45 g3syslog.go:23] [Post "https://play.googleapis.com/log": dial tcp: lookup play.googleapis.com: no such host]'
+  ].join("\n");
+  assert.equal(
+    decisiveStderrLine(stderr),
+    "dial tcp 142.250.66.106:443: connect: network is unreachable"
+  );
+});
+
+test("jetski: no output produced still outranks everything else", () => {
+  const stderr = [
+    "jetski: no output produced",
+    "Error: authentication timed out.",
+    "dial tcp: lookup play.googleapis.com: no such host"
+  ].join("\n");
+  assert.equal(decisiveStderrLine(stderr), "jetski: no output produced");
+});
+
+// Demoting a line must never empty the report: with nothing but shutdown noise
+// to show, the old last-line behaviour is still better than saying nothing.
+test("stderr that is nothing but shutdown noise still reports its last line", () => {
+  const stderr = [
+    "Failed to shutdown telemetry client: first",
+    "Failed to shutdown telemetry client: second"
+  ].join("\n");
+  assert.equal(decisiveStderrLine(stderr), "Failed to shutdown telemetry client: second");
+});
+
+test("empty stderr reports nothing rather than undefined", () => {
+  assert.equal(decisiveStderrLine(""), "");
+  assert.equal(decisiveStderrLine(null), "");
 });

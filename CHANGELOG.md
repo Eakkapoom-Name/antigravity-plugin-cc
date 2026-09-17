@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dial tcp`, `no such host` and `network is unreachable` as environment
   failures too, and the remedy names both causes. Reproduced under `bwrap
   --unshare-net`, where the report now reads `failureKind: environment`.
+- The one stderr line `/agy:setup` quotes for a failed probe is the cause
+  again, not the noise. It took the last line, which in a network-isolated run
+  is the telemetry client failing to flush after the run had already lost, so
+  the report read `Failed to shutdown telemetry client: ...` while
+  `Error: authentication timed out.` sat above it. Shutdown lines are now
+  dropped before ranking, and an `Error:` line beats a bare network failure.
 - `npm run test:denials` no longer fails on a stable plugin. One case required
   the remedy to name `command(*)`, but agy reaches for whichever tool a prompt
   leads it to first, so a run that was denied `read_file` instead produced the

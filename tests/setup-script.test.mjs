@@ -373,3 +373,36 @@ test("the read probe comment does not blame always-proceed for a passing read", 
   );
   assert.match(source, /Only `strict` denied it/);
 });
+
+// F25. Reproduced live on 2026-09-17 with
+// `bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /run --unshare-net agy -p ...`.
+// A network-isolated sandbox never reaches the listener stage, so its stderr
+// carries `dial tcp` rather than `listen tcp`, and the old pattern classified it
+// as auth. That sent a sandboxed user to sign in again, which is the exact wrong
+// advice F13 existed to remove.
+const SANDBOX_NETWORK_STDERR = [
+  'E0917 14:32:03.578718 45 g3syslog.go:23] [Post "https://play.googleapis.com/log": dial tcp: lookup play.googleapis.com on [::1]:53: read udp [::1]:57994->[::1]:53: read: connection refused]',
+  // The full stderr from that run: the auth words are a symptom, the dial
+  // failure is the cause, and the cause has to win.
+  "W0917 14:32:08.563519 46 cache.go:135] Singleflight refresh failed: error getting token source: You are not logged into Antigravity.\nE0917 14:32:08.579603 45 g3syslog.go:23] [Post \"https://play.googleapis.com/log\": dial tcp: lookup play.googleapis.com on [::1]:53: read: connection refused]\nError: authentication timed out.",
+  "dial tcp 142.250.66.106:443: connect: network is unreachable",
+  'dial tcp: lookup play.googleapis.com: no such host'
+];
+
+for (const stderr of SANDBOX_NETWORK_STDERR) {
+  test(`classifyProbeFailure calls a network-isolated sandbox an environment failure: ${stderr.slice(0, 48)}`, () => {
+    assert.equal(classifyProbeFailure(stderr), "environment");
+  });
+}
+
+// The other half of that boundary: a signed-out user on a working network shows
+// the same auth words with no network failure behind them, and must still be
+// told to sign in.
+test("a logged-out user with working network is still an auth failure", () => {
+  assert.equal(
+    classifyProbeFailure(
+      "error getting token source: You are not logged into Antigravity.\nError: authentication timed out."
+    ),
+    "auth"
+  );
+});

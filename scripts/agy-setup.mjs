@@ -104,8 +104,13 @@ function decisiveStderrLine(stderr) {
 //
 // The patterns stay anchored to the syscall and network shape rather than
 // matching a bare "permission denied", which agy also prints for tool denials.
+// Two shapes, both measured. A sandbox that refuses agy's local loopback
+// listener fails at `listen tcp`. A sandbox with no network at all never gets
+// that far and fails at `dial tcp`, reaching the auth step only to time out, so
+// matching auth words alone would blame the user's credentials for their
+// network namespace.
 const ENVIRONMENT_FAILURE =
-  /listen tcp|socket: operation not permitted|bind:|EPERM|EACCES|EADDRNOTAVAIL|EAFNOSUPPORT/;
+  /listen tcp|dial tcp|socket: operation not permitted|bind:|no such host|network is unreachable|EPERM|EACCES|EADDRNOTAVAIL|EAFNOSUPPORT/;
 const AUTH_FAILURE = /auth|login|credential|unauthenticated|unauthorized/i;
 
 export function classifyProbeFailure(stderr) {
@@ -434,7 +439,7 @@ function main() {
       // empty, so the unknown case still says what to do next.
       if (auth.failureKind === "environment") {
         nextSteps.push(
-          "This is not a login failure. The shell that ran the probe blocked a syscall agy needs, usually a sandbox refusing its local loopback listener. Your credentials are untouched. Rerun /agy:setup from an unrestricted terminal, outside any sandbox, container, or seccomp wrapper."
+          "This is not a login failure. The shell that ran the probe could not give agy the network it needs: either a sandbox refused its local loopback listener, or the run had no network at all and its calls failed to dial out. Your credentials are untouched, and agy saying you are not logged in here is a symptom of that, not the cause. Rerun /agy:setup from an unrestricted terminal, outside any sandbox, container, seccomp wrapper, or network namespace."
         );
       } else if (auth.failureKind === "auth") {
         nextSteps.push(

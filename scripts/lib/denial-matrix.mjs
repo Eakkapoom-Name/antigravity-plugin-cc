@@ -24,7 +24,10 @@ export const DENIAL_CASES = [
       ready: false,
       toolPermission: "request-review",
       deniedNonEmpty: true,
-      nextStepIncludes: ["`request-review`", "command(*)"]
+      nextStepIncludes: ["`request-review`"],
+      // Which rule the remedy names follows which tool agy happened to reach
+      // for, so the case requires a rule rather than a particular one.
+      nextStepIncludesAny: ["command(*)", "read_file(*)"]
     }
   },
   {
@@ -35,6 +38,39 @@ export const DENIAL_CASES = [
       permissions: { allow: ["command(*)", "read_file(*)"] }
     },
     expect: { ready: true, toolPermission: "request-review", deniedIncludes: [] }
+  },
+  {
+    id: "request-review-command-rules-only",
+    title: "the default mode with command rules and no read rule, which is issue #21's shape",
+    settings: {
+      toolPermission: "request-review",
+      // Taken from the settings the reporter posted: command rules, no read
+      // rule. Every other case here runs an empty allow-list, and the
+      // in-workspace read passes. If a populated list is what turns the
+      // permissive path strict, this row is where it shows.
+      permissions: {
+        allow: ["command(git status)", "command(git diff)", "command(ls)", "command(cat)"]
+      }
+    },
+    expect: {
+      ready: false,
+      toolPermission: "request-review",
+      deniedNonEmpty: true
+    }
+  },
+  {
+    id: "request-review-workspace-is-home",
+    title: "the default mode with the workspace root being the home directory itself",
+    settings: { toolPermission: "request-review" },
+    // Issue #21's log reads `workspaceDirs=[/home/natthanicha]`, so their
+    // workspace root is their home directory. Every other case puts the
+    // workspace one level below it.
+    workspaceAtHomeRoot: true,
+    expect: {
+      ready: false,
+      toolPermission: "request-review",
+      deniedNonEmpty: true
+    }
   },
   {
     id: "request-review-untrusted",
@@ -156,6 +192,10 @@ export function evaluateCase(testCase, report) {
     if (!steps.includes(fragment)) {
       failures.push(`nextSteps: expected to mention ${fragment}`);
     }
+  }
+  const alternatives = expect.nextStepIncludesAny ?? [];
+  if (alternatives.length > 0 && !alternatives.some((fragment) => steps.includes(fragment))) {
+    failures.push(`nextSteps: expected to mention one of ${alternatives.join(", ")}`);
   }
 
   return { id: testCase.id, pass: failures.length === 0, failures };

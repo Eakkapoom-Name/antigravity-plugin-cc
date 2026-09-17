@@ -5,6 +5,32 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Two rows in `npm run test:denials` for the shapes issue #21 reports: an
+  allow-list carrying command rules and no read rule, and a workspace root that
+  is the home directory itself. Both were ruled out by hand on 2026-09-17; the
+  harness now re-checks them on every run.
+
+### Fixed
+
+- A sandbox with no network at all is no longer reported as an auth failure.
+  0.6.3 taught the probe classifier one sandbox shape, the one that refuses
+  agy's local loopback listener and fails at `listen tcp`. A network-isolated
+  run never reaches that stage: it fails at `dial tcp`, then times out at the
+  auth step, so its stderr says you are not logged in when your credentials are
+  untouched. `/agy:setup` told those users to sign in again. It now classifies
+  `dial tcp`, `no such host` and `network is unreachable` as environment
+  failures too, and the remedy names both causes. Reproduced under `bwrap
+  --unshare-net`, where the report now reads `failureKind: environment`.
+- `npm run test:denials` no longer fails on a stable plugin. One case required
+  the remedy to name `command(*)`, but agy reaches for whichever tool a prompt
+  leads it to first, so a run that was denied `read_file` instead produced the
+  correct remedy and a failed row. Cases can now require a rule to be named
+  without saying which.
+
 ## [0.6.5] - 2026-09-17
 
 ### Added

@@ -98,10 +98,12 @@ function buildScratchHome(root, testCase) {
   return home;
 }
 
-function buildWorkspace(home) {
+function buildWorkspace(home, testCase = {}) {
   // Inside the scratch HOME on purpose: agy trusts workspaces by path, and a
-  // repository under the home directory is the shape a real user has.
-  const workspace = path.join(home, "workspace");
+  // repository under the home directory is the shape a real user has. One case
+  // puts it at the home directory itself, which is the shape issue #21's log
+  // shows.
+  const workspace = testCase.workspaceAtHomeRoot ? home : path.join(home, "workspace");
   fs.mkdirSync(workspace, { recursive: true });
   spawnSync("git", ["init", "--quiet"], { cwd: workspace });
   fs.writeFileSync(path.join(workspace, "README.md"), "# denial harness workspace\n");
@@ -134,7 +136,7 @@ function runCase(testCase, root, keep) {
   fs.mkdirSync(caseRoot, { recursive: true });
   try {
     const home = buildScratchHome(caseRoot, testCase);
-    const workspace = buildWorkspace(home);
+    const workspace = buildWorkspace(home, testCase);
     const { report } = runSetup(home, workspace, path.join(caseRoot, "plugin-data"));
     const outcome = evaluateCase(testCase, report);
     return { ...outcome, report };

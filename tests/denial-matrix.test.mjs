@@ -202,3 +202,72 @@ test("a case can opt out of trusting the scratch workspace", () => {
   const merged = mergeSettings({ trustedWorkspaces: ["/home/someone"] }, entry, "/scratch/home");
   assert.deepEqual(merged.trustedWorkspaces, ["/home/someone"]);
 });
+
+// F26. `request-review-default` asserted the remedy names `command(*)`, and a
+// rerun failed at 8 of 9 because that run's command probe was denied for
+// `read_file` instead. The same nondeterminism that stopped cases naming a
+// denied action stops them naming one rule.
+test("a case can require the remedy to name a rule without saying which", () => {
+  const entry = caseById("request-review-default");
+  assert.ok(
+    !(entry.expect.nextStepIncludes ?? []).some((fragment) => /\(\*\)/.test(fragment)),
+    "the default case still pins one tool's rule in nextStepIncludes"
+  );
+
+  for (const rule of ["command(*)", "read_file(*)"]) {
+    const result = evaluateCase(
+      entry,
+      report({
+        ready: false,
+        toolPermission: "request-review",
+        denied: [rule.replace("(*)", "")],
+        nextSteps: [`Your \`toolPermission\` is \`request-review\`. Add ${rule}.`]
+      })
+    );
+    assert.equal(result.pass, true, `${rule}: ${result.failures.join(" | ")}`);
+  }
+
+  const noRule = evaluateCase(
+    entry,
+    report({
+      ready: false,
+      toolPermission: "request-review",
+      denied: ["command"],
+      nextSteps: ["Your `toolPermission` is `request-review`. Good luck."]
+    })
+  );
+  assert.equal(noRule.pass, false);
+  assert.ok(
+    noRule.failures.some((line) => /nextSteps/.test(line)),
+    `no failure named nextSteps: ${noRule.failures.join(" | ")}`
+  );
+});
+
+// Issue #21's reporter runs `request-review` with a populated `permissions.allow`
+// holding command rules and no read rule, and their in-workspace read is denied.
+// Every run here used an empty allow-list and the read passed. If a populated
+// list is what turns the permissive path strict, that is the whole difference.
+test("a case covers a populated allow-list that grants commands but no reads", () => {
+  const entry = caseById("request-review-command-rules-only");
+  assert.equal(entry.settings.toolPermission, "request-review");
+  const allow = entry.settings.permissions.allow;
+  assert.ok(allow.length > 0, "the case must carry a populated allow-list");
+  assert.ok(
+    allow.every((rule) => rule.startsWith("command(")),
+    `the case must grant commands only, got ${allow.join(", ")}`
+  );
+  assert.ok(
+    !allow.some((rule) => rule.startsWith("read_file(")),
+    "the case must not grant a read rule; that is the variable under test"
+  );
+});
+
+// The reporter's log line reads `workspaceDirs=[/home/natthanicha]`: their
+// workspace root is their home directory itself, not a repository inside it.
+// Every case here puts the workspace one level down, so that difference has
+// never been under test.
+test("a case can put the workspace at the home directory itself", () => {
+  const entry = caseById("request-review-workspace-is-home");
+  assert.equal(entry.workspaceAtHomeRoot, true);
+  assert.equal(entry.settings.toolPermission, "request-review");
+});

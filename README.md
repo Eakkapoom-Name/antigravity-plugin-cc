@@ -425,7 +425,8 @@ Yes, and one of those settings decides whether delegation works at all.
 
 agy's `toolPermission` setting decides whether headless delegation can work at
 all, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's
-own `/config` screen. Measured on agy 1.2.4 with no allow-rules:
+own `/config` screen. Measured on agy 1.2.4 with no allow-rules, and the same
+live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18:
 
 | mode | headless behaviour |
 |---|---|

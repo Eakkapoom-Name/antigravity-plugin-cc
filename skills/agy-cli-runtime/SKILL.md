@@ -14,7 +14,7 @@ Base invocation:
 agy -p "<task text>" --output-format json --print-timeout 9m
 ```
 
-Flag contract (verified against agy 1.2.4):
+Flag contract (verified against agy 1.2.4). Re-checked on agy 1.2.5 on 2026-09-18 without re-measuring each line: the 11-row `npm run test:denials` harness passed on 1.2.5, three cwd probes ran commands in the invoking directory, `agy --help` showed no flag this contract lacks, and the 1.2.4 and 1.2.5 `/changelog` sections name no print-mode, flag, permission, or result-shape change.
 
 - `-p` / `--print`: run one prompt non-interactively and print the response.
 - `--output-format json`: single JSON result object on stdout.
@@ -42,7 +42,7 @@ Interactive mode gotchas (1.2.4):
 - `agy -i --mode accept-edits "<prompt>"` exits 2: `-i` takes the next token as its prompt. Attach the prompt to the flag, `agy --mode accept-edits -i="$(cat prompt.md)"`, and put every other flag before it.
 - Interactive mode needs a TTY. From a tool shell it fails with `bubbletea: could not open TTY: open /dev/tty: no such device or address`. The `! agy` sign-in hint works only where the host gives the command a terminal.
 
-Headless permission scope (measured on 1.2.4). What governs this is the
+Headless permission scope (measured on 1.2.4, harness green on 1.2.5). What governs this is the
 `toolPermission` setting in `~/.gemini/antigravity-cli/settings.json`, not
 workspace membership. With no allow-rules: `always-proceed` approved everything
 including outside the workspace; `request-review`, the default, refused commands

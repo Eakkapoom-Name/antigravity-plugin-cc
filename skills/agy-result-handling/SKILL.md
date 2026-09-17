@@ -38,7 +38,7 @@ After the user grants permission, relaunch with neutral task text. Do not send t
 
 A denied action means a rule is missing in `~/.gemini/antigravity-cli/settings.json`. Say which rule, then hand over: the user edits that file by hand, in their own terminal, and reruns the delegation. Do not attempt the edit, do not pass `--dangerously-skip-permissions`, and do not run `agy -p "/permissions"` to look up the rule grammar. In a Claude Code auto mode session the classifier denied all three, each as `[Create Unsafe Agents]` (GitHub issue #21), so relaying the fix as something the agent can carry out produces three more denials and no fix. This is the same host classifier as the launch denial above, blocking the remedy rather than the launch.
 
-Measured on agy 1.2.4: what decides this is the `toolPermission` setting, not
+Measured on agy 1.2.4, and the same harness passed on 1.2.5 on 2026-09-18: what decides this is the `toolPermission` setting, not
 workspace membership. `always-proceed` approves everything with no rule;
 `request-review`, the default, refuses commands, while
 a read of a file inside the workspace was allowed with no rule;

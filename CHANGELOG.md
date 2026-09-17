@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the home directory itself. Both were ruled out by hand on 2026-09-17; the
   harness now re-checks them on every run.
 
+### Changed
+
+- The runtime contracts now say they were re-checked on agy 1.2.5. Every
+  measured claim still names 1.2.4, where it was measured, and the note states
+  what the 1.2.5 check consisted of: the 11-row denial harness, three cwd
+  probes, `agy --help`, and the `/changelog` sections for 1.2.4 and 1.2.5, none
+  of which report a print-mode, flag, permission, or result-shape change.
+
 ### Fixed
 
 - A sandbox with no network at all is no longer reported as an auth failure.

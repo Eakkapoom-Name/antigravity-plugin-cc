@@ -319,7 +319,8 @@ export function evaluateReadProbe(probe, nonce) {
 // `command(...)` only and never mentioned the mode, so a user whose reads were
 // denied applied advice that could not help (issue #21).
 //
-// Behaviour per mode, measured on agy 1.2.4 with an empty allow-list:
+// Behaviour per mode, measured on agy 1.2.4 with an empty allow-list, and
+// re-confirmed by the denial harness on 1.2.5 (2026-09-18):
 //   always-proceed     everything approved, unsandboxed, including outside the workspace
 //   request-review     commands denied; an in-workspace read was allowed;
 //                      file writes were NOT denied

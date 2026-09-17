@@ -418,7 +418,39 @@ No. Every delegation is a call to the same local `agy` binary you would use dire
 
 ### Will it use the same agy settings I already have?
 
-Yes. The plugin picks up your existing configuration in `~/.gemini/antigravity-cli/settings.json`, including `permissions.allow` rules. Headless runs auto-deny tools not covered by those rules, file reads (`read_file(*)`) as well as commands (`command(*)` or a narrower target); [`/agy:setup`](#agysetup) detects both and shows the rule to add. You make that edit by hand, outside the agent session: an auto mode session cannot apply it for you.
+Yes, and one of those settings decides whether delegation works at all.
+
+agy's `toolPermission` setting decides whether headless delegation can work at
+all, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's
+own `/config` screen. Measured on agy 1.2.4 with no allow-rules:
+
+| mode | headless behaviour |
+|---|---|
+| `always-proceed` | every tool approved, no sandbox, including reads and writes outside the workspace |
+| `request-review` | agy's default. Reads and commands are refused because there is nobody to ask. File writes are not refused |
+| `proceed-in-sandbox` | approves commands only when agy is started with `--sandbox`, which this plugin does not pass, so commands stay refused |
+| `strict` | refuses even a read of a file inside the workspace |
+
+Anything else, including a typo, is accepted and silently read back as
+`request-review`, so a mode that never takes effect looks the same as one that
+does.
+
+On top of the mode, `permissions.allow` rules grant individual tools. Headless
+runs auto-deny anything not covered, file reads (`read_file(*)`, which also
+covers directory listing) as well as commands (`command(*)`). A narrower
+`command(git *)` is the safer intent but is unverified: on agy 1.2.4 a
+`command(pwd)` rule did not permit `pwd` while `command(*)` did, and agy never
+prints the target string it tried to match.
+
+[`/agy:setup`](#agysetup) reports your mode and the denied tools. You make any
+change by hand, outside the agent session: an auto mode session cannot apply it
+for you.
+
+If you want delegation to simply work, `always-proceed` is the setting that does
+it. Understand what you are granting first: every tool approved with no sandbox,
+reaching outside the workspace, and agy's own changelog records fixing a bug
+where outside-of-workspace writes were wrongly auto-approved in exactly that
+mode.
 
 ### Does it spend my Antigravity quota?
 

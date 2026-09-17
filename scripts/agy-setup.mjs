@@ -23,12 +23,13 @@ const AUTH_PROBE_PROMPT = "Reply with exactly: OK";
 const TOOL_PROBE_PROMPT =
   "Use your terminal command tool to run 'pwd' and reply with exactly its output.";
 // The read probe plants a nonce in a file inside the workspace root and asks
-// agy to read it back, which is what every rescue does first. On agy 1.2.4
-// reads inside the workspace directories (the cwd and any --add-dir) passed
-// without any rule here, reads outside them were auto-denied, and issue #21
-// saw an in-repository read denied; the probe reads where a rescue reads, so it
-// fails on that setup and does not demand a read_file rule from setups that do
-// not need one.
+// agy to read it back, which is what every rescue does first. Whether that is
+// permitted depends on `toolPermission`, not on workspace membership: measured
+// on agy 1.2.4 with an empty allow-list, `always-proceed` allowed it,
+// `request-review` allowed it only inside the workspace, and `strict` denied it
+// outright. An earlier version of this comment claimed in-workspace reads
+// always pass without a rule; that was true only because this machine runs
+// `always-proceed`, and issue #21 disproved it.
 function readProbePrompt(filePath) {
   return `Use your file viewing tool to read the file ${filePath} and reply with exactly its first line. Do not use the terminal command tool.`;
 }
@@ -168,6 +169,46 @@ export function containsFilesystemPath(response) {
   return FILESYSTEM_PATH.test(String(response ?? ""));
 }
 
+// agy's own settings decide whether any rule or probe matters, and the plugin
+// was silent about them until GitHub issue #21. Confirmed against agy 1.2.4's
+// /config UI: these four values and no others. Anything else, including a
+// typo, silently reads back as request-review, so a user can set a mode that
+// never takes effect and see no error anywhere.
+export const TOOL_PERMISSION_MODES = [
+  "always-proceed",
+  "request-review",
+  "proceed-in-sandbox",
+  "strict"
+];
+const DEFAULT_TOOL_PERMISSION = "request-review";
+
+export function resolveToolPermission(settings) {
+  const value = settings?.toolPermission;
+  return TOOL_PERMISSION_MODES.includes(value) ? value : DEFAULT_TOOL_PERMISSION;
+}
+
+// Never throws: a missing or malformed settings file is a reportable state, not
+// a reason for the readiness check to die.
+export function readAgySettings(homeDir = os.homedir()) {
+  const file = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+  let parsed = null;
+  let readable = false;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    readable = true;
+  } catch {
+    parsed = null;
+  }
+  return {
+    path: file,
+    readable,
+    toolPermission: resolveToolPermission(parsed),
+    declaredToolPermission: parsed?.toolPermission ?? null,
+    allowNonWorkspaceAccess: parsed?.allowNonWorkspaceAccess === true,
+    sandboxMode: parsed?.sandboxMode === true
+  };
+}
+
 function probeDuration(probe) {
   return probe.payload?.duration_seconds ?? null;
 }
@@ -250,32 +291,62 @@ export function evaluateReadProbe(probe, nonce) {
   };
 }
 
-// One remedy naming the rule for each tool that was actually denied. Every
-// earlier version of this text said `command(...)` only, so a user whose reads
-// were denied applied it and got a run that still read nothing (issue #21).
-export function permissionNextStep(denied) {
+// One remedy naming the rule for each tool that was denied, plus what the
+// user's `toolPermission` mode contributes. Every earlier version said
+// `command(...)` only and never mentioned the mode, so a user whose reads were
+// denied applied advice that could not help (issue #21).
+//
+// Behaviour per mode, measured on agy 1.2.4 with an empty allow-list:
+//   always-proceed     everything approved, unsandboxed, including outside the workspace
+//   request-review     reads and commands denied; file writes were NOT denied
+//   proceed-in-sandbox commands denied unless --sandbox is passed, which this plugin does not pass
+//   strict             denied even for a read inside the workspace
+export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
   const names = new Set(denied);
-  const rules = [];
+  const parts = [
+    `Headless delegation is blocked until agy's permission settings allow the tools it needs. agy cannot prompt in headless mode, so any tool not covered by a rule is auto-denied. Denied here: ${denied.length > 0 ? denied.join(", ") : "unknown"}. Fix it in ~/.gemini/antigravity-cli/settings.json.`
+  ];
+
+  if (mode === "proceed-in-sandbox") {
+    parts.push(
+      'Your `toolPermission` is `proceed-in-sandbox`, which does not work with this plugin: that mode only approves commands when agy is started with `--sandbox`, and the plugin does not pass it. Commands will keep being denied. Use `request-review` with allow-rules, or `always-proceed`.'
+    );
+  } else if (mode === "strict") {
+    parts.push(
+      'Your `toolPermission` is `strict`, the tightest mode. It denied even a read of a file inside the workspace with no rule, so headless work needs explicit rules or a different mode.'
+    );
+  } else if (mode === "request-review") {
+    parts.push(
+      'Your `toolPermission` is `request-review`, agy\'s default. It gates reads and commands headlessly, where there is nobody to ask, so they are refused. File writes were not gated. Either add the rules below, or switch the mode to `always-proceed`.'
+    );
+  }
+
   if (names.has("command") || names.size === 0) {
-    rules.push(
-      'Commands. Broad: {"permissions": {"allow": ["command(*)"]}}. Warning: `command(*)` lets agy run every terminal command headlessly, with no prompt. Narrow: allow only the targets you need, for example {"permissions": {"allow": ["command(git *)", "command(npm *)"]}}; the narrow form is unverified: on agy 1.2.4 a `command(pwd)` rule did not let the probe run `pwd`, so copy the exact target out of agy\'s own denial line, which shows the rule syntax it expects.'
+    parts.push(
+      'Commands. Broad: {"permissions": {"allow": ["command(*)"]}}. Warning: `command(*)` lets agy run every terminal command headlessly, with no prompt. A narrow rule such as `command(git *)` is the safer intent, but it is unverified: on agy 1.2.4 a `command(pwd)` rule did not permit `pwd` while `command(*)` did, and agy never prints the target string it tried to match, so there is no reliable way to derive the narrow form.'
     );
   }
   if (names.has("read_file") || names.size === 0) {
-    rules.push(
-      'File reads: {"permissions": {"allow": ["read_file(*)"]}}. `--mode accept-edits` covers writes only, not reads, and `--sandbox` does not change this. On agy 1.2.4, reads inside the workspace (the directory agy runs in, plus any --add-dir) passed without a rule and reads outside it were denied until `read_file(*)` was added; this probe read a file inside the workspace and was still denied, which is the case GitHub issue #21 reported.'
+    parts.push(
+      'File reads: {"permissions": {"allow": ["read_file(*)"]}}. This also covers directory listing, which agy reports as the same `read_file` action under the display name `ListDir`. `--mode accept-edits` does not help: it governs edits, and writes were never the thing being denied.'
     );
   }
   for (const name of names) {
     if (name !== "command" && name !== "read_file") {
-      rules.push(`The "${name}" tool: add a ${name}(<target>) rule; agy's denial line shows the exact form.`);
+      parts.push(`The "${name}" tool: add a ${name}(<target>) rule; agy's denial line shows the exact form.`);
     }
   }
-  return [
-    `Headless delegation is blocked until agy's permission settings allow the tools it needs. agy cannot prompt in headless mode, so any tool not covered by a rule is auto-denied. Denied here: ${denied.length > 0 ? denied.join(", ") : "unknown"}. Fix it in ~/.gemini/antigravity-cli/settings.json.`,
-    ...rules,
-    "This edit has to be made by hand, by the user, in their own terminal, outside the agent session. In a Claude Code auto mode session the classifier denies the settings edit, `--dangerously-skip-permissions`, and even a read-only `agy -p \"/permissions\"` query, all as [Create Unsafe Agents]; do not attempt any of them from the session. The alternative is a permissive `toolPermission` value in the same file, which carries the same risk as `command(*)`."
-  ].join(" ");
+
+  if (mode !== "always-proceed") {
+    parts.push(
+      'The blunt alternative is {"toolPermission": "always-proceed"}, which approves every tool with no sandbox, including reads and writes outside the workspace. Choose it knowingly: agy\'s own changelog records fixing a bug where outside-of-workspace writes were wrongly auto-approved in that mode.'
+    );
+  }
+
+  parts.push(
+    "This edit has to be made by hand, by the user, in their own terminal, outside the agent session. In a Claude Code auto mode session the classifier denies the settings edit, `--dangerously-skip-permissions`, and even a read-only `agy -p \"/permissions\"` query, all as [Create Unsafe Agents]; do not attempt any of them from the session."
+  );
+  return parts.join(" ");
 }
 
 function checkToolPermissions(cwd) {
@@ -330,6 +401,7 @@ function main() {
   const cwd = resolveWorkspaceRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
   const node = checkNode();
   const agy = checkAgy();
+  const agySettings = readAgySettings();
 
   const nextSteps = [];
   let auth = {
@@ -374,7 +446,7 @@ function main() {
     } else {
       toolPermissions = checkToolPermissions(cwd);
       if (!toolPermissions.available) {
-        nextSteps.push(permissionNextStep(toolPermissions.deniedActions)        );
+        nextSteps.push(permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission));
       }
     }
   }
@@ -393,6 +465,7 @@ function main() {
     agy,
     auth,
     toolPermissions,
+    agySettings,
     reviewGateEnabled: gateOn,
     actionsTaken: [],
     nextSteps

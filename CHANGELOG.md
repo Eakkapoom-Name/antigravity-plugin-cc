@@ -5,6 +5,35 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `/agy:setup` reads and reports agy's own permission settings. The report
+  gained an `agySettings` section carrying the effective `toolPermission`, the
+  literal value the file declares, `allowNonWorkspaceAccess`, `sandboxMode`, and
+  the path it read. That setting decides whether headless delegation can work at
+  all, and the plugin was silent about it until now. An unrecognised value is
+  accepted by agy and silently read back as `request-review`, so the report
+  names the mismatch rather than letting a mode that never took effect look like
+  one that did.
+
+### Fixed
+
+- The permission remedy branches on the mode instead of always telling users to
+  add a rule. `proceed-in-sandbox` is called out as unusable with this plugin,
+  since it approves commands only when agy is started with `--sandbox` and the
+  plugin does not pass it. `strict` is named as refusing even in-workspace
+  reads. `always-proceed` is offered as the blunt fix with what it actually
+  grants spelled out.
+- Corrected a false claim shipped in 0.6.4. The runtime and result-handling
+  skills, and a comment in the setup script, stated that reads inside the
+  workspace are auto-approved without a rule. That held only on machines running
+  `always-proceed`; GitHub issue #21 reported an in-workspace read denied under
+  the default mode, and measurement confirmed the mode is what governs it.
+- `read_file(*)` is documented as covering directory listing, which agy reports
+  as the same `read_file` action under the display name `ListDir`.
+
 ## [0.6.4] - 2026-09-17
 
 ### Fixed

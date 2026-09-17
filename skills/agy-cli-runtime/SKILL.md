@@ -42,7 +42,22 @@ Interactive mode gotchas (1.2.4):
 - `agy -i --mode accept-edits "<prompt>"` exits 2: `-i` takes the next token as its prompt. Attach the prompt to the flag, `agy --mode accept-edits -i="$(cat prompt.md)"`, and put every other flag before it.
 - Interactive mode needs a TTY. From a tool shell it fails with `bubbletea: could not open TTY: open /dev/tty: no such device or address`. The `! agy` sign-in hint works only where the host gives the command a terminal.
 
-Headless permission scope (verified on 1.2.4): reads inside the workspace directories (the cwd plus every `--add-dir`) were auto-approved with no rule; reads outside them were auto-denied until `read_file(*)` was in `permissions.allow`; `/tmp` was auto-approved even outside the workspace; `--mode accept-edits` covers writes, not reads; a narrow `command(pwd)` rule did not let a probe run `pwd`. GitHub issue #21 saw an in-repository read denied, which did not reproduce here.
+Headless permission scope (measured on 1.2.4). What governs this is the
+`toolPermission` setting in `~/.gemini/antigravity-cli/settings.json`, not
+workspace membership. With no allow-rules: `always-proceed` approved everything
+including outside the workspace; `request-review`, the default, refused reads
+and commands but not file writes; `proceed-in-sandbox` refused commands unless
+agy was started with `--sandbox`, which this plugin does not pass; `strict`
+refused even an in-workspace read. Allow-rules layer on top: `read_file(*)`
+lifted a read denial under the default mode, and it covers directory listing,
+which agy reports as the same `read_file` action with display name `ListDir`. A
+narrow `command(pwd)` rule did not permit `pwd` while `command(*)` did, and agy
+never prints the target it tried to match.
+
+agy has no per-invocation override for this. There is no `--tool-permission`
+flag and no environment variable, so the mode cannot be set for one run; it is
+whatever the user's settings file says. `--mode accept-edits` is not a
+substitute: writes were never the thing being refused. GitHub issue #21 saw an in-repository read denied, which did not reproduce here.
 
 Result JSON shape (verified on agy 1.2.4). Under `--output-format stream-json` the terminal `{"event":"result","result":{...}}` carries this same object, plus an `error` field when it failed, which is why both transports feed the same result handling. A headless tool denial adds `denied_actions`, for example `[{"action":"read_file","display_name":"ViewFile"}]`, while `status` stays `SUCCESS` and the exit code stays 0; the companion treats that as a failed run:
 

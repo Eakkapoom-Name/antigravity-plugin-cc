@@ -38,7 +38,14 @@ After the user grants permission, relaunch with neutral task text. Do not send t
 
 A denied action means a rule is missing in `~/.gemini/antigravity-cli/settings.json`. Say which rule, then hand over: the user edits that file by hand, in their own terminal, and reruns the delegation. Do not attempt the edit, do not pass `--dangerously-skip-permissions`, and do not run `agy -p "/permissions"` to look up the rule grammar. In a Claude Code auto mode session the classifier denied all three, each as `[Create Unsafe Agents]` (GitHub issue #21), so relaying the fix as something the agent can carry out produces three more denials and no fix. This is the same host classifier as the launch denial above, blocking the remedy rather than the launch.
 
-Verified on agy 1.2.4: reads inside the workspace directories (where agy runs, plus any `--add-dir`) passed without a rule, reads outside them were denied until `read_file(*)` was added, and a narrow `command(pwd)` rule did not let a probe run `pwd`. The reporter of issue #21 had an in-repository read denied, which did not reproduce here, so `read_file(*)` is the rule to name whenever `read_file` is in `denied_actions`.
+Measured on agy 1.2.4: what decides this is the `toolPermission` setting, not
+workspace membership. `always-proceed` approves everything with no rule;
+`request-review`, the default, refuses reads and commands; `proceed-in-sandbox`
+refuses commands unless agy is started with `--sandbox`, which this plugin does
+not pass; `strict` refuses even an in-workspace read. So name the rule for the
+denied action, `read_file(*)` or `command(*)`, and also tell the user which mode
+they are in, which `/agy:setup` now reports. `read_file` covers directory
+listing too, reported as display name `ListDir`.
 
 When the user cannot or will not change the settings right now, one fallback is known to work, from the same issue: the operator runs the shell steps and does the reading, and agy only writes. Inline into the task text everything agy would otherwise have read (the relevant plan or spec sections, the full current contents of every file to edit), state plainly that it has no shell and no file-read access and must not attempt either, and run with `--mode accept-edits`, which allowed file writes without any rule. That works for plan-driven tasks whose context is already written down and not for exploratory ones. Offer it as a fallback, not as the fix.
 

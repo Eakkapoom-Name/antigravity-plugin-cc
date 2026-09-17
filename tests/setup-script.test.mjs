@@ -1,12 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import {
   classifyProbeFailure,
   containsFilesystemPath,
   evaluateCommandProbe,
   evaluateReadProbe,
-  permissionNextStep
+  permissionNextStep,
+  readAgySettings,
+  resolveToolPermission
 } from "../scripts/agy-setup.mjs";
 
 // The tool-permission probe asks agy to run `pwd`. agy formats that answer in
@@ -242,4 +247,100 @@ test("the permission remedy says the settings edit is the user's manual step", (
   assert.match(step, /outside/);
   assert.match(step, /auto mode/);
   assert.match(step, /--dangerously-skip-permissions/);
+});
+
+// F22. `toolPermission` decides whether any rule or probe matters, and the
+// plugin never read it. Values confirmed against agy 1.2.4's own /config UI.
+const VALID_MODES = ["always-proceed", "request-review", "proceed-in-sandbox", "strict"];
+
+for (const mode of VALID_MODES) {
+  test(`resolveToolPermission keeps the valid mode ${mode}`, () => {
+    assert.equal(resolveToolPermission({ toolPermission: mode }), mode);
+  });
+}
+
+// Measured: agy silently falls back to request-review for anything it does not
+// recognise. `sandbox`, `agent-decides` and `asks-for-review` were each set and
+// each read back as request-review, so a typo is invisible to the user.
+for (const bogus of ["sandbox", "agent-decides", "asks-for-review", "typo", "", null, undefined, 42]) {
+  test(`resolveToolPermission falls back to request-review for ${JSON.stringify(bogus)}`, () => {
+    assert.equal(resolveToolPermission({ toolPermission: bogus }), "request-review");
+  });
+}
+
+test("resolveToolPermission treats a missing key and a missing file as the default", () => {
+  assert.equal(resolveToolPermission({}), "request-review");
+  assert.equal(resolveToolPermission(null), "request-review");
+});
+
+test("readAgySettings reports an unreadable settings file instead of throwing", () => {
+  const settings = readAgySettings(path.join(os.tmpdir(), "definitely-not-a-home-xyz"));
+  assert.equal(settings.readable, false);
+  assert.equal(settings.toolPermission, "request-review");
+  assert.ok(settings.path.endsWith(path.join(".gemini", "antigravity-cli", "settings.json")));
+});
+
+test("readAgySettings reads the mode and both booleans from a real file", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-"));
+  const dir = path.join(home, ".gemini", "antigravity-cli");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "settings.json"),
+    JSON.stringify({ toolPermission: "always-proceed", allowNonWorkspaceAccess: true, sandboxMode: false })
+  );
+  const settings = readAgySettings(home);
+  assert.equal(settings.readable, true);
+  assert.equal(settings.toolPermission, "always-proceed");
+  assert.equal(settings.allowNonWorkspaceAccess, true);
+  assert.equal(settings.sandboxMode, false);
+});
+
+test("readAgySettings survives malformed JSON", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-bad-"));
+  const dir = path.join(home, ".gemini", "antigravity-cli");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "settings.json"), "{ not json");
+  const settings = readAgySettings(home);
+  assert.equal(settings.readable, false);
+  assert.equal(settings.toolPermission, "request-review");
+});
+
+// The remedy has to differ per mode. Measured with an empty allow-list:
+// always-proceed passes everything; request-review denies reads and commands
+// but not writes; proceed-in-sandbox denies commands unless --sandbox is passed,
+// which this plugin does not pass; strict denies even in-workspace reads.
+test("the remedy for request-review names both rules and the mode switch", () => {
+  const step = permissionNextStep(["read_file", "command"], "request-review");
+  assert.match(step, /read_file\(\*\)/);
+  assert.match(step, /command\(\*\)/);
+  assert.match(step, /always-proceed/);
+  assert.match(step, /request-review/);
+});
+
+test("the remedy warns that proceed-in-sandbox does not work with this plugin", () => {
+  const step = permissionNextStep(["command"], "proceed-in-sandbox");
+  // The plugin never passes --sandbox, and without it this mode denies commands.
+  assert.match(step, /--sandbox/);
+  assert.match(step, /does not pass/i);
+});
+
+test("the remedy for strict says it denies even in-workspace reads", () => {
+  const step = permissionNextStep(["read_file"], "strict");
+  assert.match(step, /strict/);
+  assert.match(step, /in-workspace|inside the workspace/i);
+});
+
+test("a denial under always-proceed is not blamed on the mode", () => {
+  // always-proceed approves everything, so a denial here means something else
+  // is wrong and telling the user to change the mode would be noise.
+  const step = permissionNextStep(["command"], "always-proceed");
+  assert.ok(!/switch to `always-proceed`/.test(step));
+});
+
+test("every remedy still says the edit is the user's manual step", () => {
+  for (const mode of VALID_MODES) {
+    const step = permissionNextStep(["read_file"], mode);
+    assert.match(step, /by hand/, `${mode} remedy dropped the manual-step warning`);
+    assert.match(step, /auto mode/, `${mode} remedy dropped the classifier warning`);
+  }
 });

@@ -109,3 +109,26 @@ test("runtime contract records what --mode plan actually did and does not expose
   assert.match(CLI_RUNTIME, /edited .* in the same turn/);
   assert.match(CLI_RUNTIME, /not exposed/);
 });
+
+// F22. Both skills claimed in-workspace reads pass without a rule. That held
+// only because this machine runs always-proceed; issue #21 disproved it.
+for (const [label, source] of [["result handling", RESULT_HANDLING], ["runtime contract", CLI_RUNTIME]]) {
+  test(`${label} no longer claims in-workspace reads are auto-approved`, () => {
+    assert.ok(
+      !/reads inside the workspace[^.]*(passed|were auto-approved)/i.test(source),
+      `${label} still claims in-workspace reads pass without a rule`
+    );
+  });
+
+  test(`${label} names toolPermission as the deciding setting`, () => {
+    assert.match(source, /`toolPermission`/);
+    assert.match(source, /always-proceed/);
+    assert.match(source, /request-review/);
+  });
+}
+
+test("runtime contract records that agy has no per-invocation permission flag", () => {
+  // Checked against agy 1.2.4: no --tool-permission flag and no environment
+  // variable, so the mode cannot be overridden for one run.
+  assert.match(CLI_RUNTIME, /no .*flag|cannot be overridden|per-invocation/i);
+});

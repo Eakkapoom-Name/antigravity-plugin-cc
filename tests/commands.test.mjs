@@ -262,3 +262,26 @@ test("rescue command treats denied actions as a failed run", () => {
   const source = read("commands/rescue.md");
   assert.match(source, /denied_actions/);
 });
+
+// F22. The setup report now carries the user's agy permission mode, which is
+// what actually decides whether a probe can pass. The command has to relay it.
+test("setup command reports the agy tool permission mode", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /agySettings/);
+  assert.match(source, /toolPermission/);
+  for (const mode of ["always-proceed", "request-review", "proceed-in-sandbox", "strict"]) {
+    assert.ok(source.includes(mode), `setup.md does not name the ${mode} mode`);
+  }
+});
+
+test("setup command warns that proceed-in-sandbox does not work with this plugin", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /--sandbox/);
+  assert.match(source, /does not pass/i);
+});
+
+test("setup command says an unrecognised mode falls back silently", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /declaredToolPermission/);
+  assert.match(source, /silently|without an error/i);
+});

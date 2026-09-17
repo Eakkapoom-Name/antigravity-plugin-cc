@@ -73,3 +73,25 @@ test("the denial text claim no longer says it is unverified", () => {
     "result handling still says the denial text was not re-checked"
   );
 });
+
+// F22. The README tells users the plugin picks up their agy settings, so it has
+// to say which setting decides whether delegation works at all.
+test("the README documents the agy tool permission modes", () => {
+  const readme = read("README.md");
+  for (const mode of ["always-proceed", "request-review", "proceed-in-sandbox", "strict"]) {
+    assert.ok(readme.includes(mode), `README does not name the ${mode} mode`);
+  }
+});
+
+test("the README states the risk of always-proceed rather than just naming it", () => {
+  const readme = read("README.md");
+  assert.match(readme, /outside the workspace/i);
+  assert.match(readme, /no sandbox|unsandboxed/i);
+});
+
+test("the README warns proceed-in-sandbox is not usable with this plugin", () => {
+  const readme = read("README.md");
+  const index = readme.indexOf("proceed-in-sandbox");
+  assert.ok(index > -1);
+  assert.match(readme.slice(index, index + 400), /--sandbox/);
+});

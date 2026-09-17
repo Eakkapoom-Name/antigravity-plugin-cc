@@ -178,8 +178,10 @@ function checkAuth() {
 
 // Headless runs auto-deny any tool not covered by agy's own permission
 // settings, and the tool-free auth probe cannot detect that. The probe passes
-// only when the response contains a filesystem path (agy runs the command in
-// its own scratch directory, so the current project path is not expected).
+// only when the response contains a filesystem path. Any path, not the project
+// path: agy 1.1.x ran the command in its own scratch directory, and 1.2.5 runs
+// it in the invoking cwd (measured 2026-09-18 with a marker file, with and
+// without --add-dir), so the probe accepts either.
 // A path can come back bare, quoted, backtick-wrapped, or bracketed, and on
 // Windows it is a drive-letter path rather than a POSIX one. Only characters
 // that cannot start a path are rejected before the match, so "and/or" and

@@ -5,6 +5,69 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A headless agy run refused the one tool it needed now counts as a failure.
+  agy 1.2.4 reports the refusal as `denied_actions` on the result while keeping
+  `status: "SUCCESS"`, exit code 0, and sometimes a non-empty `response`, so the
+  plugin's empty-response rule never fired and a run that read nothing looked
+  complete (GitHub issue #21). `scripts/lib/agy.mjs` treats a non-empty
+  `denied_actions` as `failure: "denied"`, the companion passes the denied tool
+  names through, and the rescue agent, the rescue command, and the result
+  handling skill name each denied action and the rule for it.
+- `/agy:setup` exercises a file read as well as a terminal command, because the
+  two need different rules and every earlier version of the guidance named
+  `command(...)` only. The read probe plants a file in the workspace root and
+  asks agy to read it back, which is what every rescue does first. The report
+  carries `toolPermissions.command`, `toolPermissions.read`, and the union
+  `toolPermissions.deniedActions`; `nextSteps` names `read_file(*)` next to the
+  command rules and only for what was actually denied. The command's Bash
+  timeout rose to 590000 ms for the third probe.
+- The permission fix is stated as the user's own manual step, made by hand
+  outside the agent session. In a Claude Code auto mode session the classifier
+  denied the settings edit, `--dangerously-skip-permissions`, and even a
+  read-only `agy -p "/permissions"`, all as `[Create Unsafe Agents]`, so guidance
+  that read as something the agent could carry out produced three more denials.
+  The operator-runs-commands fallback from the same issue is documented as a
+  fallback.
+- `--effort` is dropped and the run repeated once when the chosen model rejects
+  the flag (`--effort is not supported for model`, exit 1, before any model
+  call). The rescue agent does this in its one permitted retry; the companion
+  does it for `/agy:transfer` and reports `effortDropped: true`.
+
+- The stop-review gate names the missing permission rule when agy auto-denies
+  its tool call. The hook now runs agy through the shared `runPrompt`, so a
+  headless denial arrives as `failure: "denied"` with the tool names, and the
+  block reason says which rule to add by hand instead of "returned no output"
+  or "returned an unexpected answer". The decision logic moved to
+  `scripts/lib/stop-review.mjs` so it is tested against captured payloads, and
+  importing the hook no longer reads stdin.
+
+### Added
+
+- `scripts/prepack-check.mjs`, wired as the npm `prepack` script. `npm pack`
+  force-includes anything matching `README*`, so a `README.md.bak` left by an
+  editing session shipped in the tarball, and neither a `files` negation nor
+  `.npmignore` kept it out. The guard refuses to pack while any `.bak` or
+  `.bak<n>` file is in the tree and lists them.
+
+### Changed
+
+- `--mode plan` was run on agy 1.2.4 in print mode and is documented rather
+  than exposed: it wrote a plan artifact, answered that it was ready to
+  execute, and then edited the target file in the same turn, with and without
+  `--add-dir`. It is not a no-edit mode headlessly, so read-only runs keep
+  omitting `--mode`.
+- The runtime contract is re-verified against agy 1.2.4: every documented flag,
+  the stream-json result shape including `denied_actions`, and the print-mode
+  `/usage` payload. It records the headless read permission scope observed
+  (workspace reads pass without a rule, outside reads need `read_file(*)`), the
+  `-i=` prompt attachment form, and that interactive mode needs a TTY.
+- The 1.1.20 denial text in the result handling skill was reproduced on 1.2.4,
+  so it no longer says it was not re-checked.
+
 ## [0.6.3] - 2026-09-14
 
 ### Added

@@ -162,6 +162,7 @@ Examples:
 **Notes:**
 
 - if you do not pass `--model` or `--effort`, agy chooses its own defaults
+- some models reject `--effort` outright (agy 1.2.4 refuses it for `claude-opus-4-6-thinking` before running anything); the rescue agent then reruns once without the flag and says so
 - write-capable runs use `--mode accept-edits` on the agy side; review and diagnosis runs stay read-only
 - follow-up rescue requests can continue the latest agy conversation
 
@@ -242,7 +243,9 @@ Examples:
 
 ### `/agy:setup`
 
-Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, tool-exercising probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
+Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, a command probe and a file-read probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
+
+Headless agy auto-denies any tool its `permissions.allow` rules do not cover, and it reports the refusal as `denied_actions` on an otherwise successful-looking result. The two probes exercise a terminal command and a file read, because the two need different rules (`command(...)` and `read_file(*)`) and `--mode accept-edits` covers neither. The report names each denied tool and the rule for it. That settings edit is yours to make by hand, in your own terminal: in a Claude Code auto mode session the classifier blocks the agent from editing the file, from passing `--dangerously-skip-permissions`, and even from querying `agy -p "/permissions"`.
 
 When a probe fails, the report says which of three things went wrong rather than assuming a login problem: a real authentication failure, a restricted environment where the invoking shell blocked a syscall agy needs, or an unknown cause. Only the first is fixed by signing in again.
 
@@ -383,11 +386,13 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   │   ├── process.mjs                spawn without a shell, Windows shims
 │   │   ├── prompts.mjs                prompt loader
 │   │   ├── state.mjs                  per-workspace state
+│   │   ├── stop-review.mjs            stop-review gate decision logic
 │   │   └── workspace.mjs              repository root resolution
 │   ├── agy-companion.mjs              review, transfer, quota, gate subcommands
 │   ├── agy-setup.mjs                  /agy:setup readiness report
 │   ├── bump-version.mjs               version metadata check and bump
 │   ├── npx-install.mjs                npx agy-plugin-cc installer
+│   ├── prepack-check.mjs              refuses to npm pack with .bak files present
 │   └── stop-review-gate-hook.mjs      stop-review gate (dependency-free node)
 ├── skills/
 │   ├── agy-cli-runtime/               CLI call contract
@@ -405,7 +410,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 
 If you are already signed into agy on this machine, that account works immediately here too. This plugin uses your local Antigravity CLI authentication.
 
-If you have not used Antigravity yet, [install the CLI](#install) and run `! agy` once to sign in with your Google account, then run [`/agy:setup`](#agysetup) to confirm everything is ready.
+If you have not used Antigravity yet, [install the CLI](#install) and run `! agy` once to sign in with your Google account, then run [`/agy:setup`](#agysetup) to confirm everything is ready. Interactive agy needs a TTY, so the `! agy` form only works where the host gives the command a real terminal; otherwise sign in from a terminal of your own.
 
 ### Does the plugin use a separate Antigravity runtime?
 
@@ -413,7 +418,7 @@ No. Every delegation is a call to the same local `agy` binary you would use dire
 
 ### Will it use the same agy settings I already have?
 
-Yes. The plugin picks up your existing configuration in `~/.gemini/antigravity-cli/settings.json`, including `permissions.allow` rules. Headless runs auto-deny tools not covered by those rules; [`/agy:setup`](#agysetup) detects this and shows the fix.
+Yes. The plugin picks up your existing configuration in `~/.gemini/antigravity-cli/settings.json`, including `permissions.allow` rules. Headless runs auto-deny tools not covered by those rules, file reads (`read_file(*)`) as well as commands (`command(*)` or a narrower target); [`/agy:setup`](#agysetup) detects both and shows the rule to add. You make that edit by hand, outside the agent session: an auto mode session cannot apply it for you.
 
 ### Does it spend my Antigravity quota?
 

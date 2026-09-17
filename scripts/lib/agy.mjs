@@ -68,10 +68,39 @@ export function normalizeStreamOutput(stdout) {
     return {
       result: emptyResult({ error: "agy produced no result event" }),
       events,
+      deniedActions: [],
       ok: false
     };
   }
-  return { result, events, ok: result.status === "SUCCESS" };
+  const denied = deniedActions(result);
+  return {
+    result,
+    events,
+    deniedActions: denied,
+    ok: result.status === "SUCCESS" && denied.length === 0
+  };
+}
+
+// agy 1.2.4 reports a headless tool denial as `denied_actions` on the result,
+// while keeping `status: "SUCCESS"`, exit code 0, and sometimes a non-empty
+// `response` (issue #21). A run that was refused the one tool it needed did
+// nothing, so it is a failure whatever the status says. Older agy versions have
+// no such field, which reads as no denials, the same as before.
+export function deniedActions(result) {
+  const list = result?.denied_actions;
+  if (!Array.isArray(list)) {
+    return [];
+  }
+  return list
+    .map((entry) => (entry && typeof entry === "object" ? entry.action : entry))
+    .filter((action) => typeof action === "string" && action.length > 0);
+}
+
+// `--effort` is refused for some models before any model call is made (agy
+// 1.2.4: `--effort is not supported for model "..."`, exit 1, status ERROR).
+// Rerunning without the flag spends nothing, so callers can do that once.
+export function effortRejected(result) {
+  return /--effort is not supported for model/.test(String(result?.error ?? ""));
 }
 
 export function buildArgs(options = {}) {
@@ -127,12 +156,17 @@ export function runPrompt(prompt, options = {}) {
   }
 
   const normalized = normalizeStreamOutput(spawned.stdout);
+  let failure = null;
+  if (!normalized.ok) {
+    failure = normalized.deniedActions.length > 0 ? "denied" : "failed";
+  }
   return {
     result: normalized.result,
     events: normalized.events,
+    deniedActions: normalized.deniedActions,
     stderr,
     ok: normalized.ok,
-    failure: normalized.ok ? null : "failed"
+    failure
   };
 }
 

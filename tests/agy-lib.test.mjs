@@ -9,6 +9,8 @@ import { spawnSync } from "node:child_process";
 import {
   buildArgs,
   buildStreamInput,
+  deniedActions,
+  effortRejected,
   normalizeStreamOutput
 } from "../scripts/lib/agy.mjs";
 import {
@@ -307,4 +309,71 @@ test("transfer arguments separate the brief path from the routing flags", () => 
     effort: undefined
   });
   assert.equal(parseTransferArguments("").briefPath, "");
+});
+
+// Captured verbatim from agy 1.2.4 with a settings file allowing only
+// `command(pwd)`, asking it to read /etc/hostname. The status is SUCCESS, the
+// exit code was 0, and only `denied_actions` says nothing happened. Issue #21
+// reported the same shape with a non-empty response, which is the case the old
+// empty-response rule cannot see.
+const DENIED_READ_RESULT = {
+  conversation_id: "fa93f7f2-4c03-45a4-a767-11d695cf9a18",
+  status: "SUCCESS",
+  response: "Reading required docs first.\n",
+  duration_seconds: 6.49,
+  num_turns: 1,
+  usage: {
+    input_tokens: 33681,
+    output_tokens: 134,
+    thinking_tokens: 87,
+    cache_read_tokens: 0,
+    total_tokens: 33815
+  },
+  denied_actions: [{ action: "read_file", display_name: "ViewFile" }]
+};
+
+test("a result with denied actions is a failure even when status is SUCCESS", () => {
+  const normalized = normalizeStreamOutput(
+    `${JSON.stringify({ event: "result", result: DENIED_READ_RESULT })}\n`
+  );
+  assert.equal(normalized.ok, false);
+  assert.deepEqual(normalized.deniedActions, ["read_file"]);
+  // The result itself is preserved: the caller still needs conversation_id.
+  assert.equal(normalized.result.conversation_id, DENIED_READ_RESULT.conversation_id);
+});
+
+test("deniedActions lists the denied tool names and tolerates their absence", () => {
+  assert.deepEqual(deniedActions(DENIED_READ_RESULT), ["read_file"]);
+  assert.deepEqual(
+    deniedActions({
+      denied_actions: [
+        { action: "command", display_name: "RunCommand" },
+        { action: "read_file", display_name: "ViewFile" }
+      ]
+    }),
+    ["command", "read_file"]
+  );
+  assert.deepEqual(deniedActions({ status: "SUCCESS", response: "OK" }), []);
+  assert.deepEqual(deniedActions({ denied_actions: [] }), []);
+  assert.deepEqual(deniedActions(null), []);
+  assert.deepEqual(deniedActions({ denied_actions: "garbage" }), []);
+});
+
+// Captured verbatim from agy 1.2.4: `--effort high` with a model that does not
+// take an effort exits 1 before any model call, printing this result on stdout.
+// Dropping the flag and rerunning costs no quota, so it is worth recognising.
+test("an effort rejection is recognised from the result agy prints before running", () => {
+  const rejected = {
+    conversation_id: "",
+    status: "ERROR",
+    response: "",
+    error:
+      'invalid model selection (--model "claude-opus-4-6-thinking" --effort "high"): --effort is not supported for model "claude-opus-4-6-thinking"',
+    duration_seconds: 0,
+    num_turns: 0
+  };
+  assert.equal(effortRejected(rejected), true);
+  assert.equal(effortRejected({ status: "ERROR", error: "boom" }), false);
+  assert.equal(effortRejected(DENIED_READ_RESULT), false);
+  assert.equal(effortRejected(null), false);
 });

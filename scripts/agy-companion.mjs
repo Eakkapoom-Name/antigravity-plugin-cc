@@ -16,7 +16,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { agyAvailable, runPrompt, runSlashCommand } from "./lib/agy.mjs";
+import { agyAvailable, effortRejected, runPrompt, runSlashCommand } from "./lib/agy.mjs";
 import { collectDiff, untrackedFiles } from "./lib/git.mjs";
 import { gateEnabled, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
@@ -99,6 +99,7 @@ function review({ argument, adversarial }) {
     scope: collected.scope.label,
     diffBytes: Buffer.byteLength(collected.diff, "utf8"),
     result: run.result,
+    deniedActions: run.deniedActions,
     stderr: run.stderr,
     failure: run.failure
   };
@@ -148,19 +149,30 @@ function transfer(argument) {
     return { ok: false, error: `Could not read the handoff brief: ${error.message}` };
   }
 
-  const run = runPrompt(renderPrompt("transfer", { BRIEF: brief }), {
-    cwd,
-    addDir: [cwd],
-    model,
-    effort
-  });
+  const prompt = renderPrompt("transfer", { BRIEF: brief });
+  let run = runPrompt(prompt, { cwd, addDir: [cwd], model, effort });
+  // Some models refuse --effort before any model call is made, so the flag is
+  // dropped and the run repeated once. That rejection spends no quota, so this
+  // is the one retry the runtime contract allows.
+  let effortDropped = false;
+  if (effort && effortRejected(run.result)) {
+    effortDropped = true;
+    run = runPrompt(prompt, { cwd, addDir: [cwd], model });
+  }
   try {
     fs.rmSync(briefPath, { force: true });
   } catch {
     // A leftover brief in a scratch directory is not worth failing the handoff.
   }
 
-  return { ok: run.ok, result: run.result, stderr: run.stderr, failure: run.failure };
+  return {
+    ok: run.ok,
+    result: run.result,
+    deniedActions: run.deniedActions,
+    effortDropped,
+    stderr: run.stderr,
+    failure: run.failure
+  };
 }
 
 function quota() {

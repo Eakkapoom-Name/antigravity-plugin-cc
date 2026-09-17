@@ -93,12 +93,12 @@ for (const name of ["review.md", "adversarial-review.md", "transfer.md", "quota.
 test("setup command runs the readiness script with a timeout that outlasts both probes", () => {
   const source = read("commands/setup.md");
   assert.match(source, /\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/agy-setup\.mjs/);
-  // Two probes at a 3 minute spawn timeout each: the default 120000 ms Bash
+  // Three probes at a 3 minute spawn timeout each: the default 120000 ms Bash
   // timeout kills the script before it prints its report.
   const timeout = source.match(/Bash `timeout` of `(\d+)` ms/);
   assert.ok(timeout, "setup.md does not state an explicit Bash timeout");
   assert.ok(
-    Number(timeout[1]) > 390000,
+    Number(timeout[1]) > 3 * 180000,
     `setup.md timeout ${timeout[1]} ms is not longer than the worst-case readiness run`
   );
   assert.ok(
@@ -226,4 +226,39 @@ test("adversarial-review does not route its background path through the subagent
   // companion exists to avoid.
   assert.match(source, /Do not route the background path through the `agy:agy-rescue` subagent/);
   assert.match(source, /run_in_background: true/);
+});
+
+// Issue #21: the setup guidance named only `command(...)`, and the probe only
+// exercised a command, so a read denial passed setup and failed the first
+// delegation. The command has to relay the denied action names the script now
+// reports and the read rule next to the command rule.
+test("setup command relays denied actions and names the read rule", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /deniedActions/);
+  assert.match(source, /read_file\(\*\)/);
+  assert.match(source, /three agy probes/);
+});
+
+test("setup command makes the settings edit the user's own manual step", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /by hand/);
+  assert.match(source, /do not attempt/i);
+});
+
+test("rescue agent returns stderr when any action was denied, not only on an empty response", () => {
+  const source = read("agents/agy-rescue.md");
+  assert.match(source, /denied_actions/);
+});
+
+test("rescue agent drops --effort once when the model rejects it", () => {
+  const source = read("agents/agy-rescue.md");
+  // The rejection happens before any model call and costs no quota, so the one
+  // permitted retry is the run without the flag. Anything else stays one call.
+  assert.match(source, /--effort is not supported for model/);
+  assert.match(source, /without `--effort`/);
+});
+
+test("rescue command treats denied actions as a failed run", () => {
+  const source = read("commands/rescue.md");
+  assert.match(source, /denied_actions/);
 });

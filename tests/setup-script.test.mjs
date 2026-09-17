@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { classifyProbeFailure, containsFilesystemPath } from "../scripts/agy-setup.mjs";
+import {
+  classifyProbeFailure,
+  containsFilesystemPath,
+  evaluateCommandProbe,
+  evaluateReadProbe,
+  permissionNextStep
+} from "../scripts/agy-setup.mjs";
 
 // The tool-permission probe asks agy to run `pwd`. agy formats that answer in
 // several ways, and a false negative here reports a working install as broken.
@@ -116,4 +122,124 @@ test("importing the setup script does not run the probes", () => {
   // Reaching this line at all proves the module-level main() call is guarded;
   // an unguarded import would have spawned agy during the import above.
   assert.equal(typeof containsFilesystemPath, "function");
+});
+
+// Probe payloads captured verbatim from agy 1.2.4 under a settings file that
+// allows only `command(pwd)`. `denied_actions` is the decisive signal: the
+// status is SUCCESS and the exit code 0 either way, and issue #21 showed the
+// response can be non-empty too, so neither of the old signals is enough.
+const DENIED_COMMAND_PAYLOAD = {
+  conversation_id: "cfae3f3f-62fa-4015-9657-d2506a1884b4",
+  status: "SUCCESS",
+  response: "",
+  duration_seconds: 4.47,
+  num_turns: 1,
+  usage: {},
+  denied_actions: [{ action: "command", display_name: "RunCommand" }]
+};
+
+const DENIED_READ_PAYLOAD = {
+  conversation_id: "fa93f7f2-4c03-45a4-a767-11d695cf9a18",
+  status: "SUCCESS",
+  response: "Reading the file now.\n",
+  duration_seconds: 6.49,
+  num_turns: 1,
+  usage: {},
+  denied_actions: [{ action: "read_file", display_name: "ViewFile" }]
+};
+
+function okProbe(payload) {
+  return { ok: true, failure: null, stderr: "", payload };
+}
+
+test("the command probe reports a denied command by name", () => {
+  const evaluated = evaluateCommandProbe(okProbe(DENIED_COMMAND_PAYLOAD));
+  assert.equal(evaluated.available, false);
+  assert.deepEqual(evaluated.deniedActions, ["command"]);
+  assert.match(evaluated.detail, /command/);
+});
+
+test("the command probe still passes on a path when agy predates denied_actions", () => {
+  const evaluated = evaluateCommandProbe(
+    okProbe({ status: "SUCCESS", response: "/home/toaster/scratch\n", duration_seconds: 3.1 })
+  );
+  assert.equal(evaluated.available, true);
+  assert.deepEqual(evaluated.deniedActions, []);
+});
+
+test("the command probe fails on an empty response with no denied_actions field", () => {
+  const evaluated = evaluateCommandProbe(okProbe({ status: "SUCCESS", response: "", duration_seconds: 2 }));
+  assert.equal(evaluated.available, false);
+  assert.deepEqual(evaluated.deniedActions, []);
+});
+
+test("a denied action outranks a plausible-looking response", () => {
+  // A response can carry a path and still have done nothing: the model narrates
+  // what it was about to do, then the tool call is soft-denied.
+  const evaluated = evaluateCommandProbe(
+    okProbe({ ...DENIED_COMMAND_PAYLOAD, response: "Running pwd in /home/toaster now.\n" })
+  );
+  assert.equal(evaluated.available, false);
+});
+
+test("the read probe reports a denied read by name", () => {
+  const evaluated = evaluateReadProbe(okProbe(DENIED_READ_PAYLOAD), "nonce-1234");
+  assert.equal(evaluated.available, false);
+  assert.deepEqual(evaluated.deniedActions, ["read_file"]);
+  assert.match(evaluated.detail, /read_file/);
+});
+
+test("the read probe passes only when the nonce it planted comes back", () => {
+  const passed = evaluateReadProbe(
+    okProbe({ status: "SUCCESS", response: "agy-probe-nonce-1234\n", duration_seconds: 4 }),
+    "agy-probe-nonce-1234"
+  );
+  assert.equal(passed.available, true);
+  const wrong = evaluateReadProbe(
+    okProbe({ status: "SUCCESS", response: "I could not find that file.\n", duration_seconds: 4 }),
+    "agy-probe-nonce-1234"
+  );
+  assert.equal(wrong.available, false);
+});
+
+test("a probe that never produced JSON is reported as failed, not denied", () => {
+  const evaluated = evaluateReadProbe(
+    { ok: false, failure: "timeout", stderr: "", payload: null },
+    "nonce"
+  );
+  assert.equal(evaluated.available, false);
+  assert.deepEqual(evaluated.deniedActions, []);
+  assert.match(evaluated.detail, /timeout/);
+});
+
+// The remedy has to name the rule for what was actually denied. Issue #21: every
+// piece of guidance said `command(...)`, so a user whose reads were denied
+// followed it and got a run that still read nothing.
+test("the permission remedy names read_file(*) when a read was denied", () => {
+  const step = permissionNextStep(["read_file"]);
+  assert.match(step, /read_file\(\*\)/);
+  assert.match(step, /settings\.json/);
+});
+
+test("the permission remedy names command rules when a command was denied", () => {
+  const step = permissionNextStep(["command"]);
+  assert.match(step, /command\(\*\)/);
+  assert.match(step, /command\(git \*\)/);
+});
+
+test("the permission remedy names both rules when both were denied", () => {
+  const step = permissionNextStep(["command", "read_file"]);
+  assert.match(step, /command\(\*\)/);
+  assert.match(step, /read_file\(\*\)/);
+});
+
+test("the permission remedy says the settings edit is the user's manual step", () => {
+  // In an auto mode session the classifier denies the settings edit, the skip
+  // flag, and even a read-only `agy -p "/permissions"`. Relaying the fix as
+  // something the agent can carry out sends it into three more denials.
+  const step = permissionNextStep(["read_file"]);
+  assert.match(step, /by hand/);
+  assert.match(step, /outside/);
+  assert.match(step, /auto mode/);
+  assert.match(step, /--dangerously-skip-permissions/);
 });

@@ -51,3 +51,61 @@ test("result handling warns that pre-approving the plan trips the classifier", (
   assert.ok(index > -1, "result handling does not warn about the pre-approval phrasing");
   assert.match(RESULT_HANDLING.slice(index), /trips the Claude Code classifier/);
 });
+
+const CLI_RUNTIME = read("skills/agy-cli-runtime/SKILL.md");
+
+// Issue #21: a headless run can return SUCCESS, exit 0, a non-empty response,
+// and a `denied_actions` array saying the one tool call it needed was refused.
+// The empty-response rule does not fire, so that shape has to be its own rule.
+test("result handling treats a non-empty denied_actions array as a failure", () => {
+  assert.match(RESULT_HANDLING, /`denied_actions`/);
+  assert.match(RESULT_HANDLING, /even when `status` is `SUCCESS`/);
+  assert.match(RESULT_HANDLING, /read_file/);
+  assert.match(RESULT_HANDLING, /ViewFile/);
+});
+
+test("result handling names read_file(*) next to command rules", () => {
+  assert.match(RESULT_HANDLING, /read_file\(\*\)/);
+  assert.match(RESULT_HANDLING, /command\(/);
+});
+
+test("result handling makes the settings edit a manual step outside an auto mode session", () => {
+  assert.match(RESULT_HANDLING, /by hand/);
+  assert.match(RESULT_HANDLING, /Create Unsafe Agents/);
+  // The agent must stop and hand over, not attempt the edit or the skip flag.
+  assert.match(RESULT_HANDLING, /do not attempt/i);
+  assert.match(RESULT_HANDLING, /--dangerously-skip-permissions/);
+});
+
+test("result handling documents the operator-runs-commands fallback", () => {
+  // The reporter finished the delegation without any permission change by
+  // running the shell steps themselves and inlining every file agy would have
+  // read. That is the only route left when the settings edit is blocked.
+  assert.match(RESULT_HANDLING, /inline/i);
+  assert.match(RESULT_HANDLING, /no shell and no file-read access/);
+});
+
+test("runtime contract records the effort and model incompatibility", () => {
+  assert.match(CLI_RUNTIME, /--effort is not supported for model/);
+  assert.match(CLI_RUNTIME, /without `--effort`/);
+});
+
+test("runtime contract records the interactive-mode gotchas", () => {
+  assert.match(CLI_RUNTIME, /-i=/);
+  assert.match(CLI_RUNTIME, /TTY/);
+});
+
+test("runtime contract documents denied_actions in the result shape", () => {
+  assert.match(CLI_RUNTIME, /denied_actions/);
+  assert.match(CLI_RUNTIME, /read_file\(\*\)/);
+});
+
+// F18. `--mode plan` was documented as unexplored. It was run on 1.2.4 and did
+// not stay plan-only in print mode, which is why the rescue flow does not
+// expose it and read-only runs keep omitting --mode instead.
+test("runtime contract records what --mode plan actually did and does not expose it", () => {
+  assert.ok(!/Unexplored here/.test(CLI_RUNTIME), "the runtime skill still calls --mode plan unexplored");
+  assert.match(CLI_RUNTIME, /`--mode plan`/);
+  assert.match(CLI_RUNTIME, /edited .* in the same turn/);
+  assert.match(CLI_RUNTIME, /not exposed/);
+});

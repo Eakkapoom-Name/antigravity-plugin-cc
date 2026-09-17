@@ -8,9 +8,11 @@
 
 import fs from "node:fs";
 import process from "node:process";
-import { runCommand } from "./lib/process.mjs";
+import { fileURLToPath } from "node:url";
+import { runPrompt } from "./lib/agy.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
+import { judgeReview } from "./lib/stop-review.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const AGY_PRINT_TIMEOUT = "9m";
@@ -87,81 +89,22 @@ function buildPrompt(cwd, input) {
   });
 }
 
-function parseReviewResponse(response) {
-  const text = String(response ?? "").trim();
-  if (!text) {
-    return {
-      ok: false,
-      reason:
-        "The stop-time agy review returned no output. Run /agy:review manually or turn the gate off with /agy:setup gate off."
-    };
-  }
-  const firstLine = text.split(/\r?\n/, 1)[0].trim();
-  if (firstLine.startsWith("ALLOW:")) {
-    return { ok: true, reason: null };
-  }
-  if (firstLine.startsWith("BLOCK:")) {
-    const reason = firstLine.slice("BLOCK:".length).trim() || text;
-    return {
-      ok: false,
-      reason: `agy stop-time review found issues that still need fixes before ending the session: ${reason}`
-    };
-  }
-  return {
-    ok: false,
-    reason:
-      "The stop-time agy review returned an unexpected answer. Run /agy:review manually or turn the gate off with /agy:setup gate off."
-  };
-}
-
 function runStopReview(cwd, input) {
   const prompt = buildPrompt(cwd, input);
-  // agy started by a hook has no workspace of its own (its shell sits in the
-  // agy scratch dir), so the project must be added explicitly or the reviewer
-  // sees an empty workspace and allows everything.
-  const result = runCommand(
-    "agy",
-    ["-p", prompt, "--add-dir", cwd, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
-    { cwd, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
+  // Read-only: no --mode. The workspace is added explicitly because a bare
+  // print-mode run does not treat the cwd as its project (it resolves to the
+  // agy scratch dir), so the project must be added or the reviewer sees an
+  // empty workspace and allows everything. runPrompt carries the prompt on
+  // stdin and reports a headless tool denial as failure: "denied", which is
+  // what lets the gate name the missing rule instead of "no output".
+  return judgeReview(
+    runPrompt(prompt, {
+      cwd,
+      addDir: [cwd],
+      printTimeout: AGY_PRINT_TIMEOUT,
+      timeoutMs: SPAWN_TIMEOUT_MS
+    })
   );
-
-  if (result.error?.code === "ENOENT") {
-    return { ok: true, note: "agy is not installed; stop-review gate skipped. Run /agy:setup." };
-  }
-  if (result.error?.code === "ETIMEDOUT") {
-    return {
-      ok: false,
-      reason:
-        "The stop-time agy review timed out after 10 minutes. Run /agy:review manually or turn the gate off with /agy:setup gate off."
-    };
-  }
-  if (result.status !== 0) {
-    const detail = String(result.stderr || result.stdout || "").trim().split(/\r?\n/).slice(-1)[0];
-    return {
-      ok: false,
-      reason: detail
-        ? `The stop-time agy review failed: ${detail}`
-        : "The stop-time agy review failed. Run /agy:review manually or turn the gate off with /agy:setup gate off."
-    };
-  }
-
-  let payload;
-  try {
-    payload = JSON.parse(result.stdout);
-  } catch {
-    return {
-      ok: false,
-      reason:
-        "The stop-time agy review returned invalid JSON. Run /agy:review manually or turn the gate off with /agy:setup gate off."
-    };
-  }
-  if (payload?.status && payload.status !== "SUCCESS") {
-    return {
-      ok: false,
-      reason: `The stop-time agy review ended with status ${payload.status}. Run /agy:review manually or turn the gate off with /agy:setup gate off.`
-    };
-  }
-  return parseReviewResponse(payload?.response);
 }
 
 function main() {
@@ -186,9 +129,16 @@ function main() {
   emitDecision({ decision: "block", reason: review.reason });
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-  process.exitCode = 1;
+// Only act when invoked as the hook; importing this module must not read
+// stdin or spawn agy.
+if (
+  process.argv[1] &&
+  fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
+) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  }
 }

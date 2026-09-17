@@ -28,6 +28,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test",
-    "check-version": "node scripts/bump-version.mjs --check"
+    "check-version": "node scripts/bump-version.mjs --check",
+    "prepack": "node scripts/prepack-check.mjs"
   }
 }

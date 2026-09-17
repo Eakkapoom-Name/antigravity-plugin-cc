@@ -36,13 +36,6 @@ test("the agy version claims do not drift apart", () => {
   );
 });
 
-// The one claim that could not be re-probed keeps its original version and says
-// why, rather than inheriting a bump it did not earn.
-test("an unverified version claim says it is unverified", () => {
-  const source = read("skills/agy-result-handling/SKILL.md");
-  assert.match(source, /agy 1\.1\.20; not re-checked since/);
-});
-
 // The README documented `/agy:transfer --model <model>` while the command had
 // quietly dropped it. A documented flag has to survive in the argument hint.
 test("the README does not document flags the commands no longer accept", () => {
@@ -56,4 +49,27 @@ test("the README does not document flags the commands no longer accept", () => {
       `README shows /agy:transfer --${flag} but the command's argument-hint does not accept it`
     );
   }
+});
+
+// Issue #21: the README told users about `permissions.allow` rules and pointed
+// at /agy:setup for the fix, and both only ever spelled out `command(...)`.
+test("the README names the read rule and the manual settings step", () => {
+  const readme = read("README.md");
+  assert.match(readme, /read_file\(\*\)/);
+  assert.match(readme, /by hand/);
+});
+
+test("the README does not promise the interactive sign-in hint works without a TTY", () => {
+  const readme = read("README.md");
+  assert.match(readme, /TTY/);
+});
+
+// The 1.1.20 denial text was finally reproduced on 1.2.4, so the hedge that
+// said it had not been re-checked has to go, or the doc lies the other way.
+test("the denial text claim no longer says it is unverified", () => {
+  const source = read("skills/agy-result-handling/SKILL.md");
+  assert.ok(
+    !/not re-checked since/.test(source),
+    "result handling still says the denial text was not re-checked"
+  );
 });

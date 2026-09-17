@@ -9,7 +9,7 @@ Show the user's remaining Antigravity (agy) model quota.
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" quota
 ```
 
-The script runs `agy -p "/usage" --output-format json` and reduces the payload. That is a print-mode slash command: it answers instantly, spends no quota, and leaves no conversation behind (verified on agy 1.2.2). It keeps the classic argv form deliberately, because slash commands are answered by the CLI itself and are unavailable under `--input-format stream-json`.
+The script runs `agy -p "/usage" --output-format json` and reduces the payload. That is a print-mode slash command: it answers instantly, spends no quota, and leaves no conversation behind (verified on agy 1.2.4). It keeps the classic argv form deliberately, because slash commands are answered by the CLI itself and are unavailable under `--input-format stream-json`.
 
 Presentation:
 

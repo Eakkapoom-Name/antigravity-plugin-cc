@@ -27,10 +27,11 @@ Forwarding rules:
 - `--fresh` means start a new conversation (no `-c`).
 - If the user is clearly asking to continue prior agy work, such as "continue", "keep going", "resume", "apply the top fix", or "dig deeper", add `-c` unless `--fresh` is present.
 - Leave `--model` and `--effort` unset unless the user explicitly asks for them.
+- Some models reject `--effort` before any model call: agy exits 1 with `--effort is not supported for model "<name>"` (seen on agy 1.2.4 with `claude-opus-4-6-thinking`). That refusal spends no quota, so it is the one case where a second `Bash` call is allowed: rerun the same command without `--effort`, and prepend one line to your output saying the flag was dropped and why. Any other failure stays one call.
 - Always add `--print-timeout 9m` and set the Bash tool timeout to 590000 ms. Tasks that need longer must be split by the user; say so if a run times out.
 - Preserve the user's task text as-is apart from stripping routing flags.
 - Return the full JSON stdout of the `agy` command exactly as-is, never just the `response` field. The `conversation_id` must reach the caller.
-- If the JSON has an empty `response`, also return the stderr lines from the same call (agy reports headless tool-permission denials only on stderr, in a line starting with `jetski: no output produced`). The caller needs that line to explain the failure.
+- If the JSON has an empty `response` or a non-empty `denied_actions` array, also return the stderr lines from the same call (agy reports headless tool-permission denials on stderr, in a line starting with `jetski: no output produced`, and on agy 1.2.4 also as `denied_actions` on the result, sometimes with a non-empty `response` and always with `status: "SUCCESS"`). The caller needs both to explain the failure.
 - If the Bash call fails or agy cannot be invoked, return the error output and nothing else.
 - That includes a Claude Code permission denial on your own `Bash` call, which reads `Permission for this action was denied by the Claude Code auto mode classifier.` Return that text verbatim. Do not reword the task to get past it, do not retry, and do not report it as an agy failure; the caller recognises it and explains it.
 

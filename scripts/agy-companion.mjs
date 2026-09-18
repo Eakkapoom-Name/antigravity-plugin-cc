@@ -13,6 +13,7 @@
 
 import dns from "node:dns";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -544,6 +545,95 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   return payload;
 }
 
+export const DEFAULT_BRAIN_DIR = path.join(os.homedir(), ".gemini", "antigravity-cli", "brain");
+const IMAGE_PATH = /((?:\/|[A-Za-z]:[\\/])[^\s"'`<>]+\.(?:png|jpe?g|webp))\b/i;
+
+// agy names the file; the companion copies it. The name is shown to sit under
+// agy's own artifacts directory, after symlinks, before any copy happens. Both
+// sides go through realpathSync, never a string prefix on the raw text: a
+// symlink named *.png inside brainDir can still point outside it, or at a
+// non-image, and only resolving both paths first catches that.
+export function extractImagePath(response, brainDir = DEFAULT_BRAIN_DIR) {
+  const match = String(response ?? "").match(IMAGE_PATH);
+  if (!match) {
+    return { ok: false, reason: "the response names no image file" };
+  }
+  let real;
+  let brain;
+  try {
+    real = fs.realpathSync(match[1]);
+    brain = fs.realpathSync(brainDir);
+  } catch (error) {
+    return { ok: false, reason: `the named file is not readable: ${error.message}` };
+  }
+  if (!real.startsWith(brain + path.sep)) {
+    return { ok: false, reason: `the named file ${real} is outside agy's artifacts directory` };
+  }
+  if (!IMAGE_PATH.test(real)) {
+    return { ok: false, reason: `the named file ${real} does not resolve to an image` };
+  }
+  return { ok: true, path: real };
+}
+
+// `run` is the low-level runner forwarded into `runIsolated`, the same
+// injectable third parameter `runIsolated` itself already defines (defaulting
+// to the real `runPrompt`). image sends no repository text, so it does not
+// scan for secrets and never touches the workspace; isolation is not
+// something a caller can opt out of by injecting a runner. `--out` is
+// resolved and validated before agy ever runs, so a bad path fails without
+// spending a run; the copy is made by the companion after a successful run
+// and a path that checks out under `brainDir`, never by agy itself, which
+// stays isolated throughout.
+export function image(argument, run = runPrompt, available = agyAvailable, root = workspace(), brainDir = DEFAULT_BRAIN_DIR) {
+  if (!available()) {
+    return NOT_INSTALLED;
+  }
+  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  if (!rest) {
+    return { ok: false, error: "image needs a description." };
+  }
+  let target = null;
+  if (flags.out !== undefined) {
+    const resolved = resolveOutputPath(flags.out, root);
+    if (!resolved.ok) {
+      return { ok: false, error: `--out refused: ${resolved.reason}` };
+    }
+    target = resolved.path;
+  }
+
+  const prompt = renderPrompt("image", { DESCRIPTION: rest });
+  const out = runWithEffortFallback(
+    prompt,
+    { model: flags.model, effort: flags.effort, printTimeout: "5m" },
+    (p, options) => runIsolated(p, options, run)
+  );
+  const payload = resultPayload(out);
+  if (!payload.ok) {
+    return payload;
+  }
+
+  const found = extractImagePath(out.run.result?.response, brainDir);
+  if (!found.ok) {
+    return { ...payload, ok: false, failure: "no-image", error: found.reason };
+  }
+  payload.imagePath = found.path;
+  if (target) {
+    try {
+      fs.copyFileSync(found.path, target, fs.constants.COPYFILE_EXCL);
+      payload.outPath = target;
+    } catch (error) {
+      // The image was produced and passed the containment check; only the
+      // copy failed (a race on the target name, or a parent that turned
+      // unwritable after resolveOutputPath checked it). Losing `imagePath` on
+      // top of that would waste the whole run, so the payload keeps it and
+      // only the copy is reported as failed, mirroring research's --out
+      // race handling.
+      payload.outError = error.message;
+    }
+  }
+  return payload;
+}
+
 function quota() {
   if (!agyAvailable()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
@@ -605,7 +695,8 @@ const SUBCOMMANDS = {
   gate,
   whisper: (argument) => whisper(argument),
   search: (argument) => search(argument),
-  research: (argument) => research(argument)
+  research: (argument) => research(argument),
+  image: (argument) => image(argument)
 };
 
 export function main(argv) {

@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { parseFlaggedArguments, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
+import { extractImagePath, image, parseFlaggedArguments, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
 
@@ -578,6 +578,190 @@ test("research keeps the report when the --out write loses a race", () => {
     assert.equal(out.result.response, "No findings.");
     assert.equal(fs.readFileSync(path.join(root, "r.md"), "utf8"), "raced\n");
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Every temp directory these image tests create is removed in a finally
+// block, on both the pass and the fail path, so the suite adds nothing to the
+// /tmp/agy-* pile a stray test helper elsewhere has already left behind.
+function fakeBrain() {
+  const brain = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brain-"));
+  const conv = path.join(brain, "e0920187-99dc-44bb-9631-e145ab5ede24");
+  fs.mkdirSync(conv);
+  const file = path.join(conv, "agy-probe.png");
+  fs.writeFileSync(file, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  return { brain, file };
+}
+
+test("extractImagePath accepts the one-line path agy returns when it sits under brain", () => {
+  const { brain, file } = fakeBrain();
+  try {
+    assert.deepEqual(extractImagePath(`${file}\n`, brain), { ok: true, path: fs.realpathSync(file) });
+    assert.equal(extractImagePath(`Saved your image to ${file} as requested.`, brain).ok, true);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+  }
+});
+
+test("extractImagePath refuses paths outside brain, symlinks out, missing files, and other extensions", () => {
+  const { brain } = fakeBrain();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    const elsewhere = path.join(outside, "x.png");
+    fs.writeFileSync(elsewhere, "x");
+    assert.equal(extractImagePath(elsewhere, brain).ok, false);
+    const link = path.join(brain, "link.png");
+    fs.symlinkSync(elsewhere, link);
+    assert.equal(extractImagePath(link, brain).ok, false);
+    assert.equal(extractImagePath(path.join(brain, "missing.png"), brain).ok, false);
+    assert.equal(extractImagePath("no path here", brain).ok, false);
+    const txt = path.join(brain, "notes.txt");
+    fs.writeFileSync(txt, "x");
+    assert.equal(extractImagePath(txt, brain).ok, false);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+// A string-prefix check on the unresolved text would pass this: the path
+// spells "brain/..." only up to the point where ".." walks back out. Only
+// realpathSync on both sides, which is what extractImagePath actually does,
+// catches that the file it names is a sibling of brain, not a child of it.
+// The bare relative path pins the companion behaviour of never accepting one:
+// the path pattern itself requires a leading "/" or a drive letter.
+test("extractImagePath refuses a path that escapes brain via .. and a bare relative path", () => {
+  const { brain } = fakeBrain();
+  const escaped = path.join(brain, "..", `${path.basename(brain)}-escaped.png`);
+  fs.writeFileSync(escaped, "x");
+  try {
+    assert.equal(extractImagePath(escaped, brain).ok, false);
+    assert.equal(extractImagePath("relative/agy-probe.png", brain).ok, false);
+  } finally {
+    fs.rmSync(escaped, { force: true });
+    fs.rmSync(brain, { recursive: true, force: true });
+  }
+});
+
+// The pattern is matched without the global flag, so only the first path in
+// the response is ever considered; a valid path later in the text does not
+// rescue a response that named an outside path first. That is the strict
+// reading of a one-line output contract, and it is pinned here so a future
+// change to "scan every candidate" is a deliberate one, not a drift.
+test("extractImagePath is governed by the first path in the response, not a later valid one", () => {
+  const { brain, file } = fakeBrain();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    const decoy = path.join(outside, "decoy.png");
+    fs.writeFileSync(decoy, "x");
+    const response = `First I considered ${decoy}, then saved the real one to ${file}`;
+    assert.equal(extractImagePath(response, brain).ok, false);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("image refuses an empty description without spending a run", () => {
+  const calls = [];
+  const out = image("--model x", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /needs a description/);
+  assert.equal(calls.length, 0);
+});
+
+// The name says isolated, so the assertions prove it the same way the
+// whisper, search, and research isolation tests do: a temp cwd reached the
+// stub, and neither the workspace root nor the repository path ever did.
+// Model, effort, and timeout passthrough are checked too, but alone they
+// would not show the run was isolated at all.
+test("image runs isolated, passes model/effort/timeout through, and copies to --out inside the workspace", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  const calls = [];
+  try {
+    const run = (prompt, options) => {
+      calls.push({ prompt, options });
+      return { result: { conversation_id: "c", status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+    };
+    const out = image("--model m --effort low --out hero.png a blue square", run, () => true, root, brain);
+    assert.equal(out.ok, true);
+    assert.match(calls[0].prompt, /a blue square/);
+    assert.equal(out.imagePath, fs.realpathSync(file));
+    assert.equal(out.outPath, path.join(fs.realpathSync(root), "hero.png"));
+    assert.ok(fs.existsSync(out.outPath));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.model, "m");
+    assert.equal(calls[0].options.effort, "low");
+    assert.equal(calls[0].options.printTimeout, "5m");
+    assert.ok(calls[0].options.cwd.startsWith(os.tmpdir()));
+    assert.ok(!JSON.stringify(calls[0].options).includes(root), "the workspace root reached agy");
+    assert.ok(!JSON.stringify(calls[0].options).includes(process.cwd()), "the repository path reached agy");
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("image without --out reports the brain path and copies nothing", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const run = () => ({ result: { status: "SUCCESS", response: file }, events: [], deniedActions: [], stderr: "", ok: true, failure: null });
+    const out = image("a blue square", run, () => true, root, brain);
+    assert.equal(out.ok, true);
+    assert.equal(out.imagePath, fs.realpathSync(file));
+    assert.equal(out.outPath, undefined);
+    assert.deepEqual(fs.readdirSync(root), []);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("image with a response that names no valid file is a failure that copies nothing", () => {
+  const { brain } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const run = () => ({ result: { status: "SUCCESS", response: "I cannot generate images." }, events: [], deniedActions: [], stderr: "", ok: true, failure: null });
+    const out = image("--out x.png a square", run, () => true, root, brain);
+    assert.equal(out.ok, false);
+    assert.equal(out.failure, "no-image");
+    assert.deepEqual(fs.readdirSync(root), []);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// resolveOutputPath already checked hero.png was free before the run started,
+// but the run itself can take minutes; something else can occupy the name in
+// the meantime. The image agy produced (and that passed the containment
+// check) is not worth throwing away over a copy that lost that race, so
+// imagePath survives on the payload and only the copy is reported as failed,
+// mirroring research's --out race handling.
+test("image keeps imagePath when the --out copy loses a race", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const out = image(
+      "--out hero.png a blue square",
+      () => {
+        fs.writeFileSync(path.join(root, "hero.png"), "raced");
+        return { result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+      },
+      () => true,
+      root,
+      brain
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.imagePath, fs.realpathSync(file));
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /EEXIST/);
+    assert.equal(fs.readFileSync(path.join(root, "hero.png"), "utf8"), "raced");
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

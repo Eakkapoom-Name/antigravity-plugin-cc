@@ -80,3 +80,20 @@ test("the research template fixes the report section order", () => {
   const order = ["Summary", "Key findings", "Disagreements", "Caveats", "Sources"].map((h) => template.indexOf(h));
   assert.ok(order.every((i, n) => i > -1 && (n === 0 || i > order[n - 1])), `section order is ${order}`);
 });
+
+test("the image template asks for one line, the path", () => {
+  const template = readPrompt("image");
+  assert.deepEqual(placeholdersIn(template), ["DESCRIPTION"]);
+  assert.match(template, /absolute path/);
+});
+
+// The agy-prompting SKILL.md row for image names all four blocks (task,
+// output_contract, done_state, action_safety), unlike the looser research and
+// search rows; this pins the template to that exact contract.
+test("the image template carries all four blocks the SKILL.md row names", () => {
+  const template = readPrompt("image");
+  for (const tag of ["task", "output_contract", "done_state", "action_safety"]) {
+    assert.match(template, new RegExp(`<${tag}>`), `image template is missing <${tag}>`);
+  }
+  assert.match(template, /NO_IMAGE_TOOL/);
+});

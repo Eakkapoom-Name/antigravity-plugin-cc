@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (summary, findings with sources, disagreements, caveats, sources), depth
   set by `--effort`, optionally written to `--out <path>` inside the
   workspace by the companion, never by agy.
+- `/agy:image`: image generation through agy, the file copied into the
+  workspace with `--out` only after the companion has shown the path agy
+  named sits under agy's own artifacts directory.
 
 ### Changed
 

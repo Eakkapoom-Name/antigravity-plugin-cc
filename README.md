@@ -18,6 +18,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - `/agy:whisper` for a one-shot question to agy with no repository context
 - `/agy:search` for a web search or a single page fetch through agy, second in the web tool order after Claude Code's own tools
 - `/agy:research` for a web-grounded investigation with a fixed report shape and sources, optionally written to a file
+- `/agy:image` to generate an image with agy and copy it into the project on request
 - `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
@@ -230,6 +231,25 @@ writes the same markdown inside the workspace; the parent directory must exist
 and an existing file is never overwritten. agy runs isolated; the companion does
 the write.
 
+### `/agy:image`
+
+```text
+/agy:image --out assets/hero.png isometric illustration of a developer at a desk
+/agy:image a minimalist dark-mode login mockup, blue accent colour
+```
+
+agy writes the file under its own artifacts directory
+(`~/.gemini/antigravity-cli/brain/<conversation-id>/<generated-name>`). Without
+`--out` the command reports that path and copies nothing. With `--out <path>`
+the companion checks the file agy named really resolves, after symlinks, to
+somewhere inside that directory, then copies it inside the workspace; the
+parent directory must exist and an existing file is never overwritten. The
+copy is a byte-for-byte copy, not a re-encode, so a `--out` name whose
+extension differs from the file agy actually produced is copied as-is under
+the name given. Measured on agy 1.2.6: about 26 s wall time for a 1024x1024
+JPEG, written under a name agy chose itself despite the `.png` requested with
+`--out`.
+
 ### `/agy:transfer`
 
 Seeds a fresh agy conversation with a handoff brief of the current session (goal, state, decisions, open items) and returns the `conversation_id` with both resume paths.
@@ -406,6 +426,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   ├── adversarial-review.md
 │   ├── cancel.md
 │   ├── continue.md
+│   ├── image.md
 │   ├── quota.md
 │   ├── rescue.md
 │   ├── research.md
@@ -421,6 +442,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 ├── prompts/
 │   ├── adversarial-review.md          challenge-review prompt
 │   ├── fetch.md                       single-page fetch prompt
+│   ├── image.md                       image generation prompt
 │   ├── research.md                    research report prompt
 │   ├── review.md                      code-review prompt
 │   ├── search.md                      web search prompt
@@ -441,7 +463,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   │   ├── stop-review.mjs            stop-review gate decision logic
 │   │   ├── url-guard.mjs              SSRF guard for /agy:search fetch mode
 │   │   └── workspace.mjs              repository root resolution
-│   ├── agy-companion.mjs              review, transfer, quota, gate, whisper, search, research subcommands
+│   ├── agy-companion.mjs              review, transfer, quota, gate, whisper, search, research, image subcommands
 │   ├── agy-setup.mjs                  /agy:setup readiness report
 │   ├── bump-version.mjs               version metadata check and bump
 │   ├── npx-install.mjs                npx agy-plugin-cc installer

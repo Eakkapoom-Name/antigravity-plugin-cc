@@ -74,6 +74,54 @@ test("in diff mode only added lines are scanned", () => {
   assert.equal(hits[0].line, 5);
 });
 
+// A hit's location must be the line in the file a user can actually open,
+// not an offset into the raw diff text (which counts `diff --git`, `index`
+// and `@@` header lines, and resets to 0 for every file after the first).
+test("a hit in the second file of a multi-file diff reports that file and a real line number", () => {
+  const diff = [
+    "diff --git a/one.txt b/one.txt",
+    "index aaa..bbb 100644",
+    "--- a/one.txt",
+    "+++ b/one.txt",
+    "@@ -1,2 +1,2 @@",
+    " unchanged",
+    "-old line",
+    "+new line without a secret",
+    "diff --git a/two.txt b/two.txt",
+    "index ccc..ddd 100644",
+    "--- a/two.txt",
+    "+++ b/two.txt",
+    "@@ -5,2 +5,3 @@",
+    " context5",
+    `+const key = "${AWS}";`,
+    " context6"
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].kind, "aws-access-key-id");
+  assert.equal(hits[0].file, "two.txt");
+  // The hunk opens at new-file line 5; one context line, then the added
+  // line, so the added line is new-file line 6, not the raw offset (15) the
+  // line sits at within the diff text above.
+  assert.equal(hits[0].line, 6);
+});
+
+test("a non-diff scan still numbers lines within the text, with no file field at all", () => {
+  const { hits } = scanForSecrets(`first\nsecond\nconst id = "${AWS}";\n`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].line, 3);
+  assert.ok(!("file" in hits[0]), "a non-diff hit must not carry a file key");
+});
+
+test("a diff hit before any +++ header degrades to no file instead of throwing", () => {
+  const diff = [`+const leaked = "${AWS}";`].join("\n");
+  assert.doesNotThrow(() => scanForSecrets(diff, { diff: true }));
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "aws-access-key-id");
+  assert.equal(hits[0].file, null);
+});
+
 test("an allow pattern drops a hit whose line matches it", () => {
   const text = `fixture = "${AWS}"  # test fixture`;
   assert.equal(scanForSecrets(text).hits.length, 1);

@@ -301,7 +301,11 @@ test("the companion delegates through the denial-recovering runner", () => {
     "the companion still calls runPrompt directly, so a denial there is abandoned"
   );
   // Both delegation paths, the reviews and the handoff, report what happened.
-  assert.match(source, /recovery: run\.recovery/);
+  // Both name the result of the runner call `out` now, not `run`, since
+  // `run` itself is the injectable low-level runner forwarded into
+  // `runIsolated`/`runPromptWithDenialRecovery`, and reusing the name for the
+  // result would shadow the very function being injected.
+  assert.match(source, /recovery: out\.recovery/);
 });
 
 test("the stop gate does not resume a denied review", () => {

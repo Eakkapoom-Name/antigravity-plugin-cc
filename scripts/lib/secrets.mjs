@@ -78,10 +78,51 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   const hits = [];
   const lines = String(text ?? "").split(/\r?\n/);
 
+  // Diff bookkeeping: which file, and which line of that file's new content,
+  // a `+` line lands on. Without this a hit is reported at its offset into
+  // the raw diff text, counting `diff --git`, `index` and `@@` lines, which
+  // matches nothing a user can find in an editor. `currentFile` comes from
+  // each file's `+++ b/<path>` header (reset on every new file, so a
+  // multi-file diff attributes each hit to the right one); `newLine` comes
+  // from each hunk's `@@ -a,b +c,d @@` header and is then walked forward one
+  // line at a time, advancing on context lines too since those occupy real
+  // lines in the new file, but not on removed lines, which do not. Until a
+  // hunk header has actually been seen, there is no reliable line number to
+  // report; a hit in that state falls back to the raw line offset with no
+  // file, rather than reporting a number that looks right but is not.
+  let currentFile = null;
+  let newLine = null;
+
   lines.forEach((line, index) => {
-    if (diff && (!line.startsWith("+") || line.startsWith("+++"))) {
-      return;
+    let hitLine = index + 1;
+    let hitFile = null;
+
+    if (diff) {
+      const fileHeader = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
+      if (fileHeader) {
+        currentFile = fileHeader[1] === "/dev/null" ? null : fileHeader[1];
+        newLine = null;
+        return;
+      }
+      if (line.startsWith("---")) {
+        return;
+      }
+      const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      if (hunkHeader) {
+        newLine = Number(hunkHeader[1]) - 1;
+        return;
+      }
+      const isAdded = line.startsWith("+") && !line.startsWith("+++");
+      if (newLine !== null && (isAdded || line.startsWith(" "))) {
+        newLine += 1;
+      }
+      if (!isAdded) {
+        return;
+      }
+      hitLine = newLine !== null ? newLine : index + 1;
+      hitFile = newLine !== null ? currentFile : null;
     }
+
     if (allowed.some((pattern) => pattern.test(line))) {
       return;
     }
@@ -94,7 +135,11 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       if (valueGroup && (PLACEHOLDER.test(value) || ENV_REFERENCE.test(value))) {
         continue;
       }
-      hits.push({ line: index + 1, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) });
+      const hit = { line: hitLine, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) };
+      if (diff) {
+        hit.file = hitFile;
+      }
+      hits.push(hit);
       break;
     }
   });

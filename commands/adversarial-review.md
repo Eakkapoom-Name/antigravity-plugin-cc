@@ -15,13 +15,13 @@ Core constraint:
 
 Execution mode:
 
-- `--wait`: run in the foreground. `--background`: run as a Claude background task. Strip either flag before passing the rest to the script.
+- `--wait`: run in the foreground. `--background`: run as a Claude background task. Strip only those two flags; forward everything else to the script as-is, including any `--allow-secret <regex>` the user gave, which is the only way a known-fixture false positive gets past the secret scan below.
 - If neither flag is present, estimate the size first with `git diff --shortstat` for the chosen scope, treating untracked files as reviewable work even when the diff stat is empty. Then ask once with AskUserQuestion, two options, recommended first with the `(Recommended)` suffix: `Wait for results` and `Run in background`. Recommend waiting only for a clearly tiny scope, roughly 1 or 2 files; otherwise recommend background.
 
 Foreground flow:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" adversarial-review "<scope and focus>"
+node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" adversarial-review "<any --allow-secret <regex> flags, then scope and focus>"
 ```
 
 Set the Bash tool timeout to 590000 ms.
@@ -34,7 +34,7 @@ Background flow:
 
 The script collects the diff, renders the prompt, and passes the diff to agy on stdin, so size is not a constraint. It also passes `--json-schema` pointing at `schemas/review-output.schema.json`, so the structured shape is enforced by agy rather than only requested in the prompt. The review itself runs isolated: agy sees a temp directory, never the repository, so it cannot write into the project.
 
-If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `line <n>: <kind> (<sample>)`, say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
+If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `<file>:<line> <kind> (<sample>)`, or just `<line> <kind> (<sample>)` when `file` is missing, say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
 
 Reading the JSON the script prints:
 

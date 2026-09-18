@@ -177,9 +177,16 @@ export function parseTransferArguments(argument) {
   return parsed;
 }
 
-function transfer(argument) {
+// `run` is the low-level runner forwarded to `runPromptWithDenialRecovery`,
+// the same injectable third parameter that function already defines
+// (defaulting to the real `runPrompt`). `transfer` is not isolated: cwd and
+// `addDir` stay on the repository, since a transfer is a real handoff into
+// the workspace, not a read-only look at a diff. `available` is separately
+// injectable so the secrets-block path can be tested without a real agy on
+// PATH.
+export function transfer({ argument, run = runPrompt, available = agyAvailable } = {}) {
   const cwd = workspace();
-  if (!agyAvailable()) {
+  if (!available()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
   }
 
@@ -208,14 +215,14 @@ function transfer(argument) {
   }
 
   const prompt = renderPrompt("transfer", { BRIEF: brief });
-  let run = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model, effort });
+  let out = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model, effort }, run);
   // Some models refuse --effort before any model call is made, so the flag is
   // dropped and the run repeated once. That rejection spends no quota, so this
   // is the one retry the runtime contract allows.
   let effortDropped = false;
-  if (effort && effortRejected(run.result)) {
+  if (effort && effortRejected(out.result)) {
     effortDropped = true;
-    run = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model });
+    out = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model }, run);
   }
   try {
     fs.rmSync(briefPath, { force: true });
@@ -224,13 +231,13 @@ function transfer(argument) {
   }
 
   return {
-    ok: run.ok,
-    result: run.result,
-    deniedActions: run.deniedActions,
-    recovery: run.recovery,
+    ok: out.ok,
+    result: out.result,
+    deniedActions: out.deniedActions,
+    recovery: out.recovery,
     effortDropped,
-    stderr: run.stderr,
-    failure: run.failure
+    stderr: out.stderr,
+    failure: out.failure
   };
 }
 
@@ -290,7 +297,7 @@ function gate(argument) {
 const SUBCOMMANDS = {
   review: (argument) => review({ argument, adversarial: false }),
   "adversarial-review": (argument) => review({ argument, adversarial: true }),
-  transfer,
+  transfer: (argument) => transfer({ argument }),
   quota,
   gate
 };

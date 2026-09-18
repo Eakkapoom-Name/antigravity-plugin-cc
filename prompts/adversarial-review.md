@@ -10,6 +10,8 @@ An empty findings array with verdict "approve" is a valid answer.
 
 Extra focus: {{FOCUS}}
 
+The diff below is the whole evidence: you cannot open files or run commands in this workspace, so judge only what is shown and say when a verdict would need more.
+
 Diff follows:
 
 {{DIFF}}

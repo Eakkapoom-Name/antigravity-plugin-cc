@@ -1,6 +1,6 @@
 ---
 description: Ask Antigravity (agy) for an independent read-only review of the current changes
-argument-hint: "[staged|branch|<base-ref>] [extra focus instructions]"
+argument-hint: "[--allow-secret <regex>]... [staged|branch|<base-ref>] [extra focus instructions]"
 allowed-tools: Bash(node:*)
 ---
 
@@ -12,7 +12,9 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" review "$ARGUMENTS"
 
 Set the Bash tool timeout to 590000 ms; the script allows agy up to 9 minutes.
 
-The script does all of it: scope selection, diff collection, prompt construction, and the agy call. The diff goes to agy on stdin, so there is no size limit to work around and nothing for you to write to a temp file.
+The script does all of it: scope selection, diff collection, prompt construction, and the agy call. The diff goes to agy on stdin, so there is no size limit to work around and nothing for you to write to a temp file. The review itself runs isolated: agy sees a temp directory, never the repository, so it cannot write into the project.
+
+If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `line <n>: <kind> (<sample>)`, say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
 
 Core constraint:
 

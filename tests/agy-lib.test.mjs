@@ -229,13 +229,22 @@ test("defaultBranch resolves to a branch that exists", () => {
 });
 
 test("review arguments split into a scope and free-text focus", () => {
-  assert.deepEqual(parseReviewArguments("staged"), { scope: "staged", focus: "" });
+  assert.deepEqual(parseReviewArguments("staged"), { scope: "staged", focus: "", allowSecret: [] });
   assert.deepEqual(parseReviewArguments("branch check the error paths"), {
     scope: "branch",
-    focus: "check the error paths"
+    focus: "check the error paths",
+    allowSecret: []
   });
-  assert.deepEqual(parseReviewArguments(""), { scope: "", focus: "" });
-  assert.deepEqual(parseReviewArguments("  main  "), { scope: "main", focus: "" });
+  assert.deepEqual(parseReviewArguments(""), { scope: "", focus: "", allowSecret: [] });
+  assert.deepEqual(parseReviewArguments("  main  "), { scope: "main", focus: "", allowSecret: [] });
+});
+
+test("parseReviewArguments lifts repeatable --allow-secret out of the focus text", () => {
+  const parsed = parseReviewArguments("staged --allow-secret fixture$ check the auth path --allow-secret EXAMPLE");
+  assert.equal(parsed.scope, "staged");
+  assert.equal(parsed.focus, "check the auth path");
+  assert.deepEqual(parsed.allowSecret, ["fixture$", "EXAMPLE"]);
+  assert.deepEqual(parseReviewArguments("").allowSecret, []);
 });
 
 // Resolving a Windows shim is only half the job. Windows cannot exec a .cmd

@@ -1,6 +1,6 @@
 ---
 description: Run an agy review that challenges the implementation approach and design choices
-argument-hint: "[--wait|--background] [staged|branch|<base-ref>] [focus ...]"
+argument-hint: "[--allow-secret <regex>]... [--wait|--background] [staged|branch|<base-ref>] [focus ...]"
 allowed-tools: Bash(node:*), Bash(git:*), AskUserQuestion
 ---
 
@@ -32,7 +32,9 @@ Background flow:
 - Do not route the background path through the `agy:agy-rescue` subagent to make it look like a delegation. That subagent passes its task text as an argument, which is exactly the size limit this command avoids by letting the companion stream the diff on stdin.
 - Then tell the user: "agy adversarial review started in the background. Its output returns to this session when it finishes; `/agy:status` lists it alongside any subagent delegations." Do not wait or poll in this turn.
 
-The script collects the diff, renders the prompt, and passes the diff to agy on stdin, so size is not a constraint. It also passes `--json-schema` pointing at `schemas/review-output.schema.json`, so the structured shape is enforced by agy rather than only requested in the prompt.
+The script collects the diff, renders the prompt, and passes the diff to agy on stdin, so size is not a constraint. It also passes `--json-schema` pointing at `schemas/review-output.schema.json`, so the structured shape is enforced by agy rather than only requested in the prompt. The review itself runs isolated: agy sees a temp directory, never the repository, so it cannot write into the project.
+
+If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `line <n>: <kind> (<sample>)`, say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
 
 Reading the JSON the script prints:
 

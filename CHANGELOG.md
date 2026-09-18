@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what the 1.2.5 check consisted of: the 11-row denial harness, three cwd
   probes, `agy --help`, and the `/changelog` sections for 1.2.4 and 1.2.5, none
   of which report a print-mode, flag, permission, or result-shape change.
+- Reviews now run agy from an isolated temp directory instead of the
+  repository, so a review cannot write into the project. The reviewer sees
+  the diff only, and the prompt says so.
+- A credential-shaped string in the added lines of a review diff, or in a
+  transfer brief, blocks the run before anything leaves the machine. The
+  report names the line and the kind, never the value; `--allow-secret
+  <regex>` admits a known fixture.
 
 ### Fixed
 

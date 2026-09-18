@@ -15,6 +15,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - `/agy:continue` to follow up in an existing agy conversation
 - `/agy:quota` to check remaining Antigravity model quota
 - `/agy:transfer` to hand the current session over to a resumable agy conversation
+- `/agy:whisper` for a one-shot question to agy with no repository context
 - `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
@@ -186,6 +187,17 @@ Examples:
 ```bash
 /agy:quota
 ```
+
+### `/agy:whisper`
+
+```text
+/agy:whisper what does SIGPIPE mean for a Node child process
+/agy:whisper --model gemini-3.5-pro --effort high explain CRDT merge semantics
+```
+
+One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
+with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
+runs from an isolated temp directory, so it cannot touch your project.
 
 ### `/agy:transfer`
 
@@ -369,14 +381,16 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   ├── review.md
 │   ├── setup.md
 │   ├── status.md
-│   └── transfer.md
+│   ├── transfer.md
+│   └── whisper.md
 ├── hooks/
 │   └── hooks.json                     Stop hook wiring for the stop-review gate
 ├── prompts/
 │   ├── adversarial-review.md          challenge-review prompt
 │   ├── review.md                      code-review prompt
 │   ├── stop-review-gate.md            stop-gate prompt
-│   └── transfer.md                    session handoff prompt
+│   ├── transfer.md                    session handoff prompt
+│   └── whisper.md                     one-shot question prompt
 ├── schemas/
 │   └── review-output.schema.json      adversarial review output shape
 ├── scripts/

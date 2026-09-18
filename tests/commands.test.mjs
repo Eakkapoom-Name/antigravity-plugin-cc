@@ -19,7 +19,8 @@ test("every command file exists and is discovered", () => {
     "review.md",
     "setup.md",
     "status.md",
-    "transfer.md"
+    "transfer.md",
+    "whisper.md"
   ]);
 });
 
@@ -77,7 +78,7 @@ test("transfer writes its brief with the Write tool and passes only a path", () 
 // The old shape: every command shelled out to agy itself, so each needed its own
 // agy, git, cat and rm grants. The companion owns those calls now, so a command
 // that still grants Bash(agy:*) is reaching around it.
-for (const name of ["review.md", "adversarial-review.md", "transfer.md", "quota.md"]) {
+for (const name of ["review.md", "adversarial-review.md", "transfer.md", "quota.md", "whisper.md"]) {
   test(`${name} goes through the companion rather than calling agy itself`, () => {
     const fields = parseFrontmatter(read(`commands/${name}`));
     const source = read(`commands/${name}`);

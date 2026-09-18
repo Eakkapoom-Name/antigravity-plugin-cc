@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { review, transfer } from "../scripts/agy-companion.mjs";
+import { parseFlaggedArguments, review, transfer, whisper } from "../scripts/agy-companion.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
 
@@ -107,4 +107,47 @@ test("a clean transfer brief proceeds and is removed after", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("parseFlaggedArguments splits named flags from the free text", () => {
+  const parsed = parseFlaggedArguments("--model gemini --effort high what is a monad --allow-secret a --allow-secret b", ["--model", "--effort", "--allow-secret"]);
+  assert.deepEqual(parsed.flags, { model: "gemini", effort: "high", allowSecret: ["a", "b"] });
+  assert.equal(parsed.rest, "what is a monad");
+  assert.deepEqual(parseFlaggedArguments("", ["--model"]), { flags: {}, rest: "" });
+  assert.equal(parseFlaggedArguments("--model", ["--model"]).rest, "");
+});
+
+test("whisper refuses an empty prompt without spending a run", () => {
+  const calls = [];
+  const out = whisper("--model x", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /needs a prompt/);
+  assert.equal(calls.length, 0);
+});
+
+test("whisper renders the template and passes model and effort through an isolated run", () => {
+  const calls = [];
+  const out = whisper("--model m --effort low why is the sky blue", fakeRun(calls), () => true);
+  assert.equal(out.ok, true);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].prompt, /why is the sky blue/);
+  assert.equal(calls[0].options.model, "m");
+  assert.equal(calls[0].options.effort, "low");
+  assert.equal(calls[0].options.printTimeout, "3m");
+  assert.equal(out.effortDropped, false);
+});
+
+test("whisper drops --effort once when the model rejects it", () => {
+  const calls = [];
+  const out = whisper("--effort high hi", (prompt, options) => {
+    calls.push(options);
+    if (options.effort) {
+      return { result: { status: "ERROR", error: '--effort is not supported for model "x"' }, events: [], deniedActions: [], stderr: "", ok: false, failure: "failed" };
+    }
+    return { result: { status: "SUCCESS", response: "hello" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  }, () => true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].effort, undefined);
+  assert.equal(out.effortDropped, true);
+  assert.equal(out.ok, true);
 });

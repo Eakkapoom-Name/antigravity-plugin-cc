@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sends to agy (task, output contract, done state, verification loop,
   grounding rules, action safety). The rescue agent loads it; the new prompt
   templates follow it.
+- `/agy:whisper`: a one-shot question to agy with no repository context,
+  through the isolated runner.
 
 ### Changed
 

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseFrontmatter, read } from "./helpers.mjs";
+import { listMarkdown, parseFrontmatter, read } from "./helpers.mjs";
 
 // Claude Code's own guidance writes the bang form with a space. The repository
 // used both spellings, which reads like two different commands.
@@ -104,4 +104,19 @@ test("the README mode table does not claim the default mode refuses reads", () =
   assert.ok(row, "no request-review row in the README mode table");
   assert.ok(!/Reads and commands are refused/i.test(row), `stale row: ${row}`);
   assert.match(row, /inside the workspace was allowed/i);
+});
+
+// A new command file with no matching README section leaves users unable to
+// discover it. The heading convention is a backticked command name, matching
+// every existing `### /agy:<name>` section in this file.
+test("every command has a matching README usage section", () => {
+  const readme = read("README.md");
+  for (const file of listMarkdown("commands")) {
+    const name = file.replace(/\.md$/, "");
+    assert.match(
+      readme,
+      new RegExp(`^### \`/agy:${name}\`$`, "m"),
+      `README has no ### \`/agy:${name}\` section for commands/${file}`
+    );
+  }
 });

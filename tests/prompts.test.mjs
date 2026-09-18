@@ -62,3 +62,8 @@ test("placeholdersIn deduplicates and ignores non-placeholder braces", () => {
   assert.deepEqual(placeholdersIn("{{A}} {{A}} {{B}}"), ["A", "B"]);
   assert.deepEqual(placeholdersIn("{ not one } {{lowercase}} ${shell}"), []);
 });
+
+test("the whisper template takes the prompt and nothing else", () => {
+  assert.deepEqual(placeholdersIn(readPrompt("whisper")), ["PROMPT"]);
+  assert.ok(!renderPrompt("whisper", { PROMPT: "hi" }).includes("{{"));
+});

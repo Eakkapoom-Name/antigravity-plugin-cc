@@ -241,6 +241,83 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
   };
 }
 
+// Shared by the read-only commands: `[--flag value]... <free text>`. A flag
+// given twice becomes an array, so `--allow-secret` can repeat. A flag with no
+// value is dropped rather than eating the next word.
+export function parseFlaggedArguments(argument, names) {
+  const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
+  const flags = {};
+  const rest = [];
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (!names.includes(token)) {
+      rest.push(token);
+      continue;
+    }
+    const value = tokens[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      continue;
+    }
+    const key = token.slice(2).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+    flags[key] = key in flags ? [].concat(flags[key], value) : value;
+    i += 1;
+  }
+  return { flags, rest: rest.join(" ") };
+}
+
+// Some models refuse --effort before any model call is made; that refusal
+// spends no quota, so the run repeats once without the flag. `run` is called
+// directly here, so the caller decides what `run` does, including whether it
+// wraps `runIsolated` around a lower-level runner.
+export function runWithEffortFallback(prompt, options, run) {
+  let out = run(prompt, options);
+  let effortDropped = false;
+  if (options.effort && effortRejected(out.result)) {
+    effortDropped = true;
+    const { effort: _effort, ...rest } = options;
+    out = run(prompt, rest);
+  }
+  return { run: out, effortDropped };
+}
+
+function resultPayload(out, extra = {}) {
+  return {
+    ok: out.run.ok,
+    result: out.run.result,
+    deniedActions: out.run.deniedActions,
+    recovery: out.run.recovery,
+    effortDropped: out.effortDropped,
+    stderr: out.run.stderr,
+    failure: out.run.failure,
+    note: out.run.note,
+    ...extra
+  };
+}
+
+const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
+
+// `run` is the low-level runner forwarded into `runIsolated`, the same
+// injectable third parameter `runIsolated` itself already defines (defaulting
+// to the real `runPrompt`). whisper sends no repository text, so it does not
+// scan for secrets and never touches the workspace; isolation is not
+// something a caller can opt out of by injecting a runner.
+export function whisper(argument, run = runPrompt, available = agyAvailable) {
+  if (!available()) {
+    return NOT_INSTALLED;
+  }
+  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort"]);
+  if (!rest) {
+    return { ok: false, error: "whisper needs a prompt." };
+  }
+  const prompt = renderPrompt("whisper", { PROMPT: rest });
+  const out = runWithEffortFallback(
+    prompt,
+    { model: flags.model, effort: flags.effort, printTimeout: "3m" },
+    (p, options) => runIsolated(p, options, run)
+  );
+  return resultPayload(out);
+}
+
 function quota() {
   if (!agyAvailable()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
@@ -299,7 +376,8 @@ const SUBCOMMANDS = {
   "adversarial-review": (argument) => review({ argument, adversarial: true }),
   transfer: (argument) => transfer({ argument }),
   quota,
-  gate
+  gate,
+  whisper: (argument) => whisper(argument)
 };
 
 export function main(argv) {

@@ -200,7 +200,11 @@ Examples:
 
 One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
 with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
-runs from an isolated temp directory, so it cannot touch your project.
+runs from an isolated temp directory, so it does not see your project. That is
+a working-directory change rather than a sandbox: agy's own
+`allowNonWorkspaceAccess` setting, with an absolute path in the prompt text,
+still reaches outside it. Nothing in this command's text is checked for a URL;
+the local-network guard belongs to `/agy:search` alone.
 
 ### `/agy:search`
 
@@ -212,10 +216,14 @@ runs from an isolated temp directory, so it cannot touch your project.
 A bare question runs a web search and answers with a `Sources:` list. A single
 `http://` or `https://` URL fetches that page as markdown. Local, private,
 link-local, and other reserved-network targets, non-http schemes, and URLs
-carrying credentials are refused before agy runs. That check is made once, on
+carrying credentials are refused before agy runs. A URL-shaped word inside an
+ordinary search query is checked the same way, so a blocked address does not
+get through by arriving with other words around it. That check is made once, on
 the URL given; it does not follow redirects and cannot see a DNS answer that
 changes afterward (rebinding), since agy performs the actual fetch in its own
-process. The `agy-web` skill tells Claude Code to reach for this second, after
+process. It also covers this command only: `/agy:whisper`, `/agy:research` and
+`/agy:image` send their text to the same web-capable agy unchecked. The
+`agy-web` skill tells Claude Code to reach for this second, after
 its own WebSearch and WebFetch and before Tavily.
 
 ### `/agy:research`
@@ -246,9 +254,9 @@ somewhere inside that directory, then copies it inside the workspace; the
 parent directory must exist and an existing file is never overwritten. The
 copy is a byte-for-byte copy, not a re-encode, so a `--out` name whose
 extension differs from the file agy actually produced is copied as-is under
-the name given. Measured on agy 1.2.6: about 26 s wall time for a 1024x1024
-JPEG, written under a name agy chose itself despite the `.png` requested with
-`--out`.
+the name given. That happens: a run that asked for a PNG came back as a
+1024x1024 JPEG, under a name agy chose itself. agy never sees `--out`; the
+companion resolves it and does the copy.
 
 ### `/agy:transfer`
 

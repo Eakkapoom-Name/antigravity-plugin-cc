@@ -10,8 +10,10 @@ those three have no deterministic work to send anywhere. What the rest
 send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
-  Not the rest of the repository: these run from an isolated temp directory
-  and agy cannot read your files.
+  Not the rest of the repository: these run from an isolated temp directory,
+  so agy does not see your files. That is a working-directory change, not a
+  sandbox; with agy's own `allowNonWorkspaceAccess` setting on and an absolute
+  path in the text, agy can still reach outside that directory.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files.
 - `/agy:rescue`, `/agy:continue`: the task text, and whatever agy then reads
@@ -34,11 +36,18 @@ send, per command:
   credential shape (AWS key id, private key block, GitHub, Slack or Google
   tokens, bearer tokens, `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments)
   blocks the run and names the line and kind, never the value.
-  `--allow-secret <regex>` admits a known fixture.
+  `--allow-secret <regex>` belongs to `/agy:review` and
+  `/agy:adversarial-review`, where it admits a known fixture. `/agy:transfer`
+  has no such flag: a blocked brief is resolved by editing the brief.
 - Read-only commands run agy in an isolated temp directory so they cannot
   write into the project.
-- `/agy:search` fetch mode refuses loopback, private and link-local targets,
-  non-http schemes, and URLs with credentials.
+- `/agy:search` refuses loopback, private and link-local targets, non-http
+  schemes, and URLs with credentials. Both halves of that command are checked:
+  a URL given as the whole argument, and a URL-shaped word inside an ordinary
+  search query. The check covers `/agy:search` only. `/agy:whisper`,
+  `/agy:research` and `/agy:image` pass their text to the same web-capable agy
+  with no URL check at all, so a local-network address named in one of those
+  prompts is not refused here.
 - `/agy:image` copies a file only after showing the path agy named sits under
   agy's own artifacts directory.
 - `/agy:setup` refuses an agy below 1.2.4, the version these behaviours were

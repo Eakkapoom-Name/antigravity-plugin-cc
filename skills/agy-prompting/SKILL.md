@@ -22,9 +22,8 @@ Include the blocks the task needs; leave the rest out.
   and their order when the answer is a report; say "one line" when it is one
   line.
 - `<done_state>`: what finished looks like. agy does not infer it. For a fix:
-  the named tests pass. For a review: every hunk considered. For research: the
-  question answered with sources. For an image: the file exists at the path
-  the output contract named.
+  the named tests pass. For a review: every hunk considered. For an image: the
+  file exists at the path the output contract named.
 - `<verification_loop>`: required for fixes and implementation. Run the tests
   the change touches, report the command and its result, and do not claim a
   pass you did not observe.
@@ -44,7 +43,8 @@ Include the blocks the task needs; leave the rest out.
   carry this contract in prose today; they predate the tagged block form, so
   read them for the substance, not as a worked example of the tags. New
   templates use the tags directly.
-- Research or search (`search`): `task`, `output_contract`, `grounding_rules`.
+- Research or search (`research`, `search`): `task`, `output_contract`,
+  `grounding_rules`.
 - Fetch a single URL (`fetch`): `task`, `output_contract`. It renders one page
   into readable text, the second half of `/agy:search`; there is no claim to
   ground, so `grounding_rules` does not apply.

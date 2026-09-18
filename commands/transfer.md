@@ -36,3 +36,5 @@ Set the Bash tool timeout to 590000 ms. The script reads the brief, sends it to 
 5. If agy's stated understanding contradicts the brief, say so plainly next to the reply; do not silently correct it.
 
 6. On `ok: false`, report the `error` and stop. If agy is missing, point at `/agy:setup`. Do not retry.
+
+If the JSON has `failure: "secrets"`, the handoff did not run and there is no `error` field to report. List each `hits[]` entry as `<line> <kind> (<sample>)`, say nothing left the machine, and say the way forward: edit the brief to remove or redact the credential, then rerun. There is no `--allow-secret` flag on this command. Do not retry on your own.

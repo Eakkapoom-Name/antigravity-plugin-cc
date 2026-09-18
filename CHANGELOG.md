@@ -29,10 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   NAT, multicast, broadcast, and a few other IANA special-purpose ranges,
   across every IPv4 and IPv6 form the guard can recognise; http and https
   only, no credentials). The same guard also covers a URL-shaped word inside
-  a search query, not only a bare URL. The `agy-web` skill places it second
+  a search query, not only a bare URL. It covers `/agy:search` and nothing
+  else: `/agy:whisper`, `/agy:research` and `/agy:image` pass their text to
+  the same web-capable agy unguarded. The `agy-web` skill places it second
   in the web tool order, after Claude Code's own tools and before Tavily, and
-  states what the guard cannot cover: redirects and DNS rebinding, which
-  happen in agy's own fetch after the guard has already returned.
+  states what the guard cannot cover: that scope, redirects, and DNS
+  rebinding, the last two happening in agy's own fetch after the guard has
+  already returned.
 - `/agy:research`: a web-grounded investigation with a fixed report shape
   (summary, findings with sources, disagreements, caveats, sources), depth
   set by `--effort`, optionally written to `--out <path>` inside the
@@ -58,8 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the diff only, and the prompt says so.
 - A credential-shaped string in the added lines of a review diff, or in a
   transfer brief, blocks the run before anything leaves the machine. The
-  report names the line and the kind, never the value; `--allow-secret
-  <regex>` admits a known fixture.
+  report names the line and the kind, never the value. `--allow-secret
+  <regex>` admits a known fixture on `/agy:review` and
+  `/agy:adversarial-review`; a blocked `/agy:transfer` has no such flag and is
+  resolved by editing the brief.
 
 ### Fixed
 

@@ -208,10 +208,13 @@ runs from an isolated temp directory, so it cannot touch your project.
 ```
 
 A bare question runs a web search and answers with a `Sources:` list. A single
-`http://` or `https://` URL fetches that page as markdown. Local, private and
-link-local targets, non-http schemes, and URLs carrying credentials are refused
-before agy runs. The `agy-web` skill tells Claude Code to reach for this
-second, after its own WebSearch and WebFetch and before Tavily.
+`http://` or `https://` URL fetches that page as markdown. Local, private,
+link-local, and other reserved-network targets, non-http schemes, and URLs
+carrying credentials are refused before agy runs. That check is made once, on
+the URL given; it does not follow redirects and cannot see a DNS answer that
+changes afterward (rebinding), since agy performs the actual fetch in its own
+process. The `agy-web` skill tells Claude Code to reach for this second, after
+its own WebSearch and WebFetch and before Tavily.
 
 ### `/agy:transfer`
 

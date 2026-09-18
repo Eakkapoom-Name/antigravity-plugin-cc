@@ -21,7 +21,21 @@ import net from "node:net";
 
 export function looksLikeUrl(text) {
   const token = String(text ?? "").trim();
-  return !/\s/.test(token) && /^[a-z][a-z0-9+.-]*:\/\//i.test(token);
+  if (/\s/.test(token)) {
+    return false;
+  }
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) {
+    return true;
+  }
+  // http and https are WHATWG "special schemes": Node's URL parser (and any
+  // standards-compliant client, including agy's own) accepts them with no
+  // "//" at all, and treats any number of leading "/" and "\" the same way,
+  // so "http:127.0.0.1", "http:\127.0.0.1", and "http:/127.0.0.1" all parse
+  // to "http://127.0.0.1/" exactly like the slashed form. Only http and
+  // https get this extra check: every other scheme still needs "//" to be
+  // recognised as a URL at all, which is fine, since a non-fetchable scheme
+  // carries no address to guard either way.
+  return /^https?:\S/i.test(token);
 }
 
 function ipv4Parts(address) {
@@ -96,9 +110,18 @@ export function isBlockedAddress(address) {
   }
   const allZero = (from, to) => groups.slice(from, to).every((g) => g === 0);
 
-  // IPv4-mapped, ::ffff:0:0/96: the low 32 bits are an embedded IPv4
-  // address, in whichever spelling the caller or the URL parser produced.
+  // IPv4-mapped, ::ffff:0:0/96 (RFC 4291, "::ffff:a.b.c.d"): the low 32
+  // bits are an embedded IPv4 address, in whichever spelling the caller or
+  // the URL parser produced.
   if (allZero(0, 5) && groups[5] === 0xffff) {
+    return blockedIpv4(embeddedIpv4(groups, 6));
+  }
+  // IPv4-translated (RFC 2765, "::ffff:0:a.b.c.d"): the same ffff marker,
+  // shifted one group earlier, with an explicit zero group between it and
+  // the embedded IPv4 address. A guard that only recognised the mapped
+  // form's group position would let this spelling of the same embedded
+  // address through.
+  if (allZero(0, 4) && groups[4] === 0xffff && groups[5] === 0) {
     return blockedIpv4(embeddedIpv4(groups, 6));
   }
   // IPv4-compatible, ::/96 (deprecated, but still a valid address this host

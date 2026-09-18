@@ -258,3 +258,93 @@ test("an ordinary multiword query with no url still reaches the search path", as
   assert.equal(calls.length, 1);
   assert.match(calls[0].prompt, /current node lts version/);
 });
+
+// `\S+` grabs trailing prose punctuation too, and a comma glued directly to
+// a bare host (no path to separate it) becomes part of the hostname, which
+// then fails to resolve and refuses an otherwise ordinary query.
+test("a query with a trailing comma after a public url still reaches the search path", async () => {
+  const calls = [];
+  const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const out = await search("see https://example.com, then stop", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+});
+
+test("a blocked url followed by a comma inside a query is still refused", async () => {
+  const calls = [];
+  const out = await search("see http://127.0.0.1, then stop", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+});
+
+// http and https are WHATWG "special schemes": Node's URL parser accepts
+// them with no "//" at all ("http:127.0.0.1") and with backslashes in place
+// of slashes ("http:\127.0.0.1"), both resolving to the same address as the
+// slashed form. This is the same bypass class finding 1 closed, on both the
+// fetch path (the whole argument is one such token) and the query scan (one
+// word of a multiword query is).
+test("search refuses a colon-only url with no slashes on the fetch path", async () => {
+  const calls = [];
+  const out = await search("http:127.0.0.1", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(out.mode, "fetch");
+  assert.equal(calls.length, 0);
+});
+
+test("search refuses a backslash-form url with no slashes on the fetch path", async () => {
+  const calls = [];
+  const out = await search("http:\\127.0.0.1", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(out.mode, "fetch");
+  assert.equal(calls.length, 0);
+});
+
+test("search refuses a colon-only url with no slashes embedded in a query", async () => {
+  const calls = [];
+  const out = await search("please fetch http:127.0.0.1 for me", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 0);
+});
+
+// A query repeating the same host in several URLs resolves it once, not
+// once per mention.
+test("search dedupes repeated mentions of the same host in a query", async () => {
+  const calls = [];
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const out = await search(
+    "compare https://example.com/a and https://example.com/b and https://example.com/c",
+    fakeRun(calls),
+    () => true,
+    lookup
+  );
+  assert.equal(out.ok, true);
+  assert.equal(lookups, 1, "the same host should only be resolved once");
+  assert.equal(calls.length, 1);
+});
+
+// A query naming more distinct hosts than the cap is refused outright
+// rather than resolving an unbounded list of hosts one at a time.
+test("search refuses a query naming more distinct hosts than the cap", async () => {
+  const calls = [];
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const manyHosts = Array.from({ length: 25 }, (_, i) => `https://host${i}.example.com/`).join(" ");
+  const out = await search(manyHosts, fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+  assert.equal(lookups, 20, "expected exactly the cap's worth of lookups before refusing");
+});

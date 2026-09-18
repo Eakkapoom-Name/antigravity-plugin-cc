@@ -297,6 +297,17 @@ function resultPayload(out, extra = {}) {
 
 const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
 
+// Trailing prose punctuation that is never part of a URL's host, stripped
+// from a matched token before it reaches the guard (search()'s query scan).
+const TRAILING_QUERY_PUNCTUATION = /[).,;:!?'"\]>]+$/;
+
+// Cap on the distinct hosts search()'s query scan will resolve for one
+// query. Twenty is comfortably above any query that legitimately mentions a
+// handful of URLs, while still bounding a single request to a small,
+// constant number of DNS lookups no matter how many URL-shaped tokens the
+// query contains.
+const MAX_SCANNED_HOSTS = 20;
+
 // `run` is the low-level runner forwarded into `runIsolated`, the same
 // injectable third parameter `runIsolated` itself already defines (defaulting
 // to the real `runPrompt`). whisper sends no repository text, so it does not
@@ -352,7 +363,12 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // anywhere in the text, not only at the start of a whitespace-split
     // token, catches a URL wrapped in punctuation ("(http://127.0.0.1/)",
     // a quoted or angle-bracketed URL) that a per-token `looksLikeUrl` check
-    // would miss because the token does not begin with the scheme.
+    // would miss because the token does not begin with the scheme. Requiring
+    // only "https?:" and not "https?://" also catches the slash-free and
+    // backslash forms `looksLikeUrl` now recognises for the fetch path
+    // ("http:127.0.0.1", "http:\127.0.0.1"), the same bypass in the same
+    // file: `\S+` already matches "//" when it is there, so nothing is lost
+    // for the slashed form.
     //
     // Only http and https tokens are scanned here, unlike the fetch path
     // above, which checks whatever scheme the user named. On the fetch path
@@ -362,7 +378,42 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // decide to fetch it, which is only possible for an http or https token.
     // A mention of any other scheme ("what does ftp:// mean") is prose, not
     // a fetch target, and passes through untouched.
-    for (const [token] of rest.matchAll(/https?:\/\/\S+/gi)) {
+    //
+    // `\S+` also grabs trailing prose punctuation a URL is not part of
+    // ("see https://example.com, then stop" would otherwise guard the host
+    // "example.com,"), so it is stripped before the token reaches the
+    // guard; stripping never changes the host, which always comes before
+    // any of these characters could appear, so it cannot weaken the check.
+    //
+    // Guarding is by distinct host, not by token: a query repeating the
+    // same host in several URLs is one DNS lookup, not one per mention, and
+    // a query naming more distinct hosts than MAX_SCANNED_HOSTS is refused
+    // outright rather than resolving an unbounded list one at a time.
+    const seenHosts = new Set();
+    for (const [rawToken] of rest.matchAll(/https?:\S+/gi)) {
+      const token = rawToken.replace(TRAILING_QUERY_PUNCTUATION, "");
+      if (!token) {
+        continue;
+      }
+      let hostKey = token.toLowerCase();
+      try {
+        hostKey = new URL(token).hostname.toLowerCase();
+      } catch {
+        // Left as the raw token: guardFetchUrl will hit the same parse
+        // failure below and refuse the request either way.
+      }
+      if (seenHosts.has(hostKey)) {
+        continue;
+      }
+      if (seenHosts.size >= MAX_SCANNED_HOSTS) {
+        return {
+          ok: false,
+          failure: "url-blocked",
+          mode: "search",
+          error: `search refused: query names more than ${MAX_SCANNED_HOSTS} distinct hosts to check`
+        };
+      }
+      seenHosts.add(hostKey);
       const guard = await guardFetchUrl(token, lookup);
       if (!guard.ok) {
         return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };

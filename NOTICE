@@ -7,14 +7,26 @@ under the Apache License, Version 2.0. A copy of that licence is in
 LICENSE-APACHE-2.0.
 
 Derived from codex-plugin-cc:
-- the companion-script layout (scripts/agy-companion.mjs and its subcommands,
-  scripts/stop-review-gate-hook.mjs)
-- scripts/lib/process.mjs (command resolution and spawning)
-- scripts/lib/state.mjs (per-workspace state under the plugin data directory)
-- scripts/lib/workspace.mjs (workspace root resolution)
-- the argument parsing in scripts/agy-companion.mjs
+- the companion-script layout (scripts/agy-companion.mjs and its subcommands)
+  and scripts/stop-review-gate-hook.mjs, whose hook-input reading, decision
+  emitting, and gate-then-review control flow are adapted from upstream's
+  script of the same job
+- scripts/lib/prompts.mjs (prompt file loading by name and placeholder
+  interpolation by regex replace)
+- scripts/lib/state.mjs (per-workspace state under the plugin data directory,
+  including the workspace-root hashing and slugging)
 - the command, skill and agent structure under commands/, skills/, agents/
 
-Everything else in this repository is the work of its author and is offered
-under the MIT License in LICENSE. The Apache-2.0 terms continue to apply to
-the derived parts listed above.
+Not derived, despite the name match: scripts/lib/process.mjs and
+scripts/lib/workspace.mjs share only the job their upstream namesakes do
+(spawning a command without a shell; resolving the workspace root with a
+fallback to the given directory). The code differs throughout; both were
+written from scratch to solve problems upstream's versions do not have
+(Windows .cmd/.bat shim resolution; avoiding a shell-out to git). They are
+named here, not for licence purposes, but so a reader comparing file lists
+is not left wondering why two obviously matching names are missing from the
+list above.
+
+Everything else in this repository, including the two files just named, is
+the work of its author and is offered under the MIT License in LICENSE. The
+Apache-2.0 terms continue to apply to the derived parts listed above.

@@ -2,9 +2,12 @@
 
 ## What leaves your machine
 
-Every command here hands text to the Antigravity CLI (`agy`), which sends it
-to Google's models under your own agy account and settings. What that text is,
-per command:
+Most commands here hand text to the Antigravity CLI (`agy`), which sends it
+to Google's models under your own agy account and settings. Three never call
+agy at all: `/agy:cancel`, `/agy:status`, and `/agy:result` only read Claude
+Code's own background task tracking; this plugin keeps no job store, so
+those three have no deterministic work to send anywhere. What the rest
+send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
   Not the rest of the repository: these run from an isolated temp directory
@@ -15,6 +18,13 @@ per command:
   or runs in your repository under agy's own permission settings.
 - `/agy:whisper`, `/agy:search`, `/agy:research`, `/agy:image`: the prompt
   text only, from an isolated temp directory.
+- `/agy:quota`: no user text; a fixed print-mode `/usage` slash command that
+  spends no quota.
+- `/agy:setup`'s readiness check: no user text either, a version check plus
+  fixed auth, command and read probes; the read probe briefly plants a
+  marker file in your actual workspace root, not an isolated directory, and
+  asks agy to read it back. The gate on/off/status form of the same command
+  sends nothing to agy at all.
 - The stop-review gate: the previous Claude turn, and whatever agy reads in the
   repository to check it.
 

@@ -50,3 +50,6 @@ node_modules/
 
 # Local working notes; the open-work rules they point at are local too
 CLAUDE.md
+
+# Subagent-driven execution scratch: ledgers, briefs, reports, review packages
+.superpowers/

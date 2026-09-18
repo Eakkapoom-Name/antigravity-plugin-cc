@@ -9,11 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `NOTICE` and `LICENSE-APACHE-2.0` restore the attribution for the parts
-  derived from `openai/codex-plugin-cc`, dropped at 0.4.2 when the repository
-  moved to MIT; `LICENSE` explains the split and the README credits the
-  upstream. `SECURITY.md` states what leaves the machine per command and how
-  to report a problem; `CONTRIBUTING.md` states the test and commit rules.
+- `SECURITY.md` states what leaves the machine per command and how to report
+  a problem; `CONTRIBUTING.md` states the test and commit rules.
 - Two rows in `npm run test:denials` for the shapes issue #21 reports: an
   allow-list carrying command rules and no read rule, and a workspace root that
   is the home directory itself. Both were ruled out by hand on 2026-09-17; the

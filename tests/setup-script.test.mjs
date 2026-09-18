@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   MIN_AGY_VERSION,
+  buildReport,
   classifyProbeFailure,
   compareVersions,
   containsFilesystemPath,
@@ -485,4 +486,74 @@ test("meetsMinimumVersion is false for anything it cannot parse", () => {
   assert.equal(meetsMinimumVersion(""), false);
   assert.equal(meetsMinimumVersion("dev"), false);
   assert.equal(meetsMinimumVersion(null), false);
+});
+
+// The below-floor branch cannot be exercised on this machine, whose agy is
+// above the floor, so the report assembly takes its inputs from `buildReport`
+// and the probes are injected here. What is pinned: an agy under the floor
+// skips both probes entirely, the report is not ready, and the one next step
+// names the version found as well as the floor it missed.
+const BELOW_FLOOR_AGY = {
+  available: true,
+  detail: "agy 1.1.28",
+  path: "/usr/local/bin/agy",
+  version: "1.1.28",
+  minimumVersion: MIN_AGY_VERSION,
+  meetsMinimum: false
+};
+
+function reportBelowFloor() {
+  const calls = { auth: 0, tools: 0 };
+  const report = buildReport({
+    cwd: os.tmpdir(),
+    node: { available: true, detail: "v22.0.0" },
+    agy: BELOW_FLOOR_AGY,
+    agySettings: { path: "settings.json", readable: false, toolPermission: "request-review" },
+    gateOn: false,
+    checkAuth: () => {
+      calls.auth += 1;
+      throw new Error("the auth probe ran below the floor");
+    },
+    checkToolPermissions: () => {
+      calls.tools += 1;
+      throw new Error("the tool probe ran below the floor");
+    }
+  });
+  return { report, calls };
+}
+
+test("an agy below the floor skips both probes", () => {
+  const { calls } = reportBelowFloor();
+  assert.equal(calls.auth, 0);
+  assert.equal(calls.tools, 0);
+});
+
+test("an agy below the floor is not ready and says so in both probe details", () => {
+  const { report } = reportBelowFloor();
+  assert.equal(report.ready, false);
+  assert.equal(report.auth.detail, "not checked; agy is below the minimum version");
+  assert.equal(report.toolPermissions.detail, "not checked; agy is below the minimum version");
+  assert.equal(report.auth.available, false);
+  assert.equal(report.toolPermissions.available, false);
+});
+
+test("the below-floor next step names the version found and the floor it missed", () => {
+  const { report } = reportBelowFloor();
+  assert.equal(report.nextSteps.length, 1);
+  assert.match(report.nextSteps[0], /agy 1\.1\.28 is below the 1\.2\.4/);
+  assert.match(report.nextSteps[0], /agy update/);
+  assert.match(report.nextSteps[0], /probes were skipped/);
+});
+
+test("a below-floor report with no version still names the floor", () => {
+  const report = buildReport({
+    cwd: os.tmpdir(),
+    node: { available: true, detail: "v22.0.0" },
+    agy: { ...BELOW_FLOOR_AGY, version: null },
+    agySettings: { toolPermission: "request-review" },
+    gateOn: false,
+    checkAuth: () => assert.fail("the auth probe ran below the floor"),
+    checkToolPermissions: () => assert.fail("the tool probe ran below the floor")
+  });
+  assert.match(report.nextSteps[0], /\(unparsable version\) is below the 1\.2\.4/);
 });

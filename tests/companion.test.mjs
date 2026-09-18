@@ -110,11 +110,30 @@ test("a clean transfer brief proceeds and is removed after", () => {
 });
 
 test("parseFlaggedArguments splits named flags from the free text", () => {
-  const parsed = parseFlaggedArguments("--model gemini --effort high what is a monad --allow-secret a --allow-secret b", ["--model", "--effort", "--allow-secret"]);
+  // A flag repeats only when the caller declares it repeatable, which is the
+  // one shape `--allow-secret` needs and no other consumer of this parser has.
+  const parsed = parseFlaggedArguments(
+    "--model gemini --effort high what is a monad --allow-secret a --allow-secret b",
+    ["--model", "--effort", "--allow-secret"],
+    ["--allow-secret"]
+  );
   assert.deepEqual(parsed.flags, { model: "gemini", effort: "high", allowSecret: ["a", "b"] });
   assert.equal(parsed.rest, "what is a monad");
+  assert.equal(parsed.error, undefined);
   assert.deepEqual(parseFlaggedArguments("", ["--model"]), { flags: {}, rest: "" });
   assert.equal(parseFlaggedArguments("--model", ["--model"]).rest, "");
+});
+
+// The same input without the repeatable declaration is a refusal, not an
+// array: an array reaches `buildArgs` as a non-string argv entry, and
+// `spawnSync` then rejects the whole run with a message naming none of this.
+test("parseFlaggedArguments refuses a repeated flag that was not declared repeatable", () => {
+  const parsed = parseFlaggedArguments("--allow-secret a --allow-secret b diff", ["--allow-secret"]);
+  assert.equal(parsed.error, "--allow-secret was given more than once; it takes a single value.");
+  assert.deepEqual(
+    parseFlaggedArguments("--model a --model b hi", ["--model"]).error,
+    "--model was given more than once; it takes a single value."
+  );
 });
 
 test("whisper refuses an empty prompt without spending a run", () => {
@@ -122,6 +141,18 @@ test("whisper refuses an empty prompt without spending a run", () => {
   const out = whisper("--model x", fakeRun(calls), () => true);
   assert.equal(out.ok, false);
   assert.match(out.error, /needs a prompt/);
+  assert.equal(calls.length, 0);
+});
+
+// A repeated scalar flag is refused by name before a run is spent. The old
+// array behaviour put `["a", "b"]` into `options.model`, which reached argv as
+// a non-string and failed inside spawnSync with ERR_INVALID_ARG_TYPE, reported
+// to the user as a generic failure naming neither the flag nor the repeat.
+test("whisper refuses --model given twice, by name, without spending a run", () => {
+  const calls = [];
+  const out = whisper("--model a --model b why is the sky blue", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.error, "--model was given more than once; it takes a single value.");
   assert.equal(calls.length, 0);
 });
 
@@ -547,6 +578,25 @@ test("research does not write when the run failed", () => {
   }
 });
 
+// `--out` twice used to be joined by String() into the single path "a,b",
+// which resolveOutputPath then accepted as an ordinary relative name: the
+// report landed in a file neither of the two the user named.
+test("research refuses --out given twice instead of writing to the joined path", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  const calls = [];
+  try {
+    const out = research("--out a.md --out b.md topic", fakeRun(calls), () => true, root);
+    assert.equal(out.ok, false);
+    assert.equal(out.error, "--out was given more than once; it takes a single value.");
+    assert.equal(calls.length, 0);
+    assert.ok(!fs.existsSync(path.join(root, "a,b.md")));
+    assert.ok(!fs.existsSync(path.join(root, "a.md")));
+    assert.ok(!fs.existsSync(path.join(root, "b.md")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("research needs a topic and does not spend a run on an empty one", () => {
   const calls = [];
   const out = research("--model m", fakeRun(calls), () => true);
@@ -622,6 +672,28 @@ test("extractImagePath refuses paths outside brain, symlinks out, missing files,
   } finally {
     fs.rmSync(brain, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+// The second check, on the resolved path rather than the response text. A
+// response naming a non-image directly ("notes.txt") never reaches it: the
+// response pattern rejects that first, for a different reason. Only a name
+// that passes the pattern and resolves, inside brain, to something that is not
+// an image gets there, which is a *.png symlink to a non-image sibling. The
+// copy would otherwise be made and reported as an image.
+test("extractImagePath refuses a png symlink inside brain that resolves to a non-image", () => {
+  const { brain } = fakeBrain();
+  try {
+    const real = path.join(brain, "real.bin");
+    fs.writeFileSync(real, Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    const link = path.join(brain, "x.png");
+    fs.symlinkSync(real, link);
+    const found = extractImagePath(link, brain);
+    assert.equal(found.ok, false);
+    assert.match(found.reason, /does not resolve to an image/);
+    assert.match(found.reason, /real\.bin/);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
   }
 });
 

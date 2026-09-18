@@ -245,10 +245,19 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
   };
 }
 
-// Shared by the read-only commands: `[--flag value]... <free text>`. A flag
-// given twice becomes an array, so `--allow-secret` can repeat. A flag with no
-// value is dropped rather than eating the next word.
-export function parseFlaggedArguments(argument, names) {
+// Shared by the read-only commands: `[--flag value]... <free text>`. Chosen
+// rule for a flag given twice: an array only for a flag the caller declared in
+// `repeatable`, and a refusal with a named reason for every other flag, rather
+// than a last-one-wins that hides the mistake. A flag with no value is dropped
+// rather than eating the next word.
+//
+// A repeated scalar flag used to become an array, which no consumer of this
+// parser can take: `--model a --model b` put an array where `buildArgs` pushes
+// a string into argv, and `spawnSync` then rejected the whole run with
+// ERR_INVALID_ARG_TYPE, while `--out a --out b` silently became the path
+// "a,b". `error` is present only when the parse refused, so a caller that
+// checks it sees nothing new on the ordinary path.
+export function parseFlaggedArguments(argument, names, repeatable = []) {
   const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
   const flags = {};
   const rest = [];
@@ -263,6 +272,13 @@ export function parseFlaggedArguments(argument, names) {
       continue;
     }
     const key = token.slice(2).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+    if (key in flags && !repeatable.includes(token)) {
+      return {
+        flags,
+        rest: rest.join(" "),
+        error: `${token} was given more than once; it takes a single value.`
+      };
+    }
     flags[key] = key in flags ? [].concat(flags[key], value) : value;
     i += 1;
   }
@@ -346,7 +362,10 @@ export function whisper(argument, run = runPrompt, available = agyAvailable) {
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort"]);
+  if (error) {
+    return { ok: false, error };
+  }
   if (!rest) {
     return { ok: false, error: "whisper needs a prompt." };
   }
@@ -370,7 +389,10 @@ export async function search(argument, run = runPrompt, available = agyAvailable
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest } = parseFlaggedArguments(argument, ["--model"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model"]);
+  if (error) {
+    return { ok: false, error };
+  }
   if (!rest) {
     return { ok: false, error: "search needs a query or a URL." };
   }
@@ -508,7 +530,10 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  if (error) {
+    return { ok: false, error };
+  }
   if (!rest) {
     return { ok: false, error: "research needs a topic." };
   }
@@ -588,7 +613,10 @@ export function image(argument, run = runPrompt, available = agyAvailable, root 
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  if (error) {
+    return { ok: false, error };
+  }
   if (!rest) {
     return { ok: false, error: "image needs a description." };
   }

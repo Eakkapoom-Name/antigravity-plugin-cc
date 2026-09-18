@@ -459,14 +459,20 @@ function checkToolPermissions(cwd) {
   };
 }
 
-function main() {
-  // Same resolution the stop hook uses, so the two never disagree about which
-  // workspace they are reporting on.
-  const cwd = resolveWorkspaceRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
-  const node = checkNode();
-  const agy = checkAgy();
-  const agySettings = readAgySettings();
-
+// The report assembly, separated from the probes that feed it so the branches
+// can be driven under test with an injected `agy` result. `main` still resolves
+// the real environment; nothing about the report itself changed when this seam
+// was cut. The below-floor branch in particular cannot be exercised on a
+// machine whose agy meets the floor, which is why it shipped untested.
+export function buildReport({
+  cwd,
+  node,
+  agy,
+  agySettings,
+  gateOn,
+  checkAuth: authProbe = checkAuth,
+  checkToolPermissions: toolProbe = checkToolPermissions
+}) {
   const nextSteps = [];
   let auth = {
     available: false,
@@ -495,7 +501,7 @@ function main() {
       `agy ${agy.version ?? "(unparsable version)"} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
     );
   } else {
-    auth = checkAuth();
+    auth = authProbe();
     if (!auth.available) {
       toolPermissions.detail = "not checked; auth probe failed";
       // One remedy per cause. A non-ready report must never leave nextSteps
@@ -514,14 +520,13 @@ function main() {
         );
       }
     } else {
-      toolPermissions = checkToolPermissions(cwd);
+      toolPermissions = toolProbe(cwd);
       if (!toolPermissions.available) {
         nextSteps.push(permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission));
       }
     }
   }
 
-  const gateOn = gateEnabled(cwd);
   const ready = agy.available && agy.meetsMinimum && auth.available && toolPermissions.available;
   if (ready && !gateOn) {
     nextSteps.push(
@@ -529,7 +534,7 @@ function main() {
     );
   }
 
-  const report = {
+  return {
     ready,
     node,
     agy,
@@ -540,6 +545,19 @@ function main() {
     actionsTaken: [],
     nextSteps
   };
+}
+
+function main() {
+  // Same resolution the stop hook uses, so the two never disagree about which
+  // workspace they are reporting on.
+  const cwd = resolveWorkspaceRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
+  const report = buildReport({
+    cwd,
+    node: checkNode(),
+    agy: checkAgy(),
+    agySettings: readAgySettings(),
+    gateOn: gateEnabled(cwd)
+  });
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
 }
 

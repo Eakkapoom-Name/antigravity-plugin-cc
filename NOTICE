@@ -11,6 +11,9 @@ Derived from codex-plugin-cc:
   and scripts/stop-review-gate-hook.mjs, whose hook-input reading, decision
   emitting, and gate-then-review control flow are adapted from upstream's
   script of the same job
+- scripts/lib/stop-review.mjs: its ALLOW:/BLOCK: first-line parsing is a
+  close line-for-line match of upstream's parseStopReviewOutput, which lives
+  inline in the hook script there rather than in a file of its own
 - scripts/lib/prompts.mjs (prompt file loading by name and placeholder
   interpolation by regex replace)
 - scripts/lib/state.mjs (per-workspace state under the plugin data directory,

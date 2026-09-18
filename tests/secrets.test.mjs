@@ -138,3 +138,46 @@ test("a real secret assigned under the same kind of identifier still hits", () =
   assert.equal(hits.length, 1);
   assert.equal(hits[0].kind, "secret-assignment");
 });
+
+// A bare $NAME reference is excluded only when the whole value is the
+// conventional shell-variable shape (upper case, digits, underscores). A
+// mixed-case value that merely starts with $ is not a variable name by that
+// convention, so it must still be treated as a secret.
+test("a mixed-case value starting with $ still hits, it is not a bare variable name", () => {
+  const mixedCaseSecret = "Secret" + "Api" + "Key" + "Abc" + "1234567890";
+  const { hits } = scanForSecrets(`TOKEN=$${mixedCaseSecret}`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+test("a bare upper-case $NAME reference alone still produces no hit", () => {
+  const varName = "STRIPE" + "_" + "KEY";
+  assert.deepEqual(scanForSecrets(`API_KEY=$${varName}`).hits, []);
+});
+
+test("all seven non-bare-$ environment forms from round 1 still produce no hit", () => {
+  for (const line of envReferenceLines.filter((line) => !line.includes("=$"))) {
+    assert.deepEqual(scanForSecrets(line).hits, [], line);
+  }
+});
+
+// A value that merely starts like an env lookup, then runs straight into
+// secret-shaped material with no separator, must not be swallowed by a
+// prefix match: anchoring ENV_REFERENCE at the end is what catches this.
+test("a secret concatenated onto process.env with no separator still hits", () => {
+  const secretTail = "Zz9x8" + "Y7wV6" + "uT5s4" + "R3qP2";
+  const { hits } = scanForSecrets(`API_KEY=process.env${secretTail}`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+// Deferred observation from round 2 review: a quoted lookup such as
+// os.environ["NAME"] is excluded only because its truncated capture never
+// reaches the 16-character minimum, not because ENV_REFERENCE recognizes it.
+// Anchoring both ends did not change this: the value never reaches
+// ENV_REFERENCE at all. Covered explicitly here so the behavior stays
+// intentional rather than incidental-and-untested.
+test("a quoted env lookup still produces no hit, via the length minimum rather than ENV_REFERENCE", () => {
+  const varName = "FOO" + "_" + "TOKEN" + "_" + "NAME_LONG_ENOUGH";
+  assert.deepEqual(scanForSecrets(`API_TOKEN=os.environ["${varName}"]`).hits, []);
+});

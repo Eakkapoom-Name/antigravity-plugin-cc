@@ -6,14 +6,26 @@
 const PLACEHOLDER = /^(?:x{3,}|\*{3,}|changeme|change-me|<[^>]*>|\$\{[^}]*\}|your[-_a-z0-9]*|example[-_a-z0-9]*|placeholder)$/i;
 
 // An environment-variable reference is not a secret, it is the mechanism a
-// repository uses to avoid putting one in the text at all. The value group a
-// secret-assignment or authorization-header match captures stops at the next
-// quote or space, so a quoted lookup such as os.environ["NAME"] is often cut
-// short before it ever reaches this check, but an unquoted one, or
-// process.env.NAME, or a bare $NAME, reaches the pattern whole. Matching from
-// the start rather than requiring the whole string covers both cases without
-// depending on whatever a quote may already have cut off the end.
-const ENV_REFERENCE = /^(?:process\.env(?:\.[A-Za-z0-9_]+|\[)|os\.environ\[|os\.getenv\(|ENV\[|\$[A-Za-z_][A-Za-z0-9_]*)/;
+// repository uses to avoid putting one in the text at all, so it is only an
+// exclusion when it accounts for the ENTIRE captured value, not just its
+// first few characters. Every branch below is anchored at both ends: a
+// secret concatenated straight onto "process.env" with no separator, for
+// example, still ends the string with characters the dotted or bracketed
+// branches do not allow, so it still counts as a hit. The bare $NAME branch
+// is further narrowed to the conventional shell-variable shape (upper-case
+// letters, digits, underscores, starting with a letter or underscore):
+// without that narrowing, anchoring alone would not help, because a real
+// secret that happens to be pure mixed-case letters and digits after a
+// leading $ is, by shape, indistinguishable from a variable name.
+//
+// A quoted lookup such as os.environ["NAME"] is excluded by accident, not by
+// this regex: the value capture in PATTERNS stops at the first quote, so what
+// reaches here is a fixed short prefix (os.environ[ is 11 characters, ENV[ is
+// 4, and so on) that never reaches the 16-character minimum the
+// secret-assignment pattern requires. This regex is never even evaluated for
+// those lines; do not read its absence of a quote-aware branch as a gap.
+const ENV_REFERENCE =
+  /^(?:process\.env\.[A-Za-z0-9_]+|process\.env\[[A-Za-z0-9_]*\]|os\.environ\[[A-Za-z0-9_]*\]|os\.getenv\([A-Za-z0-9_]*\)|ENV\[[A-Za-z0-9_]*\]|\$[A-Z_][A-Z0-9_]*)$/;
 
 const PATTERNS = [
   { kind: "aws-access-key-id", regex: /\bAKIA[0-9A-Z]{16}\b/ },

@@ -11,6 +11,7 @@
 //
 // Usage: node agy-companion.mjs <subcommand> [arguments]
 
+import dns from "node:dns";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -301,6 +302,40 @@ const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. 
 // from a matched token before it reaches the guard (search()'s query scan).
 const TRAILING_QUERY_PUNCTUATION = /[).,;:!?'"\]>]+$/;
 
+// `]` is itself in TRAILING_QUERY_PUNCTUATION, so a bracketed IPv6 literal's
+// own closing bracket ("http://[2606:4700::1111]") would be stripped the
+// same way trailing prose punctuation is, cutting the literal in half and
+// leaving something that fails to parse at all. When the token contains
+// "[", only punctuation after the matching "]" is a stripping candidate;
+// everything through the bracket is left alone.
+function stripTrailingQueryPunctuation(token) {
+  const closeBracket = token.lastIndexOf("]");
+  if (token.includes("[") && closeBracket !== -1) {
+    return token.slice(0, closeBracket + 1) + token.slice(closeBracket + 1).replace(TRAILING_QUERY_PUNCTUATION, "");
+  }
+  return token.replace(TRAILING_QUERY_PUNCTUATION, "");
+}
+
+// The colon-only form ("http:something", no "//") is guarded in a query
+// only when "something" plausibly names a host: an IP literal (which, in
+// the text a person actually types, always has a dot) or a bracketed IPv6
+// literal. A bare word or number right after the colon ("http:scheme",
+// "http:443", which Node's URL parser turns into the IPv4 address
+// "0.0.1.187" and then blocks as reserved) is far more likely a mention of
+// the scheme or a port number in prose than an attempt to name a fetch
+// target, and guarding it anyway costs a real DNS lookup, or a false
+// block, on an ordinary sentence. The slashed form ("http://...") carries
+// no such ambiguity: "//" is only ever the start of an authority, so it is
+// always a candidate, whatever follows.
+function isQueryScanCandidate(token) {
+  const afterScheme = token.replace(/^https?:/i, "");
+  if (afterScheme.startsWith("//")) {
+    return true;
+  }
+  const authority = afterScheme.split(/[/?#]/)[0];
+  return authority.includes(".") || authority.startsWith("[");
+}
+
 // Cap on the distinct hosts search()'s query scan will resolve for one
 // query. Twenty is comfortably above any query that legitimately mentions a
 // handful of URLs, while still bounding a single request to a small,
@@ -377,22 +412,41 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // to a model, and the only reason to inspect it at all is that agy might
     // decide to fetch it, which is only possible for an http or https token.
     // A mention of any other scheme ("what does ftp:// mean") is prose, not
-    // a fetch target, and passes through untouched.
+    // a fetch target, and passes through untouched. The colon-only form is
+    // narrowed further still, by isQueryScanCandidate: see its comment.
     //
     // `\S+` also grabs trailing prose punctuation a URL is not part of
     // ("see https://example.com, then stop" would otherwise guard the host
     // "example.com,"), so it is stripped before the token reaches the
-    // guard; stripping never changes the host, which always comes before
-    // any of these characters could appear, so it cannot weaken the check.
+    // guard by stripTrailingQueryPunctuation, which knows to leave a
+    // bracketed IPv6 literal's own closing bracket alone.
     //
-    // Guarding is by distinct host, not by token: a query repeating the
-    // same host in several URLs is one DNS lookup, not one per mention, and
-    // a query naming more distinct hosts than MAX_SCANNED_HOSTS is refused
-    // outright rather than resolving an unbounded list one at a time.
+    // Every token still gets the scheme and credentials checks: a query
+    // naming the same host twice, once plainly and once with credentials
+    // ("https://example.com/ and https://user:pw@example.com/x"), must
+    // refuse the second mention even though the first already passed.
+    // Deduping applies only to the DNS lookup itself, the one step that is
+    // genuinely expensive and genuinely safe to skip once a host is known:
+    // `cachedLookup` resolves a given host once per call to `search`, no
+    // matter how many tokens name it, while `guardFetchUrl` still runs in
+    // full for every token. A query naming more distinct hosts than
+    // MAX_SCANNED_HOSTS is refused outright rather than resolving an
+    // unbounded list one at a time.
+    const realLookup = lookup ?? dns.promises.lookup;
+    const lookupCache = new Map();
+    const cachedLookup = async (host, options) => {
+      const key = host.toLowerCase();
+      if (lookupCache.has(key)) {
+        return lookupCache.get(key);
+      }
+      const result = await realLookup(host, options);
+      lookupCache.set(key, result);
+      return result;
+    };
     const seenHosts = new Set();
     for (const [rawToken] of rest.matchAll(/https?:\S+/gi)) {
-      const token = rawToken.replace(TRAILING_QUERY_PUNCTUATION, "");
-      if (!token) {
+      const token = stripTrailingQueryPunctuation(rawToken);
+      if (!token || !isQueryScanCandidate(token)) {
         continue;
       }
       let hostKey = token.toLowerCase();
@@ -402,19 +456,18 @@ export async function search(argument, run = runPrompt, available = agyAvailable
         // Left as the raw token: guardFetchUrl will hit the same parse
         // failure below and refuse the request either way.
       }
-      if (seenHosts.has(hostKey)) {
-        continue;
+      if (!seenHosts.has(hostKey)) {
+        if (seenHosts.size >= MAX_SCANNED_HOSTS) {
+          return {
+            ok: false,
+            failure: "url-blocked",
+            mode: "search",
+            error: `search refused: query names more than ${MAX_SCANNED_HOSTS} distinct hosts to check`
+          };
+        }
+        seenHosts.add(hostKey);
       }
-      if (seenHosts.size >= MAX_SCANNED_HOSTS) {
-        return {
-          ok: false,
-          failure: "url-blocked",
-          mode: "search",
-          error: `search refused: query names more than ${MAX_SCANNED_HOSTS} distinct hosts to check`
-        };
-      }
-      seenHosts.add(hostKey);
-      const guard = await guardFetchUrl(token, lookup);
+      const guard = await guardFetchUrl(token, cachedLookup);
       if (!guard.ok) {
         return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };
       }

@@ -6,7 +6,7 @@ import net from "node:net";
 // sees the URL: loopback, RFC 1918, link-local (which holds the cloud
 // metadata address), carrier-grade NAT, multicast, broadcast, and a few
 // other IANA special-purpose ranges, in every IPv4 and IPv6 form it can
-// recognise (mapped, IPv4-compatible, NAT64, 6to4).
+// recognise (mapped, translated, IPv4-compatible, NAT64, 6to4).
 //
 // What this cannot do: it runs once, in this process, before the request is
 // handed to agy, which performs the actual fetch in its own process
@@ -27,15 +27,21 @@ export function looksLikeUrl(text) {
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(token)) {
     return true;
   }
-  // http and https are WHATWG "special schemes": Node's URL parser (and any
-  // standards-compliant client, including agy's own) accepts them with no
-  // "//" at all, and treats any number of leading "/" and "\" the same way,
-  // so "http:127.0.0.1", "http:\127.0.0.1", and "http:/127.0.0.1" all parse
-  // to "http://127.0.0.1/" exactly like the slashed form. Only http and
-  // https get this extra check: every other scheme still needs "//" to be
-  // recognised as a URL at all, which is fine, since a non-fetchable scheme
-  // carries no address to guard either way.
-  return /^https?:\S/i.test(token);
+  // http, https, ftp, ws, and wss are WHATWG "special schemes": Node's URL
+  // parser (and any standards-compliant client, including agy's own)
+  // accepts each of them with no "//" at all, and treats any number of
+  // leading "/" and "\" the same way, so "http:127.0.0.1",
+  // "http:\127.0.0.1", "http:/127.0.0.1", and "ftp:127.0.0.1" all parse a
+  // host exactly like the slashed form does. Routing "ftp:127.0.0.1" here
+  // matters even though the guard only ever accepts http and https: without
+  // it, this token matched neither the "//" form above nor this one, so it
+  // reached agy as an unchecked search query instead of being refused for
+  // its scheme, the same way "ftp://127.0.0.1" already is. Every other
+  // scheme still needs "//" to be recognised as a URL at all: an arbitrary
+  // "word:word" is ordinary text ("RFC:3986", "todo:buy milk"), and
+  // routing it to the fetch path would refuse a one-word search query for
+  // a scheme it never claimed to name.
+  return /^(?:https?|ftp|wss?):\S/i.test(token);
 }
 
 function ipv4Parts(address) {

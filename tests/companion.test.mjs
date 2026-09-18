@@ -261,22 +261,43 @@ test("an ordinary multiword query with no url still reaches the search path", as
 
 // `\S+` grabs trailing prose punctuation too, and a comma glued directly to
 // a bare host (no path to separate it) becomes part of the hostname, which
-// then fails to resolve and refuses an otherwise ordinary query.
+// then fails to resolve and refuses an otherwise ordinary query. The stub
+// `lookup` in the original version of this test ignored its `host`
+// argument and always returned success, so it passed whether or not the
+// comma was stripped; capturing and asserting the exact host is what makes
+// this fail against the unfixed code, where the resolved host would be
+// "example.com," with the comma still attached.
 test("a query with a trailing comma after a public url still reaches the search path", async () => {
   const calls = [];
-  const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const lookedUpHosts = [];
+  const lookup = async (host) => {
+    lookedUpHosts.push(host);
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
   const out = await search("see https://example.com, then stop", fakeRun(calls), () => true, lookup);
   assert.equal(out.ok, true);
   assert.equal(out.mode, "search");
   assert.equal(calls.length, 1);
+  assert.deepEqual(lookedUpHosts, ["example.com"], "the trailing comma should have been stripped from the host before resolving");
 });
 
+// A literal IP address never reaches a DNS lookup, so the unfixed version of
+// this test also refused the query, but only because a real
+// dns.promises.lookup call for the garbled host "127.0.0.1," fails: the
+// reason text said so was a DNS failure, not that 127.0.0.1 was correctly
+// recognised as a reserved address. Asserting the exact reason is what
+// makes this fail against the unfixed code.
 test("a blocked url followed by a comma inside a query is still refused", async () => {
   const calls = [];
   const out = await search("see http://127.0.0.1, then stop", fakeRun(calls), () => true);
   assert.equal(out.ok, false);
   assert.equal(out.failure, "url-blocked");
   assert.equal(calls.length, 0);
+  assert.match(
+    out.error,
+    /address 127\.0\.0\.1 is a local or reserved address/,
+    "the comma should have been stripped, leaving a clean literal-address block rather than a DNS resolution failure"
+  );
 });
 
 // http and https are WHATWG "special schemes": Node's URL parser accepts
@@ -347,4 +368,100 @@ test("search refuses a query naming more distinct hosts than the cap", async () 
   assert.equal(out.failure, "url-blocked");
   assert.equal(calls.length, 0);
   assert.equal(lookups, 20, "expected exactly the cap's worth of lookups before refusing");
+});
+
+// `]` is itself trailing punctuation, so stripping it the same way a
+// trailing comma is stripped would cut a bracketed IPv6 literal's own
+// closing bracket off, leaving something that fails to parse at all: this
+// is the public-IPv6-literal-in-a-query must-pass case.
+test("a public bracketed ipv6 literal in a query still reaches the search path", async () => {
+  const calls = [];
+  const lookup = async () => {
+    throw new Error("a literal address must not be resolved");
+  };
+  const out = await search("check http://[2606:4700::1111] now", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+});
+
+test("a blocked bracketed ipv6 literal in a query is still refused", async () => {
+  const calls = [];
+  const out = await search("check http://[fe80::1] now", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.match(out.error, /fe80::1/);
+  assert.equal(calls.length, 0);
+});
+
+// Deduping by host must only skip the DNS lookup, not the scheme and
+// credentials checks: a query naming the same host twice, the second time
+// with credentials, still has to refuse the second mention even though the
+// first already passed.
+test("a second mention of an already-checked host still gets its credentials checked", async () => {
+  const calls = [];
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const out = await search("see https://example.com/ and https://u:p@example.com/x", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.match(out.error, /credentials/);
+  assert.equal(calls.length, 0);
+  assert.equal(lookups, 1, "the DNS lookup for the already-known host should still be deduped");
+});
+
+// The colon-only form is guarded in a query only when what follows plausibly
+// names a host. A bare scheme mention or a port-like number is prose, not a
+// fetch target, and guarding it anyway would cost a real DNS lookup or a
+// false block on an ordinary sentence.
+test("search does not guard a colon-only scheme mention with no plausible host", async () => {
+  const calls = [];
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const out = await search("read about http:scheme handling", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+  assert.equal(lookups, 0, "a bare scheme mention should not trigger a DNS lookup");
+});
+
+// Node's URL parser turns a bare number into an IPv4 address ("443" becomes
+// "0.0.1.187"), which the guard then blocks as reserved; narrowing the
+// colon-only form to what plausibly names a host keeps a port-like mention
+// out of the guard entirely, rather than blocking it for the wrong reason.
+test("search does not block a colon-only port-like mention with no plausible host", async () => {
+  const calls = [];
+  const out = await search("the port http:443 thing", fakeRun(calls), () => true);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+});
+
+// The colon-only form still has to be guarded when it plausibly names a
+// host, so the bypass finding 3 (round 2) closed stays closed.
+test("search still guards a colon-only form that plausibly names a host", async () => {
+  const calls = [];
+  const out = await search("please fetch http:127.0.0.1 for me", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+});
+
+// ftp is a WHATWG special scheme too: without this, "ftp:127.0.0.1" matched
+// neither the "//" form nor the http/https colon-only form, so it reached
+// agy as an unguarded search query instead of being refused for its scheme.
+test("search refuses a colon-only ftp url on the fetch path", async () => {
+  const calls = [];
+  const out = await search("ftp:127.0.0.1", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(out.mode, "fetch");
+  assert.match(out.error, /scheme ftp is not allowed/);
+  assert.equal(calls.length, 0);
 });

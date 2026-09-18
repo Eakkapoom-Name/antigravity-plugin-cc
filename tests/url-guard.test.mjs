@@ -10,17 +10,26 @@ test("looksLikeUrl recognises a scheme and nothing else", () => {
   assert.equal(looksLikeUrl("example.com"), false);
 });
 
-// http and https are WHATWG "special schemes": no "//" is required, and any
-// number of leading "/" or "\" is accepted in its place, so all of these
-// resolve to the same address as the slashed form.
-test("looksLikeUrl recognises http and https with no slashes or with backslashes", () => {
+// http, https, ftp, ws, and wss are WHATWG "special schemes": no "//" is
+// required, and any number of leading "/" or "\" is accepted in its place,
+// so all of these resolve to the same address as the slashed form.
+test("looksLikeUrl recognises http, https, ftp, ws, and wss with no slashes or with backslashes", () => {
   assert.equal(looksLikeUrl("http:127.0.0.1"), true);
   assert.equal(looksLikeUrl("https:127.0.0.1"), true);
   assert.equal(looksLikeUrl("http:\\127.0.0.1"), true);
   assert.equal(looksLikeUrl("http:/127.0.0.1"), true);
-  // Only http and https get this extra allowance; every other scheme still
-  // needs "//" to be recognised as a URL at all.
-  assert.equal(looksLikeUrl("ftp:127.0.0.1"), false);
+  // Closes the same fetch-path bypass finding 1 closed for http and https:
+  // without this, "ftp:127.0.0.1" matched neither the "//" form nor the
+  // colon-only form, so it reached agy as an unguarded search query
+  // instead of being refused for its scheme.
+  assert.equal(looksLikeUrl("ftp:127.0.0.1"), true);
+  assert.equal(looksLikeUrl("ws:127.0.0.1"), true);
+  assert.equal(looksLikeUrl("wss:127.0.0.1"), true);
+  // Every other scheme still needs "//" to be recognised as a URL at all,
+  // so an ordinary word:word mention does not get routed to the fetch path
+  // and refused for a scheme it never claimed to name.
+  assert.equal(looksLikeUrl("mailto:foo@bar.com"), false);
+  assert.equal(looksLikeUrl("RFC:3986"), false);
   assert.equal(looksLikeUrl("http:"), false);
 });
 

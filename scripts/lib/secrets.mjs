@@ -101,13 +101,15 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   // carries a stale name into the next file even for a hunk-less section
   // such as a binary-file notice). `newLine` comes from each hunk's
   // `@@ -a,b +c,d @@` header and is then walked forward one line at a time:
-  // every line that is not a removal advances it, including a content line
-  // that happens to read `+++ ...` or `--- ...`, because it still occupies a
-  // real line in the new file even though (per the existing, unchanged
-  // contract) a line starting with `+++` is never itself scanned. Until a
-  // hunk header has actually been seen, there is no reliable line number to
-  // report; a hit in that state falls back to the raw line offset with no
-  // file, rather than reporting a number that looks right but is not.
+  // an added or context line advances it, including a content line that
+  // happens to read `+++ ...` or `--- ...` (it still occupies a real line
+  // in the new file even though, per the existing, unchanged contract, a
+  // line starting with `+++` is never itself scanned); a removed line does
+  // not, and neither does the `\ No newline at end of file` marker, which
+  // is a note about the line just shown rather than a line of its own.
+  // Until a hunk header has actually been seen, there is no reliable line
+  // number to report; a hit in that state falls back to the raw line offset
+  // with no file, rather than reporting a number that looks right but is not.
   let currentFile = null;
   let newLine = null;
   let inHeaderZone = false;
@@ -150,8 +152,12 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
         return;
       }
 
-      const isRemoved = line.startsWith("-");
-      if (newLine !== null && !isRemoved) {
+      // Only an added or context line occupies a line of the new file. A
+      // removal does not, and neither does `\ No newline at end of file`
+      // (a note about the line just shown, not a line of its own); both are
+      // caught by requiring the leading `+` or space explicitly, rather
+      // than by excluding `-`, which that marker does not start with.
+      if (newLine !== null && (line.startsWith("+") || line.startsWith(" "))) {
         newLine += 1;
       }
       const isAdded = line.startsWith("+") && !line.startsWith("+++");

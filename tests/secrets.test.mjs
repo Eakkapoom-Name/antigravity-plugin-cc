@@ -138,6 +138,32 @@ test("a +++-shaped content line mid-hunk does not reset file or line tracking", 
   assert.equal(hits[0].line, 4);
 });
 
+// `\ No newline at end of file` is a real line git emits mid-hunk whenever
+// the OLD version of the file it follows lacked a trailing newline. It does
+// not start with `-`, so it is not a removal, but it also does not occupy
+// any line of the NEW file (it is a note about the line just shown, not a
+// line itself) and must not advance the new-file line counter.
+test("the no-newline-at-end-of-file marker does not advance the new-file line count", () => {
+  const diff = [
+    "diff --git a/notes.txt b/notes.txt",
+    "index aaa..bbb 100644",
+    "--- a/notes.txt",
+    "+++ b/notes.txt",
+    "@@ -1,2 +1,3 @@",
+    " one",
+    "-two",
+    "\\ No newline at end of file",
+    "+two",
+    `+const leaked = "${AWS}";`
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].file, "notes.txt");
+  // New file: line 1 "one", line 2 "two", line 3 the secret. Not line 4,
+  // which is what counting the marker line as a new-file line would give.
+  assert.equal(hits[0].line, 3);
+});
+
 test("a non-diff scan still numbers lines within the text, with no file field at all", () => {
   const { hits } = scanForSecrets(`first\nsecond\nconst id = "${AWS}";\n`);
   assert.equal(hits.length, 1);

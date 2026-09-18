@@ -353,7 +353,16 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // token, catches a URL wrapped in punctuation ("(http://127.0.0.1/)",
     // a quoted or angle-bracketed URL) that a per-token `looksLikeUrl` check
     // would miss because the token does not begin with the scheme.
-    for (const [token] of rest.matchAll(/[a-z][a-z0-9+.-]*:\/\/\S+/gi)) {
+    //
+    // Only http and https tokens are scanned here, unlike the fetch path
+    // above, which checks whatever scheme the user named. On the fetch path
+    // the user has named one single thing to fetch, so a non-http scheme is
+    // a genuine refusal. In a query, URL-shaped text is just text on its way
+    // to a model, and the only reason to inspect it at all is that agy might
+    // decide to fetch it, which is only possible for an http or https token.
+    // A mention of any other scheme ("what does ftp:// mean") is prose, not
+    // a fetch target, and passes through untouched.
+    for (const [token] of rest.matchAll(/https?:\/\/\S+/gi)) {
       const guard = await guardFetchUrl(token, lookup);
       if (!guard.ok) {
         return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };

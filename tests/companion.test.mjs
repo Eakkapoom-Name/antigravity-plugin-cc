@@ -227,6 +227,29 @@ test("search refuses a blocked url wrapped in punctuation inside a query", async
   }
 });
 
+// The multiword scan only checks http and https tokens: a query merely
+// mentioning another scheme is prose, not a fetch target, and refusing it
+// would be a false positive the user has no way to appeal.
+test("a query mentioning a non-http scheme as text reaches the search path", async () => {
+  const calls = [];
+  const out = await search("what does ftp:// mean", fakeRun(calls), () => true);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].prompt, /what does ftp:\/\/ mean/);
+});
+
+// The narrowing to http/https tokens must not reopen the punctuation-wrapped
+// evasion the previous fix closed: a blocked http URL in parentheses still
+// has to be refused.
+test("a blocked http url wrapped in parentheses inside a query is still refused", async () => {
+  const calls = [];
+  const out = await search("please check (http://127.0.0.1/admin) now", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+});
+
 test("an ordinary multiword query with no url still reaches the search path", async () => {
   const calls = [];
   const out = await search("what is the current node lts version", fakeRun(calls), () => true);

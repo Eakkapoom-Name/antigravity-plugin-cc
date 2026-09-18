@@ -9,17 +9,17 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 
 ## What You Get
 
+- `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - `/agy:review` for standard read-only code review
 - `/agy:adversarial-review` for challenge-based review
 - `/agy:rescue`, `/agy:status`, `/agy:result`, and `/agy:cancel` for task delegation and job management
 - `/agy:continue` to follow up in an existing agy conversation
-- `/agy:quota` to check remaining Antigravity model quota
-- `/agy:transfer` to hand the current session over to a resumable agy conversation
 - `/agy:whisper` for a one-shot question to agy with no repository context
 - `/agy:search` for a web search or a single page fetch through agy, second in the web tool order after Claude Code's own tools
 - `/agy:research` for a web-grounded investigation with a fixed report shape and sources, optionally written to a file
 - `/agy:image` to generate an image with agy and copy it into the project on request
-- `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
+- `/agy:transfer` to hand the current session over to a resumable agy conversation
+- `/agy:quota` to check remaining Antigravity model quota
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
 ## Requirements
@@ -95,6 +95,29 @@ One simple first run is:
 ```
 
 ## Usage
+
+### `/agy:setup`
+
+Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, a command probe and a file-read probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
+
+Headless agy auto-denies any tool its `permissions.allow` rules do not cover, and it reports the refusal as `denied_actions` on an otherwise successful-looking result. The two probes exercise a terminal command and a file read, because the two need different rules (`command(...)` and `read_file(*)`) and `--mode accept-edits` covers neither. The report names each denied tool and the rule for it. That settings edit is yours to make by hand, in your own terminal: in a Claude Code auto mode session the classifier blocks the agent from editing the file, from passing `--dangerously-skip-permissions`, and even from querying `agy -p "/permissions"`.
+
+When a probe fails, the report says which of three things went wrong rather than assuming a login problem: a real authentication failure, a restricted environment where the invoking shell blocked a syscall agy needs, or an unknown cause. Only the first is fixed by signing in again.
+
+You can also use `/agy:setup` to manage the optional stop-review gate.
+
+#### Enabling the stop-review gate
+
+```bash
+/agy:setup gate on
+/agy:setup gate off
+/agy:setup gate status
+```
+
+When the gate is enabled, the plugin uses a `Stop` hook to run a read-only agy review of the previous Claude turn before the session is allowed to end. If that review finds issues in code changes from that turn, the stop is blocked so Claude can address them first.
+
+> [!WARNING]
+> The gate adds an agy review round-trip to ending a turn and spends Antigravity quota. Only enable it when you plan to actively monitor the session.
 
 ### `/agy:review`
 
@@ -179,16 +202,6 @@ Examples:
 ```bash
 /agy:continue now apply the fix you proposed
 /agy:continue 4f3062ab-b0d9-4874-b319-e42e9701e643 summarize what you changed
-```
-
-### `/agy:quota`
-
-Shows remaining Antigravity model quota per bucket (Gemini and third-party groups, 5-hour and weekly windows) with reset times. Instant and quota-free.
-
-Examples:
-
-```bash
-/agy:quota
 ```
 
 ### `/agy:whisper`
@@ -312,28 +325,15 @@ Examples:
 /agy:cancel task-abc123
 ```
 
-### `/agy:setup`
+### `/agy:quota`
 
-Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, a command probe and a file-read probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
+Shows remaining Antigravity model quota per bucket (Gemini and third-party groups, 5-hour and weekly windows) with reset times. Instant and quota-free.
 
-Headless agy auto-denies any tool its `permissions.allow` rules do not cover, and it reports the refusal as `denied_actions` on an otherwise successful-looking result. The two probes exercise a terminal command and a file read, because the two need different rules (`command(...)` and `read_file(*)`) and `--mode accept-edits` covers neither. The report names each denied tool and the rule for it. That settings edit is yours to make by hand, in your own terminal: in a Claude Code auto mode session the classifier blocks the agent from editing the file, from passing `--dangerously-skip-permissions`, and even from querying `agy -p "/permissions"`.
-
-When a probe fails, the report says which of three things went wrong rather than assuming a login problem: a real authentication failure, a restricted environment where the invoking shell blocked a syscall agy needs, or an unknown cause. Only the first is fixed by signing in again.
-
-You can also use `/agy:setup` to manage the optional stop-review gate.
-
-#### Enabling the stop-review gate
+Examples:
 
 ```bash
-/agy:setup gate on
-/agy:setup gate off
-/agy:setup gate status
+/agy:quota
 ```
-
-When the gate is enabled, the plugin uses a `Stop` hook to run a read-only agy review of the previous Claude turn before the session is allowed to end. If that review finds issues in code changes from that turn, the stop is blocked so Claude can address them first.
-
-> [!WARNING]
-> The gate adds an agy review round-trip to ending a turn and spends Antigravity quota. Only enable it when you plan to actively monitor the session.
 
 ## Typical Flows
 

@@ -81,41 +81,80 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   // Diff bookkeeping: which file, and which line of that file's new content,
   // a `+` line lands on. Without this a hit is reported at its offset into
   // the raw diff text, counting `diff --git`, `index` and `@@` lines, which
-  // matches nothing a user can find in an editor. `currentFile` comes from
-  // each file's `+++ b/<path>` header (reset on every new file, so a
-  // multi-file diff attributes each hit to the right one); `newLine` comes
-  // from each hunk's `@@ -a,b +c,d @@` header and is then walked forward one
-  // line at a time, advancing on context lines too since those occupy real
-  // lines in the new file, but not on removed lines, which do not. Until a
+  // matches nothing a user can find in an editor.
+  //
+  // A `+++`/`---` line is only ever trusted as a real file header inside a
+  // "header zone": the span from a `diff --git` line up to that file's first
+  // `@@` hunk header. `diff --git` is emitted by git itself, never derived
+  // from either version of the file's content, because every genuine content
+  // line in a diff is prefixed with a single `+`, `-` or space marker
+  // character; a file line that itself reads `diff --git ...` would still
+  // render with that marker in front (`+diff --git ...`), never as the bare
+  // line git's own header uses. So this line cannot be spoofed by content,
+  // which is why it, not `---`/`+++` order, is the anchor: once a hunk has
+  // started (the zone has closed), a content line is never again mistaken
+  // for a header, however many literal `+` or `-` characters it starts with,
+  // until the next `diff --git` reopens the zone for the following file.
+  //
+  // `currentFile` is set from the `+++ b/<path>` header seen inside the zone
+  // (reset to null the moment the zone opens, so a multi-file diff never
+  // carries a stale name into the next file even for a hunk-less section
+  // such as a binary-file notice). `newLine` comes from each hunk's
+  // `@@ -a,b +c,d @@` header and is then walked forward one line at a time:
+  // every line that is not a removal advances it, including a content line
+  // that happens to read `+++ ...` or `--- ...`, because it still occupies a
+  // real line in the new file even though (per the existing, unchanged
+  // contract) a line starting with `+++` is never itself scanned. Until a
   // hunk header has actually been seen, there is no reliable line number to
   // report; a hit in that state falls back to the raw line offset with no
   // file, rather than reporting a number that looks right but is not.
   let currentFile = null;
   let newLine = null;
+  let inHeaderZone = false;
 
   lines.forEach((line, index) => {
     let hitLine = index + 1;
     let hitFile = null;
 
     if (diff) {
-      const fileHeader = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
-      if (fileHeader) {
-        currentFile = fileHeader[1] === "/dev/null" ? null : fileHeader[1];
+      if (line.startsWith("diff --git ")) {
+        inHeaderZone = true;
+        currentFile = null;
         newLine = null;
         return;
       }
-      if (line.startsWith("---")) {
+
+      if (inHeaderZone) {
+        if (line.startsWith("---")) {
+          return; // old-file header; the path this function tracks comes from +++
+        }
+        const fileHeader = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
+        if (fileHeader) {
+          currentFile = fileHeader[1] === "/dev/null" ? null : fileHeader[1];
+          return;
+        }
+        const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (hunkHeader) {
+          inHeaderZone = false;
+          newLine = Number(hunkHeader[1]) - 1;
+        }
+        // Any other line before the first `@@` (mode/rename/index lines, a
+        // binary-file notice) carries no line to advance or scan.
         return;
       }
+
+      // Past the header zone: a further `@@` opens this file's next hunk.
       const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
       if (hunkHeader) {
         newLine = Number(hunkHeader[1]) - 1;
         return;
       }
-      const isAdded = line.startsWith("+") && !line.startsWith("+++");
-      if (newLine !== null && (isAdded || line.startsWith(" "))) {
+
+      const isRemoved = line.startsWith("-");
+      if (newLine !== null && !isRemoved) {
         newLine += 1;
       }
+      const isAdded = line.startsWith("+") && !line.startsWith("+++");
       if (!isAdded) {
         return;
       }

@@ -106,6 +106,38 @@ test("a hit in the second file of a multi-file diff reports that file and a real
   assert.equal(hits[0].line, 6);
 });
 
+// A content line whose own text starts with two literal plus signs renders,
+// once the diff's own leading `+` marker is added, as `+++ something`: the
+// same three characters a real file header starts with. Round 1 of this fix
+// treated any such line as a header by prefix alone, which reset the file
+// and line tracking mid-hunk and misattributed every later hit in that hunk.
+// This line must still be excluded from scanning (the existing, unchanged
+// contract: a line starting with `+++` is never scanned), but it must not be
+// mistaken for a header, and it must still advance the line count, since it
+// occupies a real line in the new file.
+test("a +++-shaped content line mid-hunk does not reset file or line tracking", () => {
+  const diff = [
+    "diff --git a/notes.txt b/notes.txt",
+    "index aaa..bbb 100644",
+    "--- a/notes.txt",
+    "+++ b/notes.txt",
+    "@@ -1,2 +1,4 @@",
+    " line one",
+    " line two",
+    "+++ this looks like a header but is only added content",
+    `+const leaked = "${AWS}";`
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].kind, "aws-access-key-id");
+  // Not reset to null/a bogus name: still the one real file in this diff.
+  assert.equal(hits[0].file, "notes.txt");
+  // New file line 1 and 2 are the two context lines; line 3 is the
+  // +++-shaped content line (still counted, just not scanned); line 4 is
+  // the secret. Not 1 (a reset newLine) and not the raw diff offset (9).
+  assert.equal(hits[0].line, 4);
+});
+
 test("a non-diff scan still numbers lines within the text, with no file field at all", () => {
   const { hits } = scanForSecrets(`first\nsecond\nconst id = "${AWS}";\n`);
   assert.equal(hits.length, 1);

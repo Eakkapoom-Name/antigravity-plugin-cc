@@ -2,10 +2,11 @@
 
 - `npm test` must pass before a push. It runs `node --test tests/*.test.mjs`
   and needs no network and no agy.
-- `npm run test:denials` is the live permission harness: one agy run per case
-  in `scripts/lib/denial-matrix.mjs` (nine today), against a scratch `HOME`.
-  It spends Antigravity quota and takes minutes; run it when a change touches
-  the permission or denial path.
+- `npm run test:denials` is the live permission harness: eleven rows today,
+  the nine permission cases in `scripts/lib/denial-matrix.mjs` plus the
+  Stop-hook and denial-recovery probes, against a scratch `HOME`; `--no-hook`
+  limits it to the nine. It spends Antigravity quota and takes minutes; run
+  it when a change touches the permission or denial path.
 - Commits follow Conventional Commits (`feat`, `fix`, `docs`, `test`),
   subject line only. No PR number on a direct push to `main`.
 - A release is its own commit, `docs: release X.Y.Z`, bumping

@@ -38,8 +38,15 @@ export function resolveOutputPath(requested, workspaceRoot) {
   try {
     fs.lstatSync(resolved);
     return { ok: false, reason: `--out already exists: ${resolved}; choose a new name` };
-  } catch {
-    // ENOENT is the good path: nothing occupies the target name yet.
+  } catch (error) {
+    // ENOENT is the good path: nothing occupies the target name yet. Anything
+    // else (a null byte in the path throws ERR_INVALID_ARG_VALUE rather than
+    // ENOENT, for instance) is not "the target is free"; treating it that way
+    // would let a bad path through the one check meant to catch it before a
+    // multi-minute agy run, only to fail later at the write.
+    if (error.code !== "ENOENT") {
+      return { ok: false, reason: `--out could not be checked: ${error.message}` };
+    }
   }
   return { ok: true, path: resolved };
 }

@@ -27,8 +27,12 @@ test("a relative path inside the workspace resolves", () => {
 test("a path that escapes the workspace is refused", () => {
   const root = scratch();
   try {
-    assert.equal(resolveOutputPath("../outside.md", root).ok, false);
-    assert.equal(resolveOutputPath("/tmp/outside.md", root).ok, false);
+    const relative = resolveOutputPath("../outside.md", root);
+    assert.equal(relative.ok, false);
+    assert.match(relative.reason, /inside the workspace/);
+    const absolute = resolveOutputPath("/tmp/outside.md", root);
+    assert.equal(absolute.ok, false);
+    assert.match(absolute.reason, /inside the workspace/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -80,6 +84,23 @@ test("a dangling symlink at the target is refused", () => {
     const out = resolveOutputPath("docs/dangling.md", root);
     assert.equal(out.ok, false);
     assert.match(out.reason, /exists/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A bare `catch {}` around the occupancy lstatSync would read any error the
+// same way as "nothing is there", including one that has nothing to do with
+// occupancy. A null byte makes lstatSync throw ERR_INVALID_ARG_VALUE rather
+// than ENOENT; letting that through as "ok: true" would only be caught later
+// by the write itself, after a whole agy run had already been spent. This
+// has to be refused here, before any run starts.
+test("a path with a null byte is refused before any run starts", () => {
+  const root = scratch();
+  try {
+    const out = resolveOutputPath("docs/a\0b.md", root);
+    assert.equal(out.ok, false);
+    assert.match(out.reason, /could not be checked/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -289,6 +289,24 @@ test("setup command says an unrecognised mode falls back silently", () => {
   assert.match(source, /silently|without an error/i);
 });
 
+// A model that strips --wait/--background before forwarding must not also
+// drop --allow-secret with them, or the argument-hint advertises an unblock
+// mechanism for a known-fixture false positive that silently does nothing.
+// Both review commands must also render a scan hit as file:line, not the
+// raw offset into the diff text that predated this.
+test("the review commands forward --allow-secret and render a hit as file:line", () => {
+  const adversarial = read("commands/adversarial-review.md");
+  assert.match(adversarial, /Strip only those two flags[^\n]*--allow-secret/);
+  assert.match(adversarial, /adversarial-review "[^"\n]*--allow-secret/);
+  for (const name of ["review.md", "adversarial-review.md"]) {
+    assert.match(
+      read(`commands/${name}`),
+      /<file>:<line> <kind>/,
+      `${name} does not render a hit as file:line`
+    );
+  }
+});
+
 // F21. A denied delegation is worth one resume: the conversation survives, and
 // the model finishes under a stated constraint. The gate is deliberately left
 // out, because a stop-time review that lost its file reads has nothing to say

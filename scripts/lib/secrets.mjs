@@ -5,6 +5,16 @@
 
 const PLACEHOLDER = /^(?:x{3,}|\*{3,}|changeme|change-me|<[^>]*>|\$\{[^}]*\}|your[-_a-z0-9]*|example[-_a-z0-9]*|placeholder)$/i;
 
+// An environment-variable reference is not a secret, it is the mechanism a
+// repository uses to avoid putting one in the text at all. The value group a
+// secret-assignment or authorization-header match captures stops at the next
+// quote or space, so a quoted lookup such as os.environ["NAME"] is often cut
+// short before it ever reaches this check, but an unquoted one, or
+// process.env.NAME, or a bare $NAME, reaches the pattern whole. Matching from
+// the start rather than requiring the whole string covers both cases without
+// depending on whatever a quote may already have cut off the end.
+const ENV_REFERENCE = /^(?:process\.env(?:\.[A-Za-z0-9_]+|\[)|os\.environ\[|os\.getenv\(|ENV\[|\$[A-Za-z_][A-Za-z0-9_]*)/;
+
 const PATTERNS = [
   { kind: "aws-access-key-id", regex: /\bAKIA[0-9A-Z]{16}\b/ },
   {
@@ -38,7 +48,16 @@ function compileAllow(allow) {
   });
 }
 
-function sampleOf(value) {
+// A match with no valueGroup carries a fixed, non-secret prefix ahead of the
+// secret (AKIA, ghp_, AIza, xox, the private-key banner), so showing its
+// first six characters is a shape marker, not the value. A match whose
+// valueGroup is the captured secret itself (authorization-header,
+// secret-assignment) has no such prefix: showing any of it would be showing
+// the value, which the spec forbids, so those report the length alone.
+function sampleOf(value, { hideValue = false } = {}) {
+  if (hideValue) {
+    return `(${value.length} chars)`;
+  }
   return `${value.slice(0, 6)}... (${value.length} chars)`;
 }
 
@@ -60,10 +79,10 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
         continue;
       }
       const value = valueGroup ? match[valueGroup] : match[0];
-      if (valueGroup && PLACEHOLDER.test(value)) {
+      if (valueGroup && (PLACEHOLDER.test(value) || ENV_REFERENCE.test(value))) {
         continue;
       }
-      hits.push({ line: index + 1, kind, sample: sampleOf(value) });
+      hits.push({ line: index + 1, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) });
       break;
     }
   });

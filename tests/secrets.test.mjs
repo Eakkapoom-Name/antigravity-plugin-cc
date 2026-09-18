@@ -83,3 +83,58 @@ test("an allow pattern drops a hit whose line matches it", () => {
 test("an invalid allow pattern is an error, not a silent pass", () => {
   assert.throws(() => scanForSecrets("x", { allow: ["("] }), /allow pattern/);
 });
+
+// A secret-assignment or authorization-header match has no fixed, non-secret
+// prefix ahead of the value: the whole capture is the secret. sample must
+// therefore report the length alone, never any of the value's characters.
+test("secret-assignment sample carries no characters of the secret", () => {
+  const secretValue = "q".repeat(10) + "z".repeat(10) + "9".repeat(4);
+  const { hits } = scanForSecrets(`DATABASE_PASSWORD=${secretValue}`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+  assert.equal(hits[0].sample, `(${secretValue.length} chars)`);
+  for (let i = 0; i + 6 <= secretValue.length; i += 1) {
+    assert.ok(
+      !hits[0].sample.includes(secretValue.slice(i, i + 6)),
+      "sample leaks a window of the value"
+    );
+  }
+});
+
+test("authorization-header sample carries no characters of the token", () => {
+  const token = "m".repeat(12) + "5".repeat(12) + "k".repeat(12);
+  const { hits } = scanForSecrets(`Authorization: Bearer ${token}`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "authorization-header");
+  assert.equal(hits[0].sample, `(${token.length} chars)`);
+  for (let i = 0; i + 6 <= token.length; i += 1) {
+    assert.ok(!hits[0].sample.includes(token.slice(i, i + 6)), "sample leaks a window of the token");
+  }
+});
+
+// An environment-variable lookup is how a repository avoids putting a secret
+// in the text at all, so it must never be treated as one, regardless of
+// which language's accessor shape it uses or whether the name is quoted.
+const envReferenceLines = [
+  "API_KEY=process.env.STRIPE_KEY_NAME",
+  'API_TOKEN=process.env["STRIPE_KEY_NAME_LONG_ENOUGH"]',
+  'API_TOKEN=os.environ["FOO_TOKEN_NAME_LONG_ENOUGH"]',
+  "API_TOKEN=os.environ[FOO_TOKEN_NAME_LONG_ENOUGH]",
+  "API_TOKEN=os.getenv(FOO_TOKEN_NAME_LONG_ENOUGH)",
+  'API_TOKEN=ENV["FOO_TOKEN_NAME_LONG_ENOUGH"]',
+  "API_TOKEN=ENV[FOO_TOKEN_NAME_LONG_ENOUGH]",
+  "API_TOKEN=$FOO_TOKEN_NAME_LONG_ENOUGH"
+];
+
+for (const line of envReferenceLines) {
+  test(`scanForSecrets treats an environment lookup as a placeholder: ${line}`, () => {
+    assert.deepEqual(scanForSecrets(line).hits, []);
+  });
+}
+
+test("a real secret assigned under the same kind of identifier still hits", () => {
+  const secretValue = "r".repeat(12) + "9".repeat(12);
+  const { hits } = scanForSecrets(`API_TOKEN=${secretValue}`);
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+});

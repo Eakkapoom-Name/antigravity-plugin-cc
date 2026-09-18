@@ -134,10 +134,12 @@ test("whisper renders the template and passes model and effort through an isolat
   assert.equal(calls[0].options.model, "m");
   assert.equal(calls[0].options.effort, "low");
   assert.equal(calls[0].options.printTimeout, "3m");
+  assert.ok(calls[0].options.cwd.startsWith(os.tmpdir()));
+  assert.ok(!JSON.stringify(calls[0].options).includes(process.cwd()), "the repository path reached agy");
   assert.equal(out.effortDropped, false);
 });
 
-test("whisper drops --effort once when the model rejects it", () => {
+test("whisper drops --effort once when the model rejects it, staying isolated on both tries", () => {
   const calls = [];
   const out = whisper("--effort high hi", (prompt, options) => {
     calls.push(options);
@@ -148,6 +150,10 @@ test("whisper drops --effort once when the model rejects it", () => {
   }, () => true);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].effort, undefined);
+  assert.ok(calls[0].cwd.startsWith(os.tmpdir()));
+  assert.ok(calls[1].cwd.startsWith(os.tmpdir()));
+  assert.ok(!JSON.stringify(calls[0]).includes(process.cwd()), "the repository path reached agy on the first try");
+  assert.ok(!JSON.stringify(calls[1]).includes(process.cwd()), "the repository path reached agy on the retry");
   assert.equal(out.effortDropped, true);
   assert.equal(out.ok, true);
 });

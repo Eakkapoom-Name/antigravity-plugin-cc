@@ -578,9 +578,9 @@ test("research does not write when the run failed", () => {
   }
 });
 
-// `--out` twice used to be joined by String() into the single path "a,b",
-// which resolveOutputPath then accepted as an ordinary relative name: the
-// report landed in a file neither of the two the user named.
+// `--out` twice used to be joined by String() into the single path
+// "a.md,b.md", which resolveOutputPath then accepted as an ordinary relative
+// name: the report landed in a file neither of the two the user named.
 test("research refuses --out given twice instead of writing to the joined path", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
   const calls = [];
@@ -589,7 +589,7 @@ test("research refuses --out given twice instead of writing to the joined path",
     assert.equal(out.ok, false);
     assert.equal(out.error, "--out was given more than once; it takes a single value.");
     assert.equal(calls.length, 0);
-    assert.ok(!fs.existsSync(path.join(root, "a,b.md")));
+    assert.ok(!fs.existsSync(path.join(root, "a.md,b.md")));
     assert.ok(!fs.existsSync(path.join(root, "a.md")));
     assert.ok(!fs.existsSync(path.join(root, "b.md")));
   } finally {

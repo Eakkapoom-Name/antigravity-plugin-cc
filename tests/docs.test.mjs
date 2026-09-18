@@ -120,3 +120,42 @@ test("every command has a matching README usage section", () => {
     );
   }
 });
+
+// F29. The repository derives structure and helper code from
+// openai/codex-plugin-cc (Apache-2.0). It switched to MIT at 0.4.2 and dropped
+// NOTICE; the attribution for the derived parts comes back here.
+test("NOTICE names the upstream and its licence", () => {
+  const notice = read("NOTICE");
+  assert.match(notice, /openai\/codex-plugin-cc/);
+  assert.match(notice, /Apache License, Version 2\.0/);
+  assert.match(notice, /scripts\/lib\/process\.mjs/);
+});
+
+test("the Apache text ships beside the MIT text and LICENSE explains the split", () => {
+  assert.match(read("LICENSE-APACHE-2.0"), /Apache License\s+Version 2\.0/);
+  const license = read("LICENSE");
+  assert.match(license, /MIT License/);
+  assert.match(license, /LICENSE-APACHE-2\.0/);
+  assert.match(license, /NOTICE/);
+});
+
+test("the README credits codex-plugin-cc", () => {
+  const readme = read("README.md");
+  assert.match(readme, /## Credits and licence/);
+  assert.match(readme, /openai\/codex-plugin-cc/);
+});
+
+test("SECURITY.md says what leaves the machine and how to report", () => {
+  const security = read("SECURITY.md");
+  for (const phrase of ["diff", "transfer brief", "secret scan", "isolated", "report"]) {
+    assert.ok(security.toLowerCase().includes(phrase), `SECURITY.md does not mention ${phrase}`);
+  }
+});
+
+test("CONTRIBUTING.md states the test and commit rules", () => {
+  const contributing = read("CONTRIBUTING.md");
+  assert.match(contributing, /npm test/);
+  assert.match(contributing, /Conventional Commits/);
+  assert.match(contributing, /docs: release/);
+  assert.match(contributing, /test:denials/);
+});

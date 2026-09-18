@@ -413,6 +413,13 @@ Thin by design: no broker process, no job files. Every delegation is one `agy -p
 
 Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read Claude Code's own background task tracking instead of a job store, so they cover the current session only. Cross-session continuity lives agy-side via `conversation_id` and `/agy:rescue --resume`.
 
+## Credits and licence
+
+This plugin follows the layout of, and derives several helpers from,
+[`openai/codex-plugin-cc`](https://github.com/openai/codex-plugin-cc), which is
+Apache-2.0. `NOTICE` lists the derived files and `LICENSE-APACHE-2.0` carries
+that licence. The rest is MIT, see `LICENSE`.
+
 ## Layout
 
 ```
@@ -477,8 +484,12 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   └── live/
 │       └── run-denial-matrix.mjs      opt-in permission harness, npm run test:denials
 ├── CHANGELOG.md
+├── CONTRIBUTING.md
 ├── LICENSE
+├── LICENSE-APACHE-2.0
+├── NOTICE
 ├── README.md
+├── SECURITY.md
 └── package.json                       npm package (agy-plugin-cc) for the npx installer
 ```
 

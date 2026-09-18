@@ -1,0 +1,20 @@
+antigravity-plugin-cc
+Copyright 2026 Eakkapoom (Eakkapoom-Name)
+
+This plugin derives its layout and several helpers from openai/codex-plugin-cc
+(https://github.com/openai/codex-plugin-cc), Copyright 2026 OpenAI, licensed
+under the Apache License, Version 2.0. A copy of that licence is in
+LICENSE-APACHE-2.0.
+
+Derived from codex-plugin-cc:
+- the companion-script layout (scripts/agy-companion.mjs and its subcommands,
+  scripts/stop-review-gate-hook.mjs)
+- scripts/lib/process.mjs (command resolution and spawning)
+- scripts/lib/state.mjs (per-workspace state under the plugin data directory)
+- scripts/lib/workspace.mjs (workspace root resolution)
+- the argument parsing in scripts/agy-companion.mjs
+- the command, skill and agent structure under commands/, skills/, agents/
+
+Everything else in this repository is the work of its author and is offered
+under the MIT License in LICENSE. The Apache-2.0 terms continue to apply to
+the derived parts listed above.

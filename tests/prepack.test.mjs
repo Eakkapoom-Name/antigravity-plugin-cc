@@ -53,3 +53,10 @@ test("the guard lets a clean tree pack", () => {
   });
   assert.equal(result.status, 0, result.stderr);
 });
+
+test("the tarball carries the licence attribution files", () => {
+  const files = readJson("package.json").files;
+  for (const name of ["NOTICE", "LICENSE-APACHE-2.0", "LICENSE"]) {
+    assert.ok(files.includes(name), `package.json files lacks ${name}`);
+  }
+});

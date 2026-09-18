@@ -9,7 +9,9 @@
     "scripts/npx-install.mjs",
     "scripts/lib/process.mjs",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "LICENSE-APACHE-2.0",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=18"

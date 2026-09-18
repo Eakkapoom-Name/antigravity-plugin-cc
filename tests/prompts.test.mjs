@@ -73,3 +73,10 @@ test("the search and fetch templates take exactly their one placeholder", () => 
   assert.deepEqual(placeholdersIn(readPrompt("fetch")), ["URL"]);
   assert.match(readPrompt("search"), /Sources:/);
 });
+
+test("the research template fixes the report section order", () => {
+  const template = readPrompt("research");
+  assert.deepEqual(placeholdersIn(template), ["TOPIC"]);
+  const order = ["Summary", "Key findings", "Disagreements", "Caveats", "Sources"].map((h) => template.indexOf(h));
+  assert.ok(order.every((i, n) => i > -1 && (n === 0 || i > order[n - 1])), `section order is ${order}`);
+});

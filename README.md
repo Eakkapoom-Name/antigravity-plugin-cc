@@ -17,6 +17,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - `/agy:transfer` to hand the current session over to a resumable agy conversation
 - `/agy:whisper` for a one-shot question to agy with no repository context
 - `/agy:search` for a web search or a single page fetch through agy, second in the web tool order after Claude Code's own tools
+- `/agy:research` for a web-grounded investigation with a fixed report shape and sources, optionally written to a file
 - `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
@@ -216,6 +217,19 @@ changes afterward (rebinding), since agy performs the actual fetch in its own
 process. The `agy-web` skill tells Claude Code to reach for this second, after
 its own WebSearch and WebFetch and before Tavily.
 
+### `/agy:research`
+
+```text
+/agy:research --effort high --out docs/notes/wasm-gc.md state of WebAssembly GC support
+/agy:research tradeoffs between SQLite WAL and rollback journal for a desktop app
+```
+
+Fixed report shape: Summary, Key findings (each with its source), Disagreements
+and thin evidence, Caveats, Sources. `--effort` sets the depth. `--out <path>`
+writes the same markdown inside the workspace; the parent directory must exist
+and an existing file is never overwritten. agy runs isolated; the companion does
+the write.
+
 ### `/agy:transfer`
 
 Seeds a fresh agy conversation with a handoff brief of the current session (goal, state, decisions, open items) and returns the `conversation_id` with both resume paths.
@@ -394,6 +408,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   ├── continue.md
 │   ├── quota.md
 │   ├── rescue.md
+│   ├── research.md
 │   ├── result.md
 │   ├── review.md
 │   ├── search.md
@@ -406,6 +421,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 ├── prompts/
 │   ├── adversarial-review.md          challenge-review prompt
 │   ├── fetch.md                       single-page fetch prompt
+│   ├── research.md                    research report prompt
 │   ├── review.md                      code-review prompt
 │   ├── search.md                      web search prompt
 │   ├── stop-review-gate.md            stop-gate prompt
@@ -418,6 +434,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   │   ├── agy.mjs                    agy invocation and result normalizing
 │   │   ├── denial-matrix.mjs          permission cases for the denial harness
 │   │   ├── git.mjs                    diff collection
+│   │   ├── output-path.mjs            containment check for --out targets
 │   │   ├── process.mjs                spawn without a shell, Windows shims
 │   │   ├── prompts.mjs                prompt loader
 │   │   ├── state.mjs                  per-workspace state

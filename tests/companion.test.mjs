@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { parseFlaggedArguments, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
+import { parseFlaggedArguments, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
 
@@ -490,5 +490,67 @@ test("search refuses a colon-only ftp url on the fetch path", async () => {
   assert.equal(out.failure, "url-blocked");
   assert.equal(out.mode, "fetch");
   assert.match(out.error, /scheme ftp is not allowed/);
+  assert.equal(calls.length, 0);
+});
+
+// The name says isolated, so the assertions prove it the same way the whisper
+// and search isolation tests do: a temp cwd reached the stub, and the
+// workspace root (research's stand-in for the repository path) never did.
+// Model and timeout alone would not show the run was isolated at all.
+test("research renders the report template, runs isolated, and writes --out only on success", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  const calls = [];
+  try {
+    const out = research("--effort high --out report.md rust async runtimes", fakeRun(calls), () => true, root);
+    assert.equal(out.ok, true);
+    assert.match(calls[0].prompt, /rust async runtimes/);
+    assert.match(calls[0].prompt, /Sources/);
+    assert.equal(calls[0].options.printTimeout, "9m");
+    assert.equal(calls[0].options.effort, "high");
+    assert.ok(calls[0].options.cwd.startsWith(os.tmpdir()));
+    assert.ok(!JSON.stringify(calls[0].options).includes(root), "the workspace root reached agy");
+    assert.ok(!JSON.stringify(calls[0].options).includes(process.cwd()), "the repository path reached agy");
+    assert.equal(out.outPath, path.join(fs.realpathSync(root), "report.md"));
+    assert.equal(fs.readFileSync(out.outPath, "utf8"), "No findings.");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("research refuses a bad --out before running", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  const calls = [];
+  try {
+    const out = research("--out ../x.md topic", fakeRun(calls), () => true, root);
+    assert.equal(out.ok, false);
+    assert.equal(calls.length, 0);
+    assert.match(out.error, /--out/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("research does not write when the run failed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  try {
+    const out = research(
+      "--out r.md topic",
+      () => ({ result: { status: "ERROR" }, events: [], deniedActions: [], stderr: "", ok: false, failure: "failed" }),
+      () => true,
+      root
+    );
+    assert.equal(out.ok, false);
+    assert.equal(out.outPath, undefined);
+    assert.ok(!fs.existsSync(path.join(root, "r.md")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("research needs a topic and does not spend a run on an empty one", () => {
+  const calls = [];
+  const out = research("--model m", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /needs a topic/);
   assert.equal(calls.length, 0);
 });

@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the web tool order, after Claude Code's own tools and before Tavily, and
   states what the guard cannot cover: redirects and DNS rebinding, which
   happen in agy's own fetch after the guard has already returned.
+- `/agy:research`: a web-grounded investigation with a fixed report shape
+  (summary, findings with sources, disagreements, caveats, sources), depth
+  set by `--effort`, optionally written to `--out <path>` inside the
+  workspace by the companion, never by agy.
 
 ### Changed
 

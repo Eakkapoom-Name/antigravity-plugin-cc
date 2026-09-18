@@ -26,6 +26,7 @@ import {
   runSlashCommand
 } from "./lib/agy.mjs";
 import { collectDiff, untrackedFiles } from "./lib/git.mjs";
+import { resolveOutputPath } from "./lib/output-path.mjs";
 import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
@@ -494,6 +495,55 @@ export async function search(argument, run = runPrompt, available = agyAvailable
   return resultPayload({ run: out, effortDropped: false }, { mode });
 }
 
+// `run` is the low-level runner forwarded into `runIsolated`, the same
+// injectable third parameter `runIsolated` itself already defines (defaulting
+// to the real `runPrompt`). research sends no repository text, so it does not
+// scan for secrets and never touches the workspace; isolation is not
+// something a caller can opt out of by injecting a runner. `--out` is
+// resolved and validated before agy ever runs, so a bad path fails without
+// spending a run; the file is written by the companion after a successful
+// run, never by agy itself, which stays isolated throughout.
+export function research(argument, run = runPrompt, available = agyAvailable, root = workspace()) {
+  if (!available()) {
+    return NOT_INSTALLED;
+  }
+  const { flags, rest } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  if (!rest) {
+    return { ok: false, error: "research needs a topic." };
+  }
+  let target = null;
+  if (flags.out !== undefined) {
+    const resolved = resolveOutputPath(flags.out, root);
+    if (!resolved.ok) {
+      return { ok: false, error: `--out refused: ${resolved.reason}` };
+    }
+    target = resolved.path;
+  }
+
+  const prompt = renderPrompt("research", { TOPIC: rest });
+  const out = runWithEffortFallback(
+    prompt,
+    { model: flags.model, effort: flags.effort, printTimeout: "9m" },
+    (p, options) => runIsolated(p, options, run)
+  );
+  const payload = resultPayload(out);
+  if (payload.ok && target) {
+    const body = String(out.run.result?.response ?? "");
+    try {
+      fs.writeFileSync(target, body, { flag: "wx" });
+      payload.outPath = target;
+    } catch (error) {
+      // The report was produced; only the write failed (a race on the target
+      // name, or a parent that turned unwritable after resolveOutputPath
+      // checked it). Losing `result.response` on top of that would waste the
+      // whole run, so the payload keeps it and only the file write is
+      // reported as failed.
+      payload.outError = error.message;
+    }
+  }
+  return payload;
+}
+
 function quota() {
   if (!agyAvailable()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
@@ -554,7 +604,8 @@ const SUBCOMMANDS = {
   quota,
   gate,
   whisper: (argument) => whisper(argument),
-  search: (argument) => search(argument)
+  search: (argument) => search(argument),
+  research: (argument) => research(argument)
 };
 
 export function main(argv) {

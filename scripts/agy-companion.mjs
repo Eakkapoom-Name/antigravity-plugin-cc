@@ -316,24 +316,16 @@ function stripTrailingQueryPunctuation(token) {
   return token.replace(TRAILING_QUERY_PUNCTUATION, "");
 }
 
-// The colon-only form ("http:something", no "//") is guarded in a query
-// only when "something" plausibly names a host: an IP literal (which, in
-// the text a person actually types, always has a dot) or a bracketed IPv6
-// literal. A bare word or number right after the colon ("http:scheme",
-// "http:443", which Node's URL parser turns into the IPv4 address
-// "0.0.1.187" and then blocks as reserved) is far more likely a mention of
-// the scheme or a port number in prose than an attempt to name a fetch
-// target, and guarding it anyway costs a real DNS lookup, or a false
-// block, on an ordinary sentence. The slashed form ("http://...") carries
-// no such ambiguity: "//" is only ever the start of an authority, so it is
-// always a candidate, whatever follows.
-function isQueryScanCandidate(token) {
-  const afterScheme = token.replace(/^https?:/i, "");
-  if (afterScheme.startsWith("//")) {
-    return true;
-  }
-  const authority = afterScheme.split(/[/?#]/)[0];
-  return authority.includes(".") || authority.startsWith("[");
+// Whether a matched token spelled out an authority ("http://host", or with
+// backslashes, which the WHATWG parser treats the same way). Nothing about
+// guarding a token is decided here: every token that parses to an http or
+// https URL with a host is guarded either way. This only says whether the
+// token may skip the DNS lookup for a bare single-label host, which is the
+// one shape ("read about http:scheme handling") where a sentence mentioning
+// a scheme would otherwise cost a resolver call. The slashed form is never
+// prose in that way, so it keeps its lookup.
+function hasAuthoritySlashes(token) {
+  return /^https?:[/\\]{2}/i.test(token);
 }
 
 // Cap on the distinct hosts search()'s query scan will resolve for one
@@ -412,8 +404,23 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // to a model, and the only reason to inspect it at all is that agy might
     // decide to fetch it, which is only possible for an http or https token.
     // A mention of any other scheme ("what does ftp:// mean") is prose, not
-    // a fetch target, and passes through untouched. The colon-only form is
-    // narrowed further still, by isQueryScanCandidate: see its comment.
+    // a fetch target, and passes through untouched.
+    //
+    // Whether a matched token is guarded is decided by the URL parser, never
+    // by a test on its text: the token is parsed once with `new URL`, and it
+    // goes to the guard whenever that parse yields an http or https URL with
+    // a host. That is the same parse `guardFetchUrl` and agy's own fetch
+    // perform, so the scan and the guard cannot drift apart the way a
+    // string-shape approximation of the parser repeatedly did (the
+    // slash-free "http:/127.0.0.1", the backslash-bracket "http:\\[::1]",
+    // and the dotless "http:localhost", "http:2130706433", "http:0x7f000001"
+    // all parse to a blocked host while looking nothing like one as text).
+    // A token the parser rejects names no host anyone could fetch, so it
+    // stays prose. The cost that narrowing was meant to avoid, a sentence
+    // mentioning a scheme paying for a DNS lookup, is handled inside the
+    // guard instead, after the host is known: a bare single-label host that
+    // is neither an IP literal nor a special-use name skips the lookup, and
+    // only for the slash-free form.
     //
     // `\S+` also grabs trailing prose punctuation a URL is not part of
     // ("see https://example.com, then stop" would otherwise guard the host
@@ -446,16 +453,21 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     const seenHosts = new Set();
     for (const [rawToken] of rest.matchAll(/https?:\S+/gi)) {
       const token = stripTrailingQueryPunctuation(rawToken);
-      if (!token || !isQueryScanCandidate(token)) {
+      let parsed;
+      try {
+        parsed = new URL(token);
+      } catch {
+        // A token the parser rejects ("what does http:// mean") names no
+        // host that agy or anything else could fetch, so it is prose.
         continue;
       }
-      let hostKey = token.toLowerCase();
-      try {
-        hostKey = new URL(token).hostname.toLowerCase();
-      } catch {
-        // Left as the raw token: guardFetchUrl will hit the same parse
-        // failure below and refuse the request either way.
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+        continue;
       }
+      if (!parsed.hostname) {
+        continue;
+      }
+      const hostKey = parsed.hostname.toLowerCase();
       if (!seenHosts.has(hostKey)) {
         if (seenHosts.size >= MAX_SCANNED_HOSTS) {
           return {
@@ -467,7 +479,9 @@ export async function search(argument, run = runPrompt, available = agyAvailable
         }
         seenHosts.add(hostKey);
       }
-      const guard = await guardFetchUrl(token, cachedLookup);
+      const guard = await guardFetchUrl(token, cachedLookup, {
+        skipSingleLabelLookup: !hasAuthoritySlashes(token)
+      });
       if (!guard.ok) {
         return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };
       }

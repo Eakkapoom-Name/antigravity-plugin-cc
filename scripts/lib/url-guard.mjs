@@ -158,7 +158,14 @@ export function isBlockedHostname(host) {
   return name === "localhost" || name.endsWith(".localhost") || name === "metadata" || name === "metadata.google.internal";
 }
 
-export async function guardFetchUrl(text, lookup = dns.promises.lookup) {
+// `options.skipSingleLabelLookup` lets a caller say "do not spend a DNS lookup
+// on a bare single-label host". search()'s query scan passes it for the
+// slash-free form in a query, where "http:scheme" in a sentence is prose far
+// more often than a fetch target. It skips the lookup only: the scheme,
+// credentials, special-use-name and IP-literal checks below all still run
+// first, against the host the URL parser produced, so "http:localhost" and
+// "http:2130706433" (which parses to 127.0.0.1) are still refused.
+export async function guardFetchUrl(text, lookup = dns.promises.lookup, options = {}) {
   let url;
   try {
     url = new URL(String(text ?? "").trim());
@@ -179,6 +186,13 @@ export async function guardFetchUrl(text, lookup = dns.promises.lookup) {
     return isBlockedAddress(host)
       ? { ok: false, reason: `address ${host} is a local or reserved address` }
       : { ok: true, url };
+  }
+  if (options.skipSingleLabelLookup && !host.includes(".")) {
+    // A single label with no dot, which is neither an IP literal nor one of
+    // the special-use names checked above, is the one host shape worth
+    // sparing a resolver call for: the caller asked for that, and every
+    // check that does not need the network has already run against it.
+    return { ok: true, url };
   }
   let addresses;
   try {

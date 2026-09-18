@@ -148,3 +148,49 @@ test("guardFetchUrl fails closed on a resolver entry it cannot read as an addres
   assert.equal(out.ok, false);
   assert.match(out.reason, /could not read/);
 });
+
+// search()'s query scan passes skipSingleLabelLookup so that a sentence which
+// merely mentions a scheme ("read about http:scheme handling") does not pay
+// for a DNS lookup. The skip is the lookup and nothing else: the credentials
+// check, the special-use name check and the IP-literal check all still run
+// against whatever host the URL parser produced, which is how "http:localhost"
+// and the dotless decimal spelling of 127.0.0.1 stay refused.
+test("skipSingleLabelLookup skips the resolver for a bare label and nothing else", async () => {
+  let lookups = 0;
+  const spy = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+
+  const prose = await guardFetchUrl("http:scheme", spy, { skipSingleLabelLookup: true });
+  assert.equal(prose.ok, true);
+  assert.equal(lookups, 0, "a bare single label should not be resolved when the caller skips the lookup");
+
+  const localName = await guardFetchUrl("http:localhost", spy, { skipSingleLabelLookup: true });
+  assert.equal(localName.ok, false);
+  assert.match(localName.reason, /host localhost is a local name/);
+
+  const decimal = await guardFetchUrl("http:2130706433", spy, { skipSingleLabelLookup: true });
+  assert.equal(decimal.ok, false);
+  assert.match(decimal.reason, /address 127\.0\.0\.1 is a local or reserved address/);
+
+  const credentials = await guardFetchUrl("http:u:p@scheme", spy, { skipSingleLabelLookup: true });
+  assert.equal(credentials.ok, false);
+  assert.match(credentials.reason, /credentials/);
+
+  assert.equal(lookups, 0, "none of these refusals needs the resolver");
+});
+
+// Without the option, which is how the fetch path calls it, a single-label
+// host is resolved and judged on its answer like any other hostname.
+test("a single-label host is still resolved when the caller does not skip the lookup", async () => {
+  let lookups = 0;
+  const spy = async () => {
+    lookups += 1;
+    return [{ address: "10.0.0.5", family: 4 }];
+  };
+  const out = await guardFetchUrl("http://intranet/", spy);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /10\.0\.0\.5/);
+  assert.equal(lookups, 1);
+});

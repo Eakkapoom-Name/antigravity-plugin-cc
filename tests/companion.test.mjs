@@ -413,11 +413,11 @@ test("a second mention of an already-checked host still gets its credentials che
   assert.equal(lookups, 1, "the DNS lookup for the already-known host should still be deduped");
 });
 
-// The colon-only form is guarded in a query only when what follows plausibly
-// names a host. A bare scheme mention or a port-like number is prose, not a
-// fetch target, and guarding it anyway would cost a real DNS lookup or a
-// false block on an ordinary sentence.
-test("search does not guard a colon-only scheme mention with no plausible host", async () => {
+// A sentence that merely mentions a scheme still reaches the search path and
+// still costs nothing: the token is parsed and guarded like any other, but a
+// bare single-label host that is neither an IP literal nor a special-use
+// name skips the resolver call, so no DNS lookup happens.
+test("a colon-only scheme mention in a query reaches search with no dns lookup", async () => {
   const calls = [];
   let lookups = 0;
   const lookup = async () => {
@@ -432,25 +432,52 @@ test("search does not guard a colon-only scheme mention with no plausible host",
 });
 
 // Node's URL parser turns a bare number into an IPv4 address ("443" becomes
-// "0.0.1.187"), which the guard then blocks as reserved; narrowing the
-// colon-only form to what plausibly names a host keeps a port-like mention
-// out of the guard entirely, rather than blocking it for the wrong reason.
-test("search does not block a colon-only port-like mention with no plausible host", async () => {
+// "0.0.1.187", "2130706433" becomes "127.0.0.1"), so a port-like mention and
+// the decimal spelling of loopback are the same token shape and cannot be
+// told apart before the parse. Both are refused: the parsed host is what
+// decides, and the cost of that is this one false positive on a sentence
+// about a port number.
+test("a port-like bare number in a query parses to an address and is refused", async () => {
   const calls = [];
   const out = await search("the port http:443 thing", fakeRun(calls), () => true);
-  assert.equal(out.ok, true);
-  assert.equal(out.mode, "search");
-  assert.equal(calls.length, 1);
-});
-
-// The colon-only form still has to be guarded when it plausibly names a
-// host, so the bypass finding 3 (round 2) closed stays closed.
-test("search still guards a colon-only form that plausibly names a host", async () => {
-  const calls = [];
-  const out = await search("please fetch http:127.0.0.1 for me", fakeRun(calls), () => true);
   assert.equal(out.ok, false);
   assert.equal(out.failure, "url-blocked");
+  assert.equal(out.mode, "search");
+  assert.match(out.error, /address 0\.0\.1\.187 is a local or reserved address/);
   assert.equal(calls.length, 0);
+});
+
+// Each of these parses to a host the guard blocks, and none of them looks
+// like one as text: a single leading slash leaves nothing before the first
+// "/" to inspect, a backslash before a bracket means the token does not
+// start with "[", and a dotless, decimal or hex host has no dot to test for.
+// Deciding candidacy on the parsed URL rather than on the token's spelling
+// is what catches them; every one of these reached agy unguarded at 5c4637c,
+// where a string test stood in front of the parser.
+test("a token that parses to a blocked host is refused however it is spelled", async () => {
+  const cases = [
+    ["please fetch http:/127.0.0.1 now", /address 127\.0\.0\.1 is a local or reserved address/],
+    ["please fetch http:/localhost now", /host localhost is a local name/],
+    ["please fetch https:/169.254.169.254 now", /address 169\.254\.169\.254 is a local or reserved address/],
+    ["please fetch http:\\[::1] now", /address ::1 is a local or reserved address/],
+    ["please fetch http:localhost now", /host localhost is a local name/],
+    ["please fetch http:metadata now", /host metadata is a local name/],
+    ["please fetch http:2130706433 now", /address 127\.0\.0\.1 is a local or reserved address/],
+    ["please fetch http:0x7f000001 now", /address 127\.0\.0\.1 is a local or reserved address/],
+    ["please fetch http:017700000001 now", /address 127\.0\.0\.1 is a local or reserved address/]
+  ];
+  for (const [argument, reason] of cases) {
+    const calls = [];
+    const lookup = async () => {
+      throw new Error(`no DNS lookup should be needed to refuse ${argument}`);
+    };
+    const out = await search(argument, fakeRun(calls), () => true, lookup);
+    assert.equal(out.ok, false, argument);
+    assert.equal(out.failure, "url-blocked", argument);
+    assert.equal(out.mode, "search", argument);
+    assert.match(out.error, reason, argument);
+    assert.equal(calls.length, 0, argument);
+  }
 });
 
 // ftp is a WHATWG special scheme too: without this, "ftp:127.0.0.1" matched

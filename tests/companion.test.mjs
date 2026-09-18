@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { parseFlaggedArguments, review, transfer, whisper } from "../scripts/agy-companion.mjs";
+import { parseFlaggedArguments, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
 
@@ -156,4 +156,43 @@ test("whisper drops --effort once when the model rejects it, staying isolated on
   assert.ok(!JSON.stringify(calls[1]).includes(process.cwd()), "the repository path reached agy on the retry");
   assert.equal(out.effortDropped, true);
   assert.equal(out.ok, true);
+});
+
+// The name says isolation, so the assertions have to prove it: a temp cwd
+// reached the stub, and the repository path never did. Model and timeout
+// alone would not show the run was isolated at all.
+test("search with a query renders the search template through an isolated run", async () => {
+  const calls = [];
+  const out = await search("--model m latest node lts", fakeRun(calls), () => true);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.match(calls[0].prompt, /latest node lts/);
+  assert.match(calls[0].prompt, /Sources:/);
+  assert.equal(calls[0].options.model, "m");
+  assert.equal(calls[0].options.printTimeout, "3m");
+  assert.ok(calls[0].options.cwd.startsWith(os.tmpdir()));
+  assert.ok(!JSON.stringify(calls[0].options).includes(process.cwd()), "the repository path reached agy");
+});
+
+test("search with a url renders the fetch template after the guard passes", async () => {
+  const calls = [];
+  const lookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const out = await search("https://example.com/", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "fetch");
+  assert.match(calls[0].prompt, /https:\/\/example\.com\//);
+});
+
+test("search with a blocked url never reaches agy", async () => {
+  const calls = [];
+  const out = await search("http://127.0.0.1/admin", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+});
+
+test("search refuses an empty argument", async () => {
+  const out = await search("", fakeRun([]), () => true);
+  assert.equal(out.ok, false);
+  assert.match(out.error, /query or a URL/);
 });

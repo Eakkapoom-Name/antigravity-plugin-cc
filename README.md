@@ -16,6 +16,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - `/agy:quota` to check remaining Antigravity model quota
 - `/agy:transfer` to hand the current session over to a resumable agy conversation
 - `/agy:whisper` for a one-shot question to agy with no repository context
+- `/agy:search` for a web search or a single page fetch through agy, second in the web tool order after Claude Code's own tools
 - `/agy:setup` for installation and authentication checks, and the stop-review gate toggle
 - An optional stop-review gate: a Stop hook that has agy review the previous turn before the session can end
 
@@ -199,6 +200,19 @@ One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
 with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
 runs from an isolated temp directory, so it cannot touch your project.
 
+### `/agy:search`
+
+```text
+/agy:search what changed in the Node 24 permission model
+/agy:search https://nodejs.org/en/blog/release/v24.0.0
+```
+
+A bare question runs a web search and answers with a `Sources:` list. A single
+`http://` or `https://` URL fetches that page as markdown. Local, private and
+link-local targets, non-http schemes, and URLs carrying credentials are refused
+before agy runs. The `agy-web` skill tells Claude Code to reach for this
+second, after its own WebSearch and WebFetch and before Tavily.
+
 ### `/agy:transfer`
 
 Seeds a fresh agy conversation with a handoff brief of the current session (goal, state, decisions, open items) and returns the `conversation_id` with both resume paths.
@@ -379,6 +393,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   ├── rescue.md
 │   ├── result.md
 │   ├── review.md
+│   ├── search.md
 │   ├── setup.md
 │   ├── status.md
 │   ├── transfer.md
@@ -387,7 +402,9 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   └── hooks.json                     Stop hook wiring for the stop-review gate
 ├── prompts/
 │   ├── adversarial-review.md          challenge-review prompt
+│   ├── fetch.md                       single-page fetch prompt
 │   ├── review.md                      code-review prompt
+│   ├── search.md                      web search prompt
 │   ├── stop-review-gate.md            stop-gate prompt
 │   ├── transfer.md                    session handoff prompt
 │   └── whisper.md                     one-shot question prompt
@@ -402,6 +419,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   │   ├── prompts.mjs                prompt loader
 │   │   ├── state.mjs                  per-workspace state
 │   │   ├── stop-review.mjs            stop-review gate decision logic
+│   │   ├── url-guard.mjs              SSRF guard for /agy:search fetch mode
 │   │   └── workspace.mjs              repository root resolution
 │   ├── agy-companion.mjs              review, transfer, quota, gate subcommands
 │   ├── agy-setup.mjs                  /agy:setup readiness report
@@ -411,7 +429,8 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   └── stop-review-gate-hook.mjs      stop-review gate (dependency-free node)
 ├── skills/
 │   ├── agy-cli-runtime/               CLI call contract
-│   └── agy-result-handling/           output presentation rules
+│   ├── agy-result-handling/           output presentation rules
+│   └── agy-web/                       web tool order for /agy:search
 ├── tests/                             node --test suite, run with npm test
 │   └── live/
 │       └── run-denial-matrix.mjs      opt-in permission harness, npm run test:denials

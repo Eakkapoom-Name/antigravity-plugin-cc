@@ -28,6 +28,7 @@ import { collectDiff, untrackedFiles } from "./lib/git.mjs";
 import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
+import { guardFetchUrl, looksLikeUrl } from "./lib/url-guard.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const SCHEMA_PATH = path.resolve(
@@ -318,6 +319,40 @@ export function whisper(argument, run = runPrompt, available = agyAvailable) {
   return resultPayload(out);
 }
 
+// `run` is the low-level runner forwarded into `runIsolated`, the same
+// injectable third parameter `runIsolated` itself already defines (defaulting
+// to the real `runPrompt`). search sends no repository text, so it does not
+// scan for secrets and never touches the workspace; isolation is not
+// something a caller can opt out of by injecting a runner. A URL argument is
+// checked by the guard before agy ever sees it; a rejected URL returns
+// without spending a run.
+export async function search(argument, run = runPrompt, available = agyAvailable, lookup) {
+  if (!available()) {
+    return NOT_INSTALLED;
+  }
+  const { flags, rest } = parseFlaggedArguments(argument, ["--model"]);
+  if (!rest) {
+    return { ok: false, error: "search needs a query or a URL." };
+  }
+
+  let prompt;
+  let mode;
+  if (looksLikeUrl(rest)) {
+    const guard = await guardFetchUrl(rest, lookup);
+    if (!guard.ok) {
+      return { ok: false, failure: "url-blocked", mode: "fetch", error: `fetch refused: ${guard.reason}` };
+    }
+    prompt = renderPrompt("fetch", { URL: guard.url.href });
+    mode = "fetch";
+  } else {
+    prompt = renderPrompt("search", { QUERY: rest });
+    mode = "search";
+  }
+
+  const out = runIsolated(prompt, { model: flags.model, printTimeout: "3m" }, run);
+  return resultPayload({ run: out, effortDropped: false }, { mode });
+}
+
 function quota() {
   if (!agyAvailable()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
@@ -377,7 +412,8 @@ const SUBCOMMANDS = {
   transfer: (argument) => transfer({ argument }),
   quota,
   gate,
-  whisper: (argument) => whisper(argument)
+  whisper: (argument) => whisper(argument),
+  search: (argument) => search(argument)
 };
 
 export function main(argv) {
@@ -396,14 +432,16 @@ if (
   process.argv[1] &&
   fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))
 ) {
-  try {
-    const payload = main(process.argv.slice(2));
-    emit(payload);
-    if (!payload.ok) {
+  Promise.resolve()
+    .then(() => main(process.argv.slice(2)))
+    .then((payload) => {
+      emit(payload);
+      if (!payload.ok) {
+        process.exitCode = 1;
+      }
+    })
+    .catch((error) => {
+      emit({ ok: false, error: error instanceof Error ? error.message : String(error) });
       process.exitCode = 1;
-    }
-  } catch (error) {
-    emit({ ok: false, error: error instanceof Error ? error.message : String(error) });
-    process.exitCode = 1;
-  }
+    });
 }

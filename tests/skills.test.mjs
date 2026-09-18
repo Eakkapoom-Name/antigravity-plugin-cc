@@ -185,3 +185,17 @@ test("the prompting skill names every block of the contract", () => {
 test("the rescue agent loads the prompting skill", () => {
   assert.match(read("agents/agy-rescue.md"), /^\s+- agy-prompting$/m);
 });
+
+// The web skill places agy second: after Claude Code's own WebSearch and
+// WebFetch, before Tavily and ddg, matching the user's tool order.
+const WEB = read("skills/agy-web/SKILL.md");
+
+test("the web skill places /agy:search second in the tool order and demands sources", () => {
+  const first = WEB.indexOf("WebSearch");
+  const agy = WEB.indexOf("/agy:search");
+  const tavily = WEB.indexOf("Tavily");
+  assert.ok(first > -1 && agy > first && tavily > agy, "tier order is not built-ins, agy, Tavily");
+  assert.match(WEB, /source URLs?/i);
+  assert.match(WEB, /not a results list/);
+  assert.match(WEB, /not raw/);
+});

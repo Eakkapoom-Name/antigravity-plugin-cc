@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   templates follow it.
 - `/agy:whisper`: a one-shot question to agy with no repository context,
   through the isolated runner.
+- `/agy:search`: a web search or a single page fetch through agy, with an
+  SSRF guard on fetch (no loopback, private, link-local or metadata targets,
+  http and https only, no credentials). The `agy-web` skill places it second
+  in the web tool order, after Claude Code's own tools and before Tavily.
+  Measured on agy 1.2.6: a grounded answer with a source URL in 52 s, a page
+  fetch in 27 s.
 
 ### Changed
 

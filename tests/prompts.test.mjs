@@ -67,3 +67,9 @@ test("the whisper template takes the prompt and nothing else", () => {
   assert.deepEqual(placeholdersIn(readPrompt("whisper")), ["PROMPT"]);
   assert.ok(!renderPrompt("whisper", { PROMPT: "hi" }).includes("{{"));
 });
+
+test("the search and fetch templates take exactly their one placeholder", () => {
+  assert.deepEqual(placeholdersIn(readPrompt("search")), ["QUERY"]);
+  assert.deepEqual(placeholdersIn(readPrompt("fetch")), ["URL"]);
+  assert.match(readPrompt("search"), /Sources:/);
+});

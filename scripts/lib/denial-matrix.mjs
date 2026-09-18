@@ -155,6 +155,12 @@ export function evaluateCase(testCase, report) {
   const expect = testCase.expect ?? {};
   const failures = [];
 
+  if (report?.agy && report.agy.meetsMinimum === false) {
+    failures.push(
+      `agy ${report.agy.version ?? "?"} is below the floor ${report.agy.minimumVersion}; the row's denial result means nothing on this binary`
+    );
+  }
+
   if (report?.ready !== expect.ready) {
     failures.push(`ready: expected ${expect.ready}, got ${report?.ready}`);
   }

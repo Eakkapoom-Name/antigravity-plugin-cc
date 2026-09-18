@@ -271,3 +271,17 @@ test("a case can put the workspace at the home directory itself", () => {
   assert.equal(entry.workspaceAtHomeRoot, true);
   assert.equal(entry.settings.toolPermission, "request-review");
 });
+
+test("a report from an agy below the floor fails every row, so a denial is never mistaken for a permission result", () => {
+  const testCase = DENIAL_CASES[0];
+  const report = {
+    ready: false,
+    agy: { available: true, version: "1.2.3", minimumVersion: "1.2.4", meetsMinimum: false },
+    agySettings: { toolPermission: testCase.settings.toolPermission },
+    toolPermissions: { deniedActions: [] },
+    nextSteps: ["Update agy"]
+  };
+  const outcome = evaluateCase(testCase, report);
+  assert.equal(outcome.pass, false);
+  assert.ok(outcome.failures.some((line) => /below the floor|1\.2\.3/.test(line)), outcome.failures.join("; "));
+});

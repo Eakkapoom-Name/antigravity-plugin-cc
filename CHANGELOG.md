@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `/agy:setup` refuses an agy older than 1.2.4, the version every contract
+  was measured on, naming both versions and skipping the probes that would
+  otherwise fail with unrelated errors. The report carries `agy.version`,
+  `agy.minimumVersion` and `agy.meetsMinimum`; the denial harness fails every
+  row when the floor is not met.
 - The runtime contracts now say they were re-checked on agy 1.2.5. Every
   measured claim still names 1.2.4, where it was measured, and the note states
   what the 1.2.5 check consisted of: the 11-row denial harness, three cwd

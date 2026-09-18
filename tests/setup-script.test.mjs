@@ -5,11 +5,14 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  MIN_AGY_VERSION,
   classifyProbeFailure,
+  compareVersions,
   containsFilesystemPath,
   decisiveStderrLine,
   evaluateCommandProbe,
   evaluateReadProbe,
+  meetsMinimumVersion,
   permissionNextStep,
   readAgySettings,
   resolveToolPermission
@@ -456,4 +459,30 @@ test("stderr that is nothing but shutdown noise still reports its last line", ()
 test("empty stderr reports nothing rather than undefined", () => {
   assert.equal(decisiveStderrLine(""), "");
   assert.equal(decisiveStderrLine(null), "");
+});
+
+// F28. Every contract was measured on 1.2.4 and setup printed the version
+// without gating on it, so an older agy failed later, inside a run, with an
+// error that did not name the cause.
+test("the floor is the version the contracts were measured on", () => {
+  assert.equal(MIN_AGY_VERSION, "1.2.4");
+});
+
+test("compareVersions orders dotted numeric versions", () => {
+  assert.equal(compareVersions("1.2.4", "1.2.4"), 0);
+  assert.equal(compareVersions("1.2.5", "1.2.4"), 1);
+  assert.equal(compareVersions("1.2.10", "1.2.4"), 1);
+  assert.equal(compareVersions("1.3.0", "1.2.4"), 1);
+  assert.equal(compareVersions("1.1.28", "1.2.4"), -1);
+  assert.equal(compareVersions("2.0.0", "1.2.4"), 1);
+  assert.equal(compareVersions("1.2", "1.2.0"), 0);
+});
+
+test("meetsMinimumVersion is false for anything it cannot parse", () => {
+  assert.equal(meetsMinimumVersion("1.2.5"), true);
+  assert.equal(meetsMinimumVersion("1.2.4"), true);
+  assert.equal(meetsMinimumVersion("1.2.3"), false);
+  assert.equal(meetsMinimumVersion(""), false);
+  assert.equal(meetsMinimumVersion("dev"), false);
+  assert.equal(meetsMinimumVersion(null), false);
 });

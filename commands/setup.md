@@ -27,7 +27,7 @@ Run it with an explicit Bash `timeout` of `590000` ms. The script fires three ag
 
 The script runs every check itself (agy on PATH, an auth probe, a command probe and a file-read probe that detect headless permission auto-denial, and the stop-review gate state) and prints one JSON report:
 
-- `ready`: true only when `agy`, `auth`, and `toolPermissions` are all available.
+- `ready`: true only when `agy` is available and meets `agy.minimumVersion`, and `auth` and `toolPermissions` are both available.
 - `agy` / `auth` / `toolPermissions`: each has `available` and a `detail` line; probe sections also carry `durationSeconds`. On failure, `detail` quotes the decisive stderr line when there is one.
 - `toolPermissions.command` and `toolPermissions.read`: the two tool probes, each with `available`, `detail`, `deniedActions`, and `durationSeconds`. The read probe plants a file in the workspace root and asks agy to read it back, which is what every rescue does first; the file is removed before the report prints.
 - `toolPermissions.deniedActions`: the tool names agy refused, as it reports them in `denied_actions` (`command`, `read_file`). Empty on older agy versions that do not report denials in the JSON, in which case the probes fall back to judging the response text.
@@ -38,6 +38,8 @@ The script runs every check itself (agy on PATH, an auth probe, a command probe 
 - `auth.failureKind`: why the auth probe failed, or `null` when it passed. One of `environment` (the invoking shell blocked a syscall agy needs, typically a sandbox refusing its loopback listener), `auth` (a real sign-in problem), or `unknown` (the stderr named no cause). Never guess a remedy from `detail` alone; branch on this field.
 - `reviewGateEnabled`: current stop-review gate state, read from the same stored state the Stop hook reads, resolved from the same workspace root. The two can no longer disagree when the session sits in a subdirectory.
 - `nextSteps`: the remediation or optional follow-up commands to relay.
+
+If `agy.meetsMinimum` is false, report both `agy.version` and `agy.minimumVersion`, relay the `nextSteps` line, and stop: the auth and permission probes were skipped on purpose. Do not tell the user to sign in or to edit permissions for this case.
 
 Present the final report to the user:
 

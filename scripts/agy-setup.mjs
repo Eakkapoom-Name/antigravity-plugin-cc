@@ -39,6 +39,34 @@ function checkNode() {
   return { available: true, detail: process.version };
 }
 
+// F28. Every measured contract in this plugin (stream-json input, --json-schema,
+// denied_actions on the result) was taken on agy 1.2.4. An older binary fails
+// later, inside a run, with an error that does not name the cause, so setup
+// refuses it by name instead. `agy --version` prints a bare `1.2.6`.
+export const MIN_AGY_VERSION = "1.2.4";
+
+export function compareVersions(a, b) {
+  const parse = (value) => String(value ?? "").trim().split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const left = parse(a);
+  const right = parse(b);
+  const length = Math.max(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    const l = left[i] ?? 0;
+    const r = right[i] ?? 0;
+    if (l !== r) {
+      return l > r ? 1 : -1;
+    }
+  }
+  return 0;
+}
+
+export function meetsMinimumVersion(version, minimum = MIN_AGY_VERSION) {
+  if (!/^\d+(\.\d+)*$/.test(String(version ?? "").trim())) {
+    return false;
+  }
+  return compareVersions(version, minimum) >= 0;
+}
+
 function checkAgy() {
   // `which` is Unix-only, and it was the reason this check could not work on
   // Windows at all. Resolving through PATH and PATHEXT covers both, and finds
@@ -49,12 +77,23 @@ function checkAgy() {
     timeout: 30 * 1000
   });
   if (version.error?.code === "ENOENT" || version.status !== 0) {
-    return { available: false, detail: "agy is not on PATH", path: agyPath };
+    return {
+      available: false,
+      detail: "agy is not on PATH",
+      path: agyPath,
+      version: null,
+      minimumVersion: MIN_AGY_VERSION,
+      meetsMinimum: false
+    };
   }
+  const printed = version.stdout.trim();
   return {
     available: true,
-    detail: `agy ${version.stdout.trim()}`,
-    path: agyPath
+    detail: `agy ${printed}`,
+    path: agyPath,
+    version: printed,
+    minimumVersion: MIN_AGY_VERSION,
+    meetsMinimum: meetsMinimumVersion(printed)
   };
 }
 
@@ -449,6 +488,12 @@ function main() {
     nextSteps.push(
       "Install the Antigravity CLI (agy); see the official Antigravity documentation."
     );
+  } else if (!agy.meetsMinimum) {
+    auth.detail = "not checked; agy is below the minimum version";
+    toolPermissions.detail = "not checked; agy is below the minimum version";
+    nextSteps.push(
+      `agy ${agy.version ?? "(unparsable version)"} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
+    );
   } else {
     auth = checkAuth();
     if (!auth.available) {
@@ -477,7 +522,7 @@ function main() {
   }
 
   const gateOn = gateEnabled(cwd);
-  const ready = agy.available && auth.available && toolPermissions.available;
+  const ready = agy.available && agy.meetsMinimum && auth.available && toolPermissions.available;
   if (ready && !gateOn) {
     nextSteps.push(
       "Optional: run `/agy:setup gate on` to require a stop-time agy review before the session can end."

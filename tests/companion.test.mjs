@@ -196,3 +196,42 @@ test("search refuses an empty argument", async () => {
   assert.equal(out.ok, false);
   assert.match(out.error, /query or a URL/);
 });
+
+// A multiword query is not a bare URL, so it used to skip guardFetchUrl
+// entirely and hand the URL to agy inside a search prompt instead. The model
+// would still read it, so this is the same guard the fetch path uses, just
+// applied to every URL-shaped word in the query rather than to the whole
+// argument.
+test("search refuses a blocked url embedded in a multiword query", async () => {
+  const calls = [];
+  const out = await search("please check http://127.0.0.1/admin and report back", fakeRun(calls), () => true);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.equal(calls.length, 0);
+});
+
+// A whitespace-anchored token check misses a URL that is wrapped in
+// punctuation, since the token itself does not begin with the scheme; the
+// scheme can start anywhere in the query text.
+test("search refuses a blocked url wrapped in punctuation inside a query", async () => {
+  for (const argument of [
+    "read (http://127.0.0.1/admin) please",
+    'quote "http://127.0.0.1/admin" back to me',
+    "open <http://127.0.0.1/admin> for me"
+  ]) {
+    const calls = [];
+    const out = await search(argument, fakeRun(calls), () => true);
+    assert.equal(out.ok, false, argument);
+    assert.equal(out.failure, "url-blocked", argument);
+    assert.equal(calls.length, 0, argument);
+  }
+});
+
+test("an ordinary multiword query with no url still reaches the search path", async () => {
+  const calls = [];
+  const out = await search("what is the current node lts version", fakeRun(calls), () => true);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].prompt, /current node lts version/);
+});

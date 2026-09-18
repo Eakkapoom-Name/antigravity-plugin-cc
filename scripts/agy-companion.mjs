@@ -345,6 +345,20 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     prompt = renderPrompt("fetch", { URL: guard.url.href });
     mode = "fetch";
   } else {
+    // The whole argument is not a bare URL, but one word inside it can still
+    // be one: the model reads that word the same way a fetch would, so a
+    // search query does not get to smuggle a blocked URL past the guard just
+    // because it arrived with other words around it. Scanning for the scheme
+    // anywhere in the text, not only at the start of a whitespace-split
+    // token, catches a URL wrapped in punctuation ("(http://127.0.0.1/)",
+    // a quoted or angle-bracketed URL) that a per-token `looksLikeUrl` check
+    // would miss because the token does not begin with the scheme.
+    for (const [token] of rest.matchAll(/[a-z][a-z0-9+.-]*:\/\/\S+/gi)) {
+      const guard = await guardFetchUrl(token, lookup);
+      if (!guard.ok) {
+        return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };
+      }
+    }
     prompt = renderPrompt("search", { QUERY: rest });
     mode = "search";
   }

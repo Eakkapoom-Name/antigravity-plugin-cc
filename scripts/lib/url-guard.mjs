@@ -2,9 +2,22 @@ import dns from "node:dns";
 import net from "node:net";
 
 // Fetch mode hands a URL to agy, which reads it with its own tools from this
-// machine. Anything that resolves inside the machine's own network is refused
-// before agy sees it: loopback, RFC 1918, link-local (which holds the cloud
-// metadata address), and their IPv6 and IPv4-mapped forms.
+// machine. This guard resolves the host and checks it once, before agy ever
+// sees the URL: loopback, RFC 1918, link-local (which holds the cloud
+// metadata address), carrier-grade NAT, multicast, broadcast, and a few
+// other IANA special-purpose ranges, in every IPv4 and IPv6 form it can
+// recognise (mapped, IPv4-compatible, NAT64, 6to4).
+//
+// What this cannot do: it runs once, in this process, before the request is
+// handed to agy, which performs the actual fetch in its own process
+// afterward. A redirect from a passed URL to a blocked one is invisible
+// here, since the guard only ever sees the URL it was given, not what that
+// URL's server sends back. A DNS answer that changes between this check and
+// agy's own connection (rebinding) is likewise invisible: this guard's
+// `lookup` call and agy's own resolution are two separate lookups with no
+// way to bind them together from here. A pass from this guard means "the
+// URL given did not point at this machine's own network when checked," not
+// a guarantee about where the connection ultimately lands.
 
 export function looksLikeUrl(text) {
   const token = String(text ?? "").trim();
@@ -17,12 +30,53 @@ function ipv4Parts(address) {
 }
 
 function blockedIpv4(parts) {
-  const [a, b] = parts;
+  const [a, b, c, d] = parts;
   if (a === 0 || a === 127 || a === 10) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 192 && b === 168) return true;
   if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT / Tailscale, 100.64.0.0/10
+  if (a >= 224 && a <= 239) return true; // multicast, 224.0.0.0/4
+  if (a === 255 && b === 255 && c === 255 && d === 255) return true; // limited broadcast
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking, 198.18.0.0/15
+  if (a === 192 && b === 0 && c === 0) return true; // IETF protocol assignments, 192.0.0.0/24
   return false;
+}
+
+// Expands any address net.isIPv6 already accepted into its eight 16-bit
+// groups, including a trailing dotted-decimal IPv4 tail (the
+// "::ffff:127.0.0.1" style), so every embedded-IPv4 and reserved-range check
+// below works the same whichever way the address was compressed or spelled.
+// A single generic expansion, checked against each known embedding, is what
+// let the mapped-address fix generalise to IPv4-compatible, NAT64, and 6to4
+// addresses instead of needing one more spelling-specific regex per class.
+function ipv6Groups(ip) {
+  const expandSide = (side) =>
+    side
+      .split(":")
+      .filter(Boolean)
+      .flatMap((group) => {
+        if (group.includes(".")) {
+          const octets = group.split(".").map(Number);
+          return [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+        }
+        return [parseInt(group, 16)];
+      });
+
+  const compressedAt = ip.indexOf("::");
+  if (compressedAt === -1) {
+    return expandSide(ip);
+  }
+  const head = expandSide(ip.slice(0, compressedAt));
+  const tail = expandSide(ip.slice(compressedAt + 2));
+  const zeros = new Array(Math.max(0, 8 - head.length - tail.length)).fill(0);
+  return [...head, ...zeros, ...tail];
+}
+
+function embeddedIpv4(groups, fromIndex) {
+  const hi = groups[fromIndex];
+  const lo = groups[fromIndex + 1];
+  return [hi >>> 8, hi & 255, lo >>> 8, lo & 255];
 }
 
 export function isBlockedAddress(address) {
@@ -33,24 +87,40 @@ export function isBlockedAddress(address) {
   if (!net.isIPv6(ip)) {
     return false;
   }
-  // An IPv4-mapped IPv6 address reaches here in either spelling: the dotted
-  // form a resolver's getaddrinfo returns (::ffff:127.0.0.1), or the pure-hex
-  // form the WHATWG URL parser normalises a literal [::ffff:127.0.0.1] to
-  // (::ffff:7f00:1). Checking only one spelling would let a literal URL slip
-  // past a check the resolved form would have caught.
-  const mappedDotted = ip.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(\d+\.\d+\.\d+\.\d+)$/);
-  if (mappedDotted) {
-    return blockedIpv4(ipv4Parts(mappedDotted[1]));
+  const groups = ipv6Groups(ip);
+  if (groups.length !== 8) {
+    // An address net.isIPv6 accepted but this guard could not expand to
+    // eight groups is an answer it does not understand; refuse it rather
+    // than treat the failed expansion as "not blocked".
+    return true;
   }
-  const mappedHex = ip.match(/^(?:::ffff:|0:0:0:0:0:ffff:)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) {
-    const hi = parseInt(mappedHex[1], 16);
-    const lo = parseInt(mappedHex[2], 16);
-    return blockedIpv4([hi >>> 8, hi & 255, lo >>> 8, lo & 255]);
+  const allZero = (from, to) => groups.slice(from, to).every((g) => g === 0);
+
+  // IPv4-mapped, ::ffff:0:0/96: the low 32 bits are an embedded IPv4
+  // address, in whichever spelling the caller or the URL parser produced.
+  if (allZero(0, 5) && groups[5] === 0xffff) {
+    return blockedIpv4(embeddedIpv4(groups, 6));
   }
-  if (ip === "::" || ip === "::1") return true;
-  if (/^fe[89ab][0-9a-f]:/.test(ip)) return true; // link-local fe80::/10
-  if (/^f[cd][0-9a-f]{2}:/.test(ip)) return true; // unique local fc00::/7
+  // IPv4-compatible, ::/96 (deprecated, but still a valid address this host
+  // could resolve or be handed as a literal): same embedding, no ffff
+  // marker. This also covers the bare "::" and "::1", whose embedded
+  // addresses (0.0.0.0 and 0.0.0.1) already fall under the 0.0.0.0/8 rule
+  // in blockedIpv4.
+  if (allZero(0, 6)) {
+    return blockedIpv4(embeddedIpv4(groups, 6));
+  }
+  // NAT64 well-known prefix, 64:ff9b::/96.
+  if (groups[0] === 0x64 && groups[1] === 0xff9b && allZero(2, 6)) {
+    return blockedIpv4(embeddedIpv4(groups, 6));
+  }
+  // 6to4, 2002::/16: the next 32 bits after the fixed prefix are the
+  // embedded IPv4 address.
+  if (groups[0] === 0x2002) {
+    return blockedIpv4(embeddedIpv4(groups, 1));
+  }
+  if (groups[0] >= 0xfe80 && groups[0] <= 0xfebf) return true; // link-local fe80::/10
+  if (groups[0] >= 0xfc00 && groups[0] <= 0xfdff) return true; // unique local fc00::/7
+  if ((groups[0] & 0xff00) === 0xff00) return true; // multicast ff00::/8
   return false;
 }
 
@@ -78,7 +148,7 @@ export async function guardFetchUrl(text, lookup = dns.promises.lookup) {
   }
   if (net.isIP(host)) {
     return isBlockedAddress(host)
-      ? { ok: false, reason: `address ${host} is loopback, private, or link-local` }
+      ? { ok: false, reason: `address ${host} is a local or reserved address` }
       : { ok: true, url };
   }
   let addresses;
@@ -87,9 +157,21 @@ export async function guardFetchUrl(text, lookup = dns.promises.lookup) {
   } catch (error) {
     return { ok: false, reason: `could not resolve ${host}: ${error.message}` };
   }
-  const blocked = addresses.map((entry) => entry.address).find((address) => isBlockedAddress(address));
+  if (!Array.isArray(addresses) || addresses.length === 0) {
+    // A resolver answer this guard cannot read as a non-empty address list
+    // is refused, not treated as "no blocked address found in it".
+    return { ok: false, reason: `host ${host} resolved to no usable address` };
+  }
+  const resolved = addresses.map((entry) => String(entry?.address ?? ""));
+  const unreadable = resolved.find((address) => !net.isIP(address));
+  if (unreadable !== undefined) {
+    // Same rule as the empty-answer case: an entry this guard cannot parse
+    // as an IP address is refused rather than skipped over as "not a match".
+    return { ok: false, reason: `host ${host} resolved to an address this guard could not read` };
+  }
+  const blocked = resolved.find((address) => isBlockedAddress(address));
   if (blocked) {
-    return { ok: false, reason: `host ${host} resolves to ${blocked}, which is loopback, private, or link-local` };
+    return { ok: false, reason: `host ${host} resolves to ${blocked}, a local or reserved address` };
   }
   return { ok: true, url };
 }

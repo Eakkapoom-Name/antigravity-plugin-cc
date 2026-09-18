@@ -190,12 +190,27 @@ test("the rescue agent loads the prompting skill", () => {
 // WebFetch, before Tavily and ddg, matching the user's tool order.
 const WEB = read("skills/agy-web/SKILL.md");
 
+// A raw indexOf comparison would pass on a scrambled document as long as the
+// three words happened to appear in the right relative order somewhere in
+// the file. Parsing the skill's own numbered list ties the assertion to the
+// actual authored tier order instead.
 test("the web skill places /agy:search second in the tool order and demands sources", () => {
-  const first = WEB.indexOf("WebSearch");
-  const agy = WEB.indexOf("/agy:search");
-  const tavily = WEB.indexOf("Tavily");
-  assert.ok(first > -1 && agy > first && tavily > agy, "tier order is not built-ins, agy, Tavily");
+  const items = [...WEB.matchAll(/^\d+\.\s+(.+)$/gm)].map((match) => match[1]);
+  assert.equal(items.length, 3, "the web skill's tool-order list is not exactly three items");
+  assert.match(items[0], /WebSearch/, "item 1 is not the built-in tools");
+  assert.match(items[1], /\/agy:search/, "item 2 is not /agy:search");
+  assert.match(items[2], /Tavily/, "item 3 is not Tavily");
   assert.match(WEB, /source URLs?/i);
   assert.match(WEB, /not a results list/);
   assert.match(WEB, /not raw/);
+});
+
+// A guard that checks a URL once, before agy runs, cannot see what agy's own
+// fetch does afterward: a redirect to a blocked target, or a DNS answer that
+// changes between the check and agy's own connection (rebinding). The skill
+// has to say so, or a reader could take a guard pass as a stronger guarantee
+// than it is.
+test("the web skill states what the fetch guard cannot cover", () => {
+  assert.match(WEB, /redirect/i);
+  assert.match(WEB, /rebind/i);
 });

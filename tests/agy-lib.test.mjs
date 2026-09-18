@@ -13,6 +13,7 @@ import {
   denialConstraintPrompt,
   effortRejected,
   normalizeStreamOutput,
+  runIsolated,
   runPromptWithDenialRecovery
 } from "../scripts/lib/agy.mjs";
 import {
@@ -487,4 +488,50 @@ test("the caller can turn recovery off and get the first result back", () => {
   );
   assert.equal(calls.length, 1);
   assert.equal(out.recovery, undefined);
+});
+
+// Read-only commands hand agy a temp directory as its whole workspace. F30
+// measured that run_command honours cwd on agy 1.2.5, so a run that cannot
+// see the repo cannot write into it.
+test("runIsolated gives agy a temp directory as cwd and the only --add-dir", () => {
+  const calls = [];
+  const out = runIsolated("summarize", { model: "m", cwd: "/repo", addDir: ["/repo"] }, (prompt, options) => {
+    calls.push({ prompt, options });
+    return { result: { conversation_id: "c1", status: "SUCCESS", response: "ok" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  });
+  assert.equal(calls.length, 1);
+  const { cwd, addDir, model } = calls[0].options;
+  assert.ok(cwd.startsWith(os.tmpdir()), `cwd ${cwd} is not under the temp dir`);
+  assert.deepEqual(addDir, [cwd]);
+  assert.equal(model, "m");
+  assert.ok(!JSON.stringify(calls[0].options).includes("/repo"), "the repo path leaked into the options");
+  assert.equal(out.ok, true);
+  assert.ok(!fs.existsSync(cwd), "the temp directory was not removed");
+});
+
+test("runIsolated removes the temp directory after a failed run and after a throw", () => {
+  let seen;
+  const failed = runIsolated("x", {}, (_prompt, options) => {
+    seen = options.cwd;
+    return { result: { status: "ERROR" }, events: [], deniedActions: [], stderr: "boom", ok: false, failure: "failed" };
+  });
+  assert.equal(failed.ok, false);
+  assert.ok(!fs.existsSync(seen));
+
+  assert.throws(() =>
+    runIsolated("x", {}, (_prompt, options) => {
+      seen = options.cwd;
+      throw new Error("spawn exploded");
+    })
+  , /spawn exploded/);
+  assert.ok(!fs.existsSync(seen));
+});
+
+test("runIsolated never passes --mode through", () => {
+  let seen;
+  runIsolated("x", { mode: "accept-edits" }, (_prompt, options) => {
+    seen = options;
+    return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  });
+  assert.equal(seen.mode, undefined);
 });

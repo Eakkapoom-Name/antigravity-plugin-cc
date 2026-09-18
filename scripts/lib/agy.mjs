@@ -1,4 +1,7 @@
 import process from "node:process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 import { commandAvailable, runCommand } from "./process.mjs";
 
@@ -241,4 +244,46 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
       firstResult: first.result
     }
   };
+}
+
+// Read-only commands (review, whisper, search, research, image) run agy with a
+// temp directory as its whole workspace. F30 measured on 1.2.5 that
+// run_command executes in the invoking cwd, so an agy that cannot see the
+// repository cannot write into it, whatever the model decides. The price is
+// that the reviewer cannot open files around a hunk: the prompt is the whole
+// evidence. The stop gate, rescue and transfer never come through here.
+export function runIsolated(prompt, options = {}, run = runPrompt) {
+  let tmp;
+  try {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-isolated-"));
+  } catch (error) {
+    return {
+      result: emptyResult({ error: `could not create an isolated directory: ${error.message}` }),
+      events: [],
+      deniedActions: [],
+      stderr: "",
+      ok: false,
+      failure: "isolation"
+    };
+  }
+
+  const { cwd: _cwd, addDir: _addDir, mode: _mode, ...rest } = options;
+  let out;
+  let thrown;
+  try {
+    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp] }, run);
+  } catch (error) {
+    thrown = error;
+  }
+
+  let note;
+  try {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  } catch (error) {
+    note = `isolated directory not removed: ${tmp} (${error.message})`;
+  }
+  if (thrown) {
+    throw thrown;
+  }
+  return note ? { ...out, note } : out;
 }

@@ -23,25 +23,36 @@ Include the blocks the task needs; leave the rest out.
   line.
 - `<done_state>`: what finished looks like. agy does not infer it. For a fix:
   the named tests pass. For a review: every hunk considered. For research: the
-  question answered with sources.
+  question answered with sources. For an image: the file exists at the path
+  the output contract named.
 - `<verification_loop>`: required for fixes and implementation. Run the tests
   the change touches, report the command and its result, and do not claim a
   pass you did not observe.
 - `<grounding_rules>`: required for review and research. No claim without a
   source URL or an inspected artifact. Say when sources disagree. Say when
   evidence is thin rather than filling the gap.
-- `<action_safety>`: for write-capable runs. Stay inside the named files,
-  make no unrelated refactors, change no dependencies unless asked, and stop
-  to ask when the task turns out to need a decision the prompt did not make.
+- `<action_safety>`: for write-capable runs. Stay inside the named files or
+  output location, make no unrelated refactors, change no dependencies unless
+  asked, and stop to ask when the task turns out to need a decision the
+  prompt did not make.
 
 ## Which blocks, by task
 
 - Fix or implementation: `task`, `done_state`, `verification_loop`,
   `action_safety`.
 - Review: `task`, `output_contract`, `grounding_rules`. The review templates
-  already carry this contract.
-- Research or search: `task`, `output_contract`, `grounding_rules`.
+  carry this contract in prose today; they predate the tagged block form, so
+  read them for the substance, not as a worked example of the tags. New
+  templates use the tags directly.
+- Research or search (`search`): `task`, `output_contract`, `grounding_rules`.
+- Fetch a single URL (`fetch`): `task`, `output_contract`. It renders one page
+  into readable text, the second half of `/agy:search`; there is no claim to
+  ground, so `grounding_rules` does not apply.
 - One-shot question (`whisper`): `task`, `output_contract`.
+- Generate an image (`image`): `task`, `output_contract`, `done_state`,
+  `action_safety`. The output contract names the file path agy must return;
+  `action_safety` scopes where it may write, and `done_state` is that file
+  existing at the named path.
 
 ## Rules
 

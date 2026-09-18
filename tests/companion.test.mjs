@@ -554,3 +554,30 @@ test("research needs a topic and does not spend a run on an empty one", () => {
   assert.match(out.error, /needs a topic/);
   assert.equal(calls.length, 0);
 });
+
+// resolveOutputPath already checked the target was free before the run
+// started, but the run itself can take minutes; something else can occupy
+// the name in the meantime. The report the run produced is not worth
+// throwing away over a write that lost that race, so it survives on the
+// payload and only the file write is reported as failed.
+test("research keeps the report when the --out write loses a race", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  try {
+    const out = research(
+      "--out r.md topic",
+      (prompt, options) => {
+        fs.writeFileSync(path.join(root, "r.md"), "raced\n");
+        return fakeRun([])(prompt, options);
+      },
+      () => true,
+      root
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /EEXIST/);
+    assert.equal(out.result.response, "No findings.");
+    assert.equal(fs.readFileSync(path.join(root, "r.md"), "utf8"), "raced\n");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

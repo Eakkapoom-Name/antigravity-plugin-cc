@@ -441,7 +441,7 @@ Job control stays thin too: `/agy:status`, `/agy:result`, and `/agy:cancel` read
 │   │   ├── stop-review.mjs            stop-review gate decision logic
 │   │   ├── url-guard.mjs              SSRF guard for /agy:search fetch mode
 │   │   └── workspace.mjs              repository root resolution
-│   ├── agy-companion.mjs              review, transfer, quota, gate subcommands
+│   ├── agy-companion.mjs              review, transfer, quota, gate, whisper, search, research subcommands
 │   ├── agy-setup.mjs                  /agy:setup readiness report
 │   ├── bump-version.mjs               version metadata check and bump
 │   ├── npx-install.mjs                npx agy-plugin-cc installer

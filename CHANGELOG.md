@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allow-list carrying command rules and no read rule, and a workspace root that
   is the home directory itself. Both were ruled out by hand on 2026-09-17; the
   harness now re-checks them on every run.
+- `agy-prompting` skill: the shared contract for every prompt this plugin
+  sends to agy (task, output contract, done state, verification loop,
+  grounding rules, action safety). The rescue agent loads it; the new prompt
+  templates follow it.
 
 ### Changed
 

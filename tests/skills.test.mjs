@@ -170,3 +170,18 @@ test("result handling says what recovered actually means", () => {
     "result handling still equates a resumed turn with a finished task"
   );
 });
+
+// B7. Every codex-parity port of this plugin carries a prompting skill; this
+// one had none, so the rescue agent composed prompts with no shared contract.
+const PROMPTING = read("skills/agy-prompting/SKILL.md");
+
+test("the prompting skill names every block of the contract", () => {
+  for (const block of ["<task>", "<output_contract>", "<done_state>", "<verification_loop>", "<grounding_rules>", "<action_safety>"]) {
+    assert.ok(PROMPTING.includes(block), `prompting skill does not name ${block}`);
+  }
+  assert.match(PROMPTING, /one task per run/i);
+});
+
+test("the rescue agent loads the prompting skill", () => {
+  assert.match(read("agents/agy-rescue.md"), /^\s+- agy-prompting$/m);
+});

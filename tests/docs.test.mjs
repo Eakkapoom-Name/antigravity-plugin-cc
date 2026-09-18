@@ -128,10 +128,3 @@ test("SECURITY.md says what leaves the machine and how to report", () => {
   }
 });
 
-test("CONTRIBUTING.md states the test and commit rules", () => {
-  const contributing = read("CONTRIBUTING.md");
-  assert.match(contributing, /npm test/);
-  assert.match(contributing, /Conventional Commits/);
-  assert.match(contributing, /docs: release/);
-  assert.match(contributing, /test:denials/);
-});

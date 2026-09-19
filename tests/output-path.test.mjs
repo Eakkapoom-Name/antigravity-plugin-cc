@@ -30,7 +30,11 @@ test("a path that escapes the workspace is refused", () => {
     const relative = resolveOutputPath("../outside.md", root);
     assert.equal(relative.ok, false);
     assert.match(relative.reason, /inside the workspace/);
-    const absolute = resolveOutputPath("/tmp/outside.md", root);
+    // An absolute path whose parent exists on every OS and sits outside the
+    // scratch root. A literal /tmp/... resolves to C:\tmp on Windows, where
+    // that directory does not exist, so the missing-parent check would fire
+    // first and this test would stop testing containment.
+    const absolute = resolveOutputPath(path.join(os.tmpdir(), "outside.md"), root);
     assert.equal(absolute.ok, false);
     assert.match(absolute.reason, /inside the workspace/);
   } finally {

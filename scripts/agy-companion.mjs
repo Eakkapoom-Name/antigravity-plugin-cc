@@ -27,7 +27,7 @@ import {
   runSlashCommand
 } from "./lib/agy.mjs";
 import { collectDiff, untrackedFiles } from "./lib/git.mjs";
-import { resolveOutputPath } from "./lib/output-path.mjs";
+import { reconfirmContainment, resolveOutputPath } from "./lib/output-path.mjs";
 import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { scanForSecrets } from "./lib/secrets.mjs";
@@ -324,8 +324,11 @@ const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. 
 // from a matched token before it reaches the guard (search()'s query scan).
 // A possessive "'s" glued to a bare host ("http://127.0.0.1's page") is
 // prose in the same way: no DNS name holds an apostrophe, so leaving it on
-// turned an address refusal into a resolver failure on "127.0.0.1's".
-const TRAILING_QUERY_PUNCTUATION = /(?:'s)?[).,;:!?'"\]>]*$/i;
+// turned an address refusal into a resolver failure on "127.0.0.1's". A
+// query typed with a curly apostrophe ("127.0.0.1’s") is the same
+// possessive, just the character autocorrect and most phone keyboards
+// actually produce, so it is stripped alongside the ASCII form.
+const TRAILING_QUERY_PUNCTUATION = /(?:'s|’s)?[).,;:!?'"\]>]*$/i;
 
 // `]` is itself in TRAILING_QUERY_PUNCTUATION, so a bracketed IPv6 literal's
 // own closing bracket ("http://[2606:4700::1111]") would be stripped the
@@ -590,16 +593,37 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   const payload = resultPayload(out);
   if (payload.ok && target) {
     const body = String(out.run.result?.response ?? "");
-    try {
-      fs.writeFileSync(target, body, { flag: "wx" });
-      payload.outPath = target;
-    } catch (error) {
-      // The report was produced; only the write failed (a race on the target
-      // name, or a parent that turned unwritable after resolveOutputPath
-      // checked it). Losing `result.response` on top of that would waste the
-      // whole run, so the payload keeps it and only the file write is
-      // reported as failed.
-      payload.outError = error.message;
+    if (body.trim() === "") {
+      // F82. An `ok: true` run that produced nothing would otherwise still
+      // create the file (the write below is unconditional on `body`, empty
+      // string included) and report `outPath` as if a report had been
+      // written. The user is told the file exists and finds it empty, and
+      // because the write uses "wx", the name is now occupied for a rerun.
+      // Skip the write and say why instead of creating that file.
+      payload.outError = "the response was empty; no --out file was written.";
+    } else {
+      // F70. resolveOutputPath already proved `target`'s parent was inside
+      // the workspace when --out was first checked, but the run above can
+      // take minutes, and a parent directory swapped for a symlink in that
+      // window is not caught by the "wx" write, which follows the symlink
+      // the same way the earlier check's realpathSync did. Re-check
+      // immediately before writing.
+      const recheck = reconfirmContainment(target, root);
+      if (!recheck.ok) {
+        payload.outError = `--out refused: ${recheck.reason}`;
+      } else {
+        try {
+          fs.writeFileSync(target, body, { flag: "wx" });
+          payload.outPath = target;
+        } catch (error) {
+          // The report was produced; only the write failed (a race on the
+          // target name, or a parent that turned unwritable after the
+          // checks above). Losing `result.response` on top of that would
+          // waste the whole run, so the payload keeps it and only the file
+          // write is reported as failed.
+          payload.outError = error.message;
+        }
+      }
     }
   }
   return payload;
@@ -681,20 +705,93 @@ export function image(argument, run = runPrompt, available = agyAvailable, root 
   }
   payload.imagePath = found.path;
   if (target) {
-    try {
-      fs.copyFileSync(found.path, target, fs.constants.COPYFILE_EXCL);
-      payload.outPath = target;
-    } catch (error) {
-      // The image was produced and passed the containment check; only the
-      // copy failed (a race on the target name, or a parent that turned
-      // unwritable after resolveOutputPath checked it). Losing `imagePath` on
-      // top of that would waste the whole run, so the payload keeps it and
-      // only the copy is reported as failed, mirroring research's --out
-      // race handling.
-      payload.outError = error.message;
+    // F70. Same re-check as research's, on the copy instead of the write:
+    // resolveOutputPath's containment check ran before the run above, which
+    // can take minutes; a parent swapped for a symlink to somewhere else in
+    // that window is not caught by COPYFILE_EXCL, which follows the symlink
+    // the same way "wx" does.
+    const recheck = reconfirmContainment(target, root);
+    if (!recheck.ok) {
+      payload.outError = `--out refused: ${recheck.reason}`;
+    } else {
+      try {
+        fs.copyFileSync(found.path, target, fs.constants.COPYFILE_EXCL);
+        payload.outPath = target;
+      } catch (error) {
+        // The image was produced and passed both containment checks; only
+        // the copy failed (a race on the target name, or a parent that
+        // turned unwritable after the checks above). Losing `imagePath` on
+        // top of that would waste the whole run, so the payload keeps it
+        // and only the copy is reported as failed, mirroring research's
+        // --out race handling.
+        payload.outError = error.message;
+      }
+      if (payload.outPath) {
+        // Its own try: the copy already succeeded, so a failure to read the
+        // copied file back only skips the advisory warning and must never
+        // turn that success into an outError.
+        try {
+          const warning = extensionMismatchWarning(target);
+          if (warning) {
+            payload.warning = warning;
+          }
+        } catch {
+          // No warning: the check is advisory.
+        }
+      }
     }
   }
   return payload;
+}
+
+const EXTENSION_IMAGE_FORMATS = { ".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".webp": "webp" };
+
+// Sniffs the file's magic bytes, never its filename: a symlink or a renamed
+// file could claim any extension, so only the bytes say what format it
+// really is. image() calls it on the copied file at --out, the bytes
+// actually written there.
+function sniffImageFormat(filePath) {
+  const buf = Buffer.alloc(12);
+  let bytesRead = 0;
+  const fd = fs.openSync(filePath, "r");
+  try {
+    bytesRead = fs.readSync(fd, buf, 0, 12, 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  if (bytesRead >= 4 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+    return "png";
+  }
+  if (bytesRead >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return "jpeg";
+  }
+  if (bytesRead >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") {
+    return "webp";
+  }
+  return null;
+}
+
+// F73. resolveOutputPath is content-agnostic by design: it only checks the
+// path, never the bytes. agy can return any of the three formats regardless
+// of the extension the user typed on --out, and the copy carries the bytes
+// across unchanged, so a mismatch would otherwise be silent. This only
+// warns; it never refuses or renames the copy.
+function extensionMismatchWarning(targetPath) {
+  const actual = sniffImageFormat(targetPath);
+  const wantedExt = path.extname(targetPath).toLowerCase();
+  const wanted = EXTENSION_IMAGE_FORMATS[wantedExt];
+  if (!actual || !wanted || actual === wanted) {
+    return null;
+  }
+  return `the copied image's bytes look like ${actual}, not the ${wantedExt.slice(1)} extension --out named`;
+}
+
+// F102. The failure kind is always named, even when agy wrote stderr: a
+// timeout that also left partial stderr behind would otherwise read as
+// whatever that stderr says, with nothing saying the call timed out.
+export function quotaRunError(run) {
+  const reason = run.stderr || "the /usage call failed";
+  return run.failure ? `${reason} (${run.failure})` : reason;
 }
 
 function quota() {
@@ -703,7 +800,7 @@ function quota() {
   }
   const run = runSlashCommand("usage");
   if (!run.ok) {
-    return { ok: false, error: run.stderr || `the /usage call failed (${run.failure})` };
+    return { ok: false, error: quotaRunError(run) };
   }
   if (run.payload?.command?.name !== "usage") {
     return {

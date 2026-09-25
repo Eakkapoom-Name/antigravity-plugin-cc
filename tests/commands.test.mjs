@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { listMarkdown, parseFrontmatter, read } from "./helpers.mjs";
+import { DEFAULT_PRINT_TIMEOUT, printTimeoutMs, spawnTimeoutMs } from "../scripts/lib/agy.mjs";
 
 const COMMANDS = listMarkdown("commands");
 
@@ -135,6 +136,62 @@ for (const name of BASH_COMMANDS) {
     const ms = Number(timeout[1]);
     assert.ok(ms > 0, `${name} states a zero Bash timeout`);
     assert.ok(ms <= 600000, `${name} timeout ${ms} ms exceeds the Bash tool maximum`);
+  });
+}
+
+// F79/F98/F102. Every companion command's stated Bash timeout has to outlast
+// the spawn timeout the companion derives from its own print timeout (or a
+// hung agy is killed by Bash before Node's own timeout can report a clean
+// failure), and has to clear the print timeout plus agy's own startup
+// overhead (up to 28 s measured on agy 1.2.9) by at least 60 s (F98's own
+// margin), or Claude Code backgrounds the call instead of agy returning its
+// own timeout report.
+const AGY_STARTUP_MARGIN_MS = 28 * 1000;
+const BASH_TIMEOUT_MARGIN_MS = 60 * 1000;
+
+// The print timeout each companion command runs agy with, read from
+// scripts/agy-companion.mjs itself so this test fails the moment a call site
+// changes a printTimeout without updating its command file's Bash timeout to
+// match. review/adversarial-review/transfer take no printTimeout override, so
+// they fall back to runPrompt's own DEFAULT_PRINT_TIMEOUT; quota takes no
+// override either, but runSlashCommand's own default is "2m", not
+// DEFAULT_PRINT_TIMEOUT, since slash commands are a different protocol.
+function companionPrintTimeout(fnName) {
+  const source = read("scripts/agy-companion.mjs");
+  const start = source.indexOf(`function ${fnName}(`);
+  assert.ok(start >= 0, `${fnName} not found in scripts/agy-companion.mjs`);
+  const end = source.indexOf("\nexport ", start + 1);
+  const body = source.slice(start, end === -1 ? source.length : end);
+  const match = body.match(/printTimeout:\s*"(\d+[ms])"/);
+  return match ? match[1] : DEFAULT_PRINT_TIMEOUT;
+}
+
+const COMPANION_COMMAND_PRINT_TIMEOUTS = {
+  "whisper.md": companionPrintTimeout("whisper"),
+  "search.md": companionPrintTimeout("search"),
+  "research.md": companionPrintTimeout("research"),
+  "image.md": companionPrintTimeout("image"),
+  "review.md": DEFAULT_PRINT_TIMEOUT,
+  "adversarial-review.md": DEFAULT_PRINT_TIMEOUT,
+  "transfer.md": DEFAULT_PRINT_TIMEOUT,
+  "quota.md": "2m"
+};
+
+for (const [name, printTimeout] of Object.entries(COMPANION_COMMAND_PRINT_TIMEOUTS)) {
+  test(`${name}'s stated Bash timeout leaves margin over its print timeout's spawn timeout`, () => {
+    const source = read(`commands/${name}`);
+    const timeout = source.match(/Bash (?:tool )?`?timeout`?(?: of| to) `?(\d+)`? ms/);
+    assert.ok(timeout, `${name} states no explicit Bash timeout`);
+    const bashMs = Number(timeout[1]);
+    const printMs = printTimeoutMs(printTimeout);
+    const spawnMs = spawnTimeoutMs(printTimeout);
+
+    assert.ok(bashMs > spawnMs, `${name}'s ${bashMs} ms Bash timeout does not exceed its ${spawnMs} ms spawn timeout`);
+    assert.ok(
+      bashMs - printMs - AGY_STARTUP_MARGIN_MS >= BASH_TIMEOUT_MARGIN_MS,
+      `${name}'s ${bashMs} ms Bash timeout leaves less than ${BASH_TIMEOUT_MARGIN_MS} ms over its ${printMs} ms print timeout plus agy's startup`
+    );
+    assert.ok(bashMs <= 600000, `${name} timeout ${bashMs} ms exceeds the Bash tool maximum`);
   });
 }
 

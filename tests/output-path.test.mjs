@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resolveOutputPath } from "../scripts/lib/output-path.mjs";
+import { reconfirmContainment, resolveOutputPath } from "../scripts/lib/output-path.mjs";
 
 function scratch() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-out-"));
@@ -105,6 +105,55 @@ test("a path with a null byte is refused before any run starts", () => {
     const out = resolveOutputPath("docs/a\0b.md", root);
     assert.equal(out.ok, false);
     assert.match(out.reason, /could not be checked/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// F70. resolveOutputPath's own containment check runs once, before the
+// caller's agy run starts; a parent directory can be swapped for a symlink
+// while that run is in flight. reconfirmContainment is the re-check a caller
+// runs immediately before it writes, on the same resolved path, so this
+// pins that it still agrees when nothing changed.
+test("reconfirmContainment agrees with an unchanged resolved path", () => {
+  const root = scratch();
+  try {
+    const resolved = resolveOutputPath("docs/report.md", root);
+    assert.equal(resolved.ok, true);
+    assert.deepEqual(reconfirmContainment(resolved.path, root), { ok: true });
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("reconfirmContainment refuses a parent swapped for a symlink after the first check", () => {
+  const root = scratch();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    fs.mkdirSync(path.join(root, "sub"));
+    const resolved = resolveOutputPath("sub/report.md", root);
+    assert.equal(resolved.ok, true);
+    fs.rmSync(path.join(root, "sub"), { recursive: true, force: true });
+    fs.symlinkSync(outside, path.join(root, "sub"));
+    const recheck = reconfirmContainment(resolved.path, root);
+    assert.equal(recheck.ok, false);
+    assert.match(recheck.reason, /inside the workspace/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("reconfirmContainment refuses a parent removed after the first check", () => {
+  const root = scratch();
+  try {
+    fs.mkdirSync(path.join(root, "sub"));
+    const resolved = resolveOutputPath("sub/report.md", root);
+    assert.equal(resolved.ok, true);
+    fs.rmSync(path.join(root, "sub"), { recursive: true, force: true });
+    const recheck = reconfirmContainment(resolved.path, root);
+    assert.equal(recheck.ok, false);
+    assert.match(recheck.reason, /no longer exists/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

@@ -6,7 +6,33 @@ import path from "node:path";
 import { commandAvailable, runCommand } from "./process.mjs";
 
 export const DEFAULT_PRINT_TIMEOUT = "8m";
-export const DEFAULT_SPAWN_TIMEOUT_MS = 9 * 60 * 1000;
+
+// The margin a spawn timeout keeps over the print timeout it is paired with:
+// one minute, the gap DEFAULT_SPAWN_TIMEOUT_MS always kept over
+// DEFAULT_PRINT_TIMEOUT. agy's own --print-timeout deadline should run out
+// first, so a hung run comes back as agy's own timeout report rather than a
+// Node spawn kill or, worse, a Bash-tool kill that looks like a stall (F79,
+// F98, F102: a spawn timeout used to be a flat default independent of
+// whatever printTimeout a caller asked for).
+export const SPAWN_TIMEOUT_MARGIN_MS = 60 * 1000;
+
+// Parses the "Nm" / "Ns" shorthand buildArgs and runSlashCommand pass to
+// agy's own --print-timeout flag, so a spawn timeout can be derived from the
+// same number instead of tracked separately, which is what let the two drift
+// apart in the first place (F79).
+export function printTimeoutMs(printTimeout) {
+  const match = /^(\d+)(m|s)$/.exec(String(printTimeout ?? ""));
+  if (!match) {
+    throw new Error(`printTimeout must look like "8m" or "90s", got ${JSON.stringify(printTimeout)}`);
+  }
+  return Number(match[1]) * (match[2] === "m" ? 60 * 1000 : 1000);
+}
+
+export function spawnTimeoutMs(printTimeout) {
+  return printTimeoutMs(printTimeout) + SPAWN_TIMEOUT_MARGIN_MS;
+}
+
+export const DEFAULT_SPAWN_TIMEOUT_MS = spawnTimeoutMs(DEFAULT_PRINT_TIMEOUT);
 
 // argv is capped (2097152 bytes on the machine this was measured on), and a
 // branch diff passed as `agy -p "<diff>"` blows past it and fails opaquely.
@@ -143,11 +169,12 @@ export function agyAvailable() {
 
 // The prompt goes in on stdin and never appears in argv at any layer.
 export function runPrompt(prompt, options = {}) {
+  const printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
   const spawned = runCommand("agy", buildArgs(options), {
     cwd: options.cwd,
     encoding: "utf8",
     input: buildStreamInput(prompt),
-    timeout: options.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS,
+    timeout: options.timeoutMs ?? spawnTimeoutMs(printTimeout),
     maxBuffer: 64 * 1024 * 1024
   });
   return interpretPromptRun(spawned);
@@ -214,25 +241,37 @@ export function interpretPromptRun(spawned) {
   };
 }
 
-// Slash commands are answered by the CLI itself and are unavailable under
-// `--input-format stream-json` (agy says so explicitly), so they keep the
-// classic argv form. Their text is a fixed literal, so there is no size risk.
-export function runSlashCommand(name, options = {}) {
-  const spawned = runCommand(
-    "agy",
-    ["-p", `/${name}`, "--output-format", "json", "--print-timeout", options.printTimeout ?? "2m"],
-    { cwd: options.cwd, encoding: "utf8", timeout: options.timeoutMs ?? 60 * 1000 }
-  );
-
+// Split from runSlashCommand so the classification can be tested on stubbed
+// spawn results, the same reason interpretPromptRun is split from runPrompt.
+// A spawn timeout used to fall through to the JSON.parse catch below and come
+// back as "invalid-json" (F102): it is checked first here instead, the same
+// way runPrompt/interpretPromptRun already does.
+export function interpretSlashCommandRun(spawned) {
   const stderr = String(spawned.stderr ?? "").trim();
   if (spawned.error?.code === "ENOENT") {
     return { payload: null, stderr, ok: false, failure: "missing" };
+  }
+  if (spawned.error?.code === "ETIMEDOUT") {
+    return { payload: null, stderr, ok: false, failure: "timeout" };
   }
   try {
     return { payload: JSON.parse(spawned.stdout), stderr, ok: true, failure: null };
   } catch {
     return { payload: null, stderr, ok: false, failure: "invalid-json" };
   }
+}
+
+// Slash commands are answered by the CLI itself and are unavailable under
+// `--input-format stream-json` (agy says so explicitly), so they keep the
+// classic argv form. Their text is a fixed literal, so there is no size risk.
+export function runSlashCommand(name, options = {}) {
+  const printTimeout = options.printTimeout ?? "2m";
+  const spawned = runCommand(
+    "agy",
+    ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout],
+    { cwd: options.cwd, encoding: "utf8", timeout: options.timeoutMs ?? spawnTimeoutMs(printTimeout) }
+  );
+  return interpretSlashCommandRun(spawned);
 }
 
 // agy stops the conversation stream the moment it soft-denies a tool, so the

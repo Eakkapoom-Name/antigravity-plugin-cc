@@ -4,7 +4,7 @@ argument-hint: "[--model <name>] [--effort <low|medium|high>] <prompt>"
 allowed-tools: Bash(node:*)
 ---
 
-Send a one-shot prompt to agy and return its answer. Use a Bash `timeout` of `200000` ms; the companion caps agy at a 3 minute print timeout.
+Send a one-shot prompt to agy and return its answer. Use a Bash `timeout` of `300000` ms; the companion caps agy at a 3 minute print timeout and gives the call a 4 minute spawn timeout, leaving margin under this Bash timeout.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" whisper "$ARGUMENTS"

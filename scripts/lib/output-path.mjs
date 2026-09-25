@@ -50,3 +50,36 @@ export function resolveOutputPath(requested, workspaceRoot) {
   }
   return { ok: true, path: resolved };
 }
+
+// A second, narrower containment check for immediately before the write or
+// copy that follows a multi-minute agy run: resolveOutputPath already proved
+// `resolved`'s parent was inside the workspace when --out was first checked,
+// but a parent directory can be removed and replaced with a symlink to
+// somewhere else while the run is in flight, and neither the earlier check
+// nor the `wx`/`COPYFILE_EXCL` flag on the write itself catches that, since
+// both follow the parent symlink to reach the final path component. This
+// only re-walks the parent's realpath against the workspace root; it does
+// not repeat the lstat-on-the-target-name check, which stays the write
+// flag's job, so a same-name race is still reported as the write's own
+// EEXIST failure, unchanged. Callers pass the same `resolved` path
+// resolveOutputPath returned, not the raw --out text, so this cannot be
+// tricked by re-parsing a different value.
+export function reconfirmContainment(resolved, workspaceRoot) {
+  let root;
+  try {
+    root = fs.realpathSync(workspaceRoot);
+  } catch (error) {
+    return { ok: false, reason: `workspace root is not readable: ${error.message}` };
+  }
+  const parent = path.dirname(resolved);
+  let realParent;
+  try {
+    realParent = fs.realpathSync(parent);
+  } catch {
+    return { ok: false, reason: `the parent directory of --out no longer exists: ${parent}` };
+  }
+  if (realParent !== root && !realParent.startsWith(root + path.sep)) {
+    return { ok: false, reason: `--out must stay inside the workspace ${root}` };
+  }
+  return { ok: true };
+}

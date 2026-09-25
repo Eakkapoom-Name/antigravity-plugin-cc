@@ -60,9 +60,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   run it from. `<action_safety>` leaves routine edits to agy and asks it to
   stop only for a choice that changes scope, public behaviour, or
   dependencies, so fewer runs end on a question.
+- `package.json`'s `engines.node` floor is now `>=18.8`, the version that
+  added `node:test`'s `after()` hook, which the test suite's cleanup already
+  relies on.
 
 ### Fixed
 
+- A companion run's spawn timeout is now derived from the `printTimeout` it
+  is given (plus a fixed one-minute margin) instead of a flat default
+  independent of it, so `/agy:whisper`, `/agy:search` and `/agy:image` no
+  longer spawn with far more slack than their own command file's Bash
+  timeout allows. `/agy:whisper` and `/agy:search` now state a 300000 ms
+  Bash timeout and `/agy:image` a 420000 ms one, both wide enough for the
+  new spawn timeout plus agy's own startup overhead.
+- `/agy:quota` reports a spawn timeout as `failure: "timeout"` instead of
+  misreporting it as invalid JSON, and now states a 240000 ms Bash timeout
+  (previously 90000 ms), wide enough for its own spawn timeout.
+- `/agy:setup` extracts the numeric core (`\d+\.\d+\.\d+`) from `agy
+  --version` before gating on it, instead of failing the version check
+  outright and printing a literal "agy agy X.Y.Z is below the floor" if
+  agy's own output ever grows a prefix or suffix. A version that cannot be
+  read at all is now reported as unreadable, not as below the floor.
 - `--allow-secret` refuses a pattern that nests a quantifier inside a
   quantified group, such as `(a+)+`, with the same error as a syntax error,
   instead of letting it hang the scan on an ordinary long line.
@@ -132,6 +150,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer claim isolation means agy "cannot write into the project".
 - `agy-prompting`'s `<done_state>` definition no longer gives a review example
   the Review row of "Which blocks, by task" does not list.
+- `/agy:research` and `/agy:image` re-check that a resolved `--out` path is
+  still inside the workspace immediately before the write or copy, not only
+  once before the run starts. This narrows the window for a parent directory
+  swapped for a symlink from the whole multi-minute run to the instant before
+  the write; a swap inside that instant is still followed, since Node's
+  path-based `fs` has no `openat`-style anchored write.
+- `/agy:research` no longer writes an empty `--out` file when the run
+  succeeded but the response was empty or whitespace-only; the payload now
+  says the write was skipped instead of reporting an `outPath` that leads to
+  a zero-byte file.
+- `/agy:image` warns in the payload when the copied file's bytes do not
+  match the extension `--out` named (for example a PNG copied to a `.jpg`
+  name), instead of copying it silently. The copy itself is unchanged: no
+  refusal, no rename. `commands/image.md` now tells the model to relay the
+  `warning` key, alongside the `imagePath` and `outPath` keys it already
+  named.
+- A curly possessive glued to a URL in a query (`see http://127.0.0.1’s
+  page`) is now stripped the same way the ASCII `'s` form already was, so a
+  blocked literal is refused as a reserved address rather than as a resolver
+  failure on the un-stripped name.
+- The `secret-assignment` pattern now checks for its keyword with a
+  lookahead and matches the name with a single run, fixing a quadratic scan
+  on a line of nothing but repeated name characters (152.9 ms at 40,000
+  characters, measured before the fix; under 20 ms at 2,000,000 after). Which
+  assignments it flags is unchanged, with no length cap on the name before or
+  after the keyword: fuzzed against the previous pattern on 400,000 lines
+  with zero disagreement.
+- `prompts/review.md`'s `Diff follows:` line and `{{DIFF}}` now sit inside
+  its `<grounding_rules>` block instead of trailing after every closing tag.
+  `prompts/adversarial-review.md` is now written in the same tagged
+  `<task>`/`<output_contract>`/`<grounding_rules>` form as `review.md`,
+  instead of carrying its contract entirely in prose; its JSON schema
+  contract is unchanged.
 
 ## [0.7.0] - 2026-09-18
 

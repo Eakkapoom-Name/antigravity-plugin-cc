@@ -26,7 +26,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 
 - **Google account for Antigravity sign-in.**
   - Delegations contribute to your Antigravity usage limits. Check them anytime with `/agy:quota`.
-- **Node.js 18 or later**
+- **Node.js 18.8 or later**
 - **git**, for the review commands. The companion script collects the diff itself, so a missing git is reported as `git is not installed or not on PATH` rather than an empty review.
 
 ## Install

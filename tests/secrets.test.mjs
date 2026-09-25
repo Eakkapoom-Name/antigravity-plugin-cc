@@ -150,6 +150,21 @@ test("a ---shaped removed content line mid-hunk is still scanned", () => {
   assert.equal(hits[0].side, "removed");
 });
 
+// F59. A hand-rolled diff with no `diff --git` line never opens a header
+// zone, so its `---`/`+++` lines are never read as file headers; a hit still
+// reports the line it landed on (the bare `@@` header outside a zone still
+// sets line numbers), just with no file name. Unreachable through this
+// plugin's own diff-mode caller, which always feeds real `git diff` output
+// starting with `diff --git`; pinned so the gap stays a documented one.
+test("a hand-rolled diff missing the diff --git line loses file attribution but keeps the line number", () => {
+  const diff = ["--- a/run.sh", "+++ b/run.sh", "@@ -3,2 +3,1 @@", " deploy \\", `--- --key ${AWS}`].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].file, null);
+  assert.equal(hits[0].line, 4);
+  assert.equal(hits[0].side, "removed");
+});
+
 // A hit's location must be the line in the file a user can actually open,
 // not an offset into the raw diff text (which counts `diff --git`, `index`
 // and `@@` header lines, and resets to 0 for every file after the first).
@@ -321,6 +336,62 @@ test("a long adversarial line scans in bounded time", () => {
   }
   const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
   assert.ok(elapsedMs < 1000, `six adversarial lines took ${elapsedMs.toFixed(0)} ms`);
+});
+
+// F101. secret-assignment's leading `[A-Z0-9_]*` run was unbounded, so a line
+// of nothing but repeated name characters (no real identifier runs this
+// long) was retried from every split point within it and went quadratic:
+// 152.9 ms at 40,000 characters, measured before the fix. The keyword check
+// is now a lookahead followed by one `[A-Z0-9_]+` run, which keeps this fast
+// at ten times that length without capping the name's length on either side
+// of the keyword (see the shapes below, which are still fast).
+test("a long line of repeated secret-shaped name characters scans in bounded time", () => {
+  const line = "SECRET_".repeat(60000); // 420,000 characters, no "=" or ":" anywhere
+  const started = process.hrtime.bigint();
+  const { hits } = scanForSecrets(line);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 1000, `the repeated-name line took ${elapsedMs.toFixed(0)} ms`);
+  assert.deepEqual(hits, []);
+});
+
+// Leaving the trailing run unbounded must still be fast on a shape that
+// stresses IT specifically: a single keyword followed by a long run of name
+// characters with nothing to stop the trailing run early and no "=" or ":"
+// anywhere, so it backtracks all the way to zero exactly once. One `\b`
+// position, so the scan stays linear here too.
+test("a single keyword followed by a long unbroken run of name characters scans in bounded time", () => {
+  const line = "SECRET" + "A".repeat(1000000);
+  const started = process.hrtime.bigint();
+  const { hits } = scanForSecrets(line);
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 1000, `the single-run line took ${elapsedMs.toFixed(0)} ms`);
+  assert.deepEqual(hits, []);
+});
+
+// The linear-time rewrite must not narrow what a real secret assignment
+// still catches: the same shape as every other secret-assignment positive in
+// this file, just with a longer run of name characters on both sides of the
+// keyword than the shortest fixtures above use (a 26-character prefix before
+// the keyword and an 81-character suffix after it).
+test("a secret assignment with a long identifier on both sides of the keyword is still flagged", () => {
+  const secret = "Zz9x8" + "Y7wV6" + "uT5s4" + "R3qP2";
+  const longSuffix = "_AND_A_LONG_SUFFIX_AFTER_IT".repeat(3); // 81 characters after the keyword
+  const line = `MY_LONG_PREFIX_BEFORE_THE_API_KEY${longSuffix} = "${secret}"`;
+  const { hits } = scanForSecrets(line);
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+// F101 review: an earlier fix capped the run before the keyword at 64
+// characters, which stopped flagging a real assignment whose name ran longer
+// than that before the keyword. The pattern before the fix flagged it, so the
+// linear-time rewrite must too.
+test("a secret assignment with more than 64 name characters before the keyword is still flagged", () => {
+  const secret = "Zz9x8" + "Y7wV6" + "uT5s4" + "R3qP2";
+  const line = `${"A".repeat(80)}SECRET=${secret}`;
+  const { hits } = scanForSecrets(line);
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].kind, "secret-assignment");
 });
 
 // The password in a URL is the whole point of the credential-url kind, so its

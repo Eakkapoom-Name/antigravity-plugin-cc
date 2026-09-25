@@ -22,8 +22,9 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: [22]
         include:
-          # package.json claims engines >=18, so the floor is tested rather than
-          # asserted. Linux only: the point is the language level, not the OS.
+          # package.json claims engines >=18.8, so the floor is tested rather
+          # than asserted. Linux only: the point is the language level, not
+          # the OS.
           - os: ubuntu-latest
             node: 18
 

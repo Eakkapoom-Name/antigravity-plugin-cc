@@ -80,6 +80,19 @@ export function newerThanVerified(version, verified = VERIFIED_AGY_VERSION) {
   return compareVersions(version, verified) > 0;
 }
 
+// agy's own `--version` output is a bare number today ("1.2.6"), which is
+// exactly what meetsMinimumVersion's `^\d+(\.\d+)*$` gate expects whole. If
+// that output ever grows a prefix or suffix ("agy 1.3.0", "1.2.4-beta",
+// "v1.2.4"), the gate would reject it outright and checkAgy would print a
+// literal, doubled "agy agy 1.3.0 is below the 1.2.4 floor", a false claim
+// about a version that may well be fine (F80). Extracting the numeric core
+// first keeps the gate, compareVersions, and the printed detail all reading
+// the same value; returns null when the output carries no such pattern.
+export function extractVersionNumber(raw) {
+  const match = String(raw ?? "").match(/\d+\.\d+\.\d+/);
+  return match ? match[0] : null;
+}
+
 function checkAgy() {
   // `which` is Unix-only, and it was the reason this check could not work on
   // Windows at all. Resolving through PATH and PATHEXT covers both, and finds
@@ -102,15 +115,16 @@ function checkAgy() {
     };
   }
   const printed = version.stdout.trim();
+  const extracted = extractVersionNumber(printed);
   return {
     available: true,
-    detail: `agy ${printed}`,
+    detail: extracted ? `agy ${extracted}` : `agy printed a version this plugin could not read: ${printed || "(empty output)"}`,
     path: agyPath,
-    version: printed,
+    version: extracted,
     minimumVersion: MIN_AGY_VERSION,
-    meetsMinimum: meetsMinimumVersion(printed),
+    meetsMinimum: extracted ? meetsMinimumVersion(extracted) : false,
     verifiedVersion: VERIFIED_AGY_VERSION,
-    newerThanVerified: newerThanVerified(printed)
+    newerThanVerified: extracted ? newerThanVerified(extracted) : false
   };
 }
 
@@ -514,8 +528,14 @@ export function buildReport({
   } else if (!agy.meetsMinimum) {
     auth.detail = "not checked; agy is below the minimum version";
     toolPermissions.detail = "not checked; agy is below the minimum version";
+    // F80. A version that could not be read at all is not known to be below
+    // the floor; saying so would be a guess stated as fact. It gets its own
+    // next step instead of reusing the below-floor wording with a
+    // placeholder.
     nextSteps.push(
-      `agy ${agy.version ?? "(unparsable version)"} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
+      agy.version === null
+        ? `agy printed a version this plugin could not read, so it cannot tell whether agy meets the ${MIN_AGY_VERSION} minimum this plugin was measured on. Run \`agy --version\` in a terminal to see what it prints; if it looks outdated, run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an unreadable version could be an old agy that fails them with errors that do not name this cause.`
+        : `agy ${agy.version} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
     );
   } else {
     auth = authProbe();

@@ -108,6 +108,37 @@ test("the review template carries the block tags the newer templates use", () =>
   assert.deepEqual(placeholdersIn(template).sort(), ["DIFF", "FOCUS"]);
 });
 
+// F103. Diff follows: and {{DIFF}} sat after every closing tag, untagged
+// text the way {{PROMPT}} did in whisper.md before F62. The diff is the
+// evidence grounding_rules already talks about, so it belongs inside that
+// block, not trailing after it.
+test("the review template's grounding_rules block holds the diff, not just meta-instruction", () => {
+  const template = readPrompt("review");
+  const match = template.match(/<grounding_rules>([\s\S]*?)<\/grounding_rules>/);
+  assert.ok(match, "review template has no <grounding_rules> block");
+  assert.match(match[1], /\{\{DIFF\}\}/, "review's <grounding_rules> block does not hold {{DIFF}}");
+});
+
+// F103. adversarial-review.md carried the same task/output-contract/
+// grounding-rules ideas as review.md but entirely in prose, with no tags at
+// all. Converting it to the tagged form must not change its JSON schema
+// contract.
+test("the adversarial-review template carries the same block tags review.md uses", () => {
+  const template = readPrompt("adversarial-review");
+  for (const tag of ["task", "output_contract", "grounding_rules"]) {
+    assert.match(template, new RegExp(`<${tag}>`), `adversarial-review template is missing <${tag}>`);
+  }
+  const match = template.match(/<grounding_rules>([\s\S]*?)<\/grounding_rules>/);
+  assert.ok(match, "adversarial-review template has no <grounding_rules> block");
+  assert.match(match[1], /\{\{DIFF\}\}/, "adversarial-review's <grounding_rules> block does not hold {{DIFF}}");
+  assert.deepEqual(placeholdersIn(template).sort(), ["DIFF", "FOCUS"]);
+  // The JSON schema contract itself (verdict/summary/findings/next_steps)
+  // must survive the retag unchanged.
+  assert.match(template, /"verdict": "approve" \| "needs-attention"/);
+  assert.match(template, /"findings": \[\{"severity": "critical" \| "high" \| "medium" \| "low"/);
+  assert.match(template, /"next_steps": \["\.\.\."\]\}/);
+});
+
 // F62. {{PROMPT}} sat outside any tag, after a bare "Question:" line, so the
 // <task> block held only the meta-instruction to answer it, not the question
 // itself.

@@ -14,6 +14,7 @@ import {
   decisiveStderrLine,
   evaluateCommandProbe,
   evaluateReadProbe,
+  extractVersionNumber,
   meetsMinimumVersion,
   newerThanVerified,
   permissionNextStep,
@@ -559,7 +560,12 @@ test("the below-floor next step names the version found and the floor it missed"
   assert.match(report.nextSteps[0], /probes were skipped/);
 });
 
-test("a below-floor report with no version still names the floor", () => {
+// F80. A report with no readable version is a distinct case from a version
+// that parsed and came in under the floor: saying "is below the floor" for a
+// version that could not even be read is a false claim, since an unparsable
+// version could be well above the floor and simply printed in a shape
+// meetsMinimumVersion does not gate on yet.
+test("a below-floor report with no version says the version could not be read, not that it is below the floor", () => {
   const report = buildReport({
     cwd: os.tmpdir(),
     node: { available: true, detail: "v22.0.0" },
@@ -569,7 +575,25 @@ test("a below-floor report with no version still names the floor", () => {
     checkAuth: () => assert.fail("the auth probe ran below the floor"),
     checkToolPermissions: () => assert.fail("the tool probe ran below the floor")
   });
-  assert.match(report.nextSteps[0], /\(unparsable version\) is below the 1\.2\.4/);
+  assert.match(report.nextSteps[0], /could not (be )?(read|parse)/i);
+  assert.doesNotMatch(report.nextSteps[0], /is below the 1\.2\.4/);
+});
+
+// F80. `meetsMinimumVersion` and `compareVersions` gate on the raw
+// `agy --version` output. A future prefixed or suffixed print ("agy 1.3.0",
+// "1.2.4-beta", "v1.2.4") failed the gate outright and, worse, printed a
+// literal, doubled "agy agy 1.3.0 is below the 1.2.4 floor" report. Extracting
+// the numeric core first keeps the gate and the printed detail on the same
+// value, whatever wrapping agy's own output carries.
+test("extractVersionNumber pulls the numeric core out of a prefixed, suffixed, or bare version", () => {
+  assert.equal(extractVersionNumber("1.2.6"), "1.2.6");
+  assert.equal(extractVersionNumber("agy 1.3.0"), "1.3.0");
+  assert.equal(extractVersionNumber("v1.2.4"), "1.2.4");
+  assert.equal(extractVersionNumber("1.2.4-beta"), "1.2.4");
+  assert.equal(extractVersionNumber("unknown"), null);
+  assert.equal(extractVersionNumber(""), null);
+  assert.equal(extractVersionNumber(null), null);
+  assert.equal(extractVersionNumber(undefined), null);
 });
 
 // F93. agy updates itself silently, and every contract line is stamped with

@@ -3,7 +3,7 @@ description: Show remaining Antigravity model quota per bucket, with reset times
 allowed-tools: Bash(node:*)
 ---
 
-Show the user's remaining Antigravity (agy) model quota. Use a Bash `timeout` of `90000` ms; the companion gives the `/usage` call a 60 second spawn timeout.
+Show the user's remaining Antigravity (agy) model quota. Use a Bash `timeout` of `240000` ms; the companion caps the `/usage` call at a 2 minute print timeout and gives it a 3 minute spawn timeout, leaving margin under this Bash timeout.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" quota
@@ -22,3 +22,4 @@ Failure handling:
 
 - On `ok: false`, report the `error` and stop. If it says agy is not installed, point at `/agy:setup`.
 - If the error says this agy version predates print-mode `/usage`, relay that and the `agy update` suggestion. Do not retry, and do not fall back to running `/usage` as an agent prompt, which would spend quota.
+- If the error ends in `(timeout)`, the `/usage` call hit its spawn timeout without answering. Say so, and suggest running `/agy:quota` again later; do not fall back to an agent prompt.

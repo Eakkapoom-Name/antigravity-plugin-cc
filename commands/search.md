@@ -4,7 +4,7 @@ argument-hint: "[--model <name>] <query or URL>"
 allowed-tools: Bash(node:*)
 ---
 
-Run a web search, or fetch one page, through agy. Use a Bash `timeout` of `200000` ms; the companion caps agy at a 3 minute print timeout.
+Run a web search, or fetch one page, through agy. Use a Bash `timeout` of `300000` ms; the companion caps agy at a 3 minute print timeout and gives the call a 4 minute spawn timeout, leaving margin under this Bash timeout.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" search "$ARGUMENTS"

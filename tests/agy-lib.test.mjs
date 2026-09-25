@@ -15,10 +15,15 @@ import {
   denialConstraintPrompt,
   effortRejected,
   interpretPromptRun,
+  interpretSlashCommandRun,
   normalizeStreamOutput,
   parseAgyError,
+  printTimeoutMs,
   runIsolated,
-  runPromptWithDenialRecovery
+  runPromptWithDenialRecovery,
+  runSlashCommand,
+  SPAWN_TIMEOUT_MARGIN_MS,
+  spawnTimeoutMs
 } from "../scripts/lib/agy.mjs";
 import {
   buildCmdInvocation,
@@ -28,7 +33,7 @@ import {
 } from "../scripts/lib/process.mjs";
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
 import { parseReviewArguments, parseTransferArguments } from "../scripts/agy-companion.mjs";
-import { ROOT } from "./helpers.mjs";
+import { read, ROOT } from "./helpers.mjs";
 
 // F69. Every temp directory made here is removed once the file's tests are
 // done, the way companion.test.mjs and output-path.test.mjs already clean up.
@@ -761,4 +766,71 @@ test("a clean exit with a SUCCESS result stays ok and reports no AGY_ERROR", () 
 test("interpretPromptRun keeps the missing and timeout failures", () => {
   assert.equal(interpretPromptRun({ error: { code: "ENOENT" }, stdout: "", stderr: "" }).failure, "missing");
   assert.equal(interpretPromptRun({ error: { code: "ETIMEDOUT" }, stdout: "", stderr: "" }).failure, "timeout");
+});
+
+// F79. A spawn timeout used to be a flat 9 minutes whatever printTimeout said,
+// so a command that capped agy at 3 minutes still spawned with 9 minutes of
+// slack: a hung agy sat past its own command's Bash timeout uncaught. The
+// spawn timeout is now derived from the same printTimeout string agy's own
+// --print-timeout flag gets, plus a fixed margin, so the two cannot drift.
+test("printTimeoutMs parses the \"Nm\"/\"Ns\" shorthand passed to --print-timeout", () => {
+  assert.equal(printTimeoutMs("8m"), 8 * 60 * 1000);
+  assert.equal(printTimeoutMs("3m"), 3 * 60 * 1000);
+  assert.equal(printTimeoutMs("90s"), 90 * 1000);
+  assert.throws(() => printTimeoutMs("8"), /printTimeout must look like/);
+  assert.throws(() => printTimeoutMs(undefined), /printTimeout must look like/);
+});
+
+test("spawnTimeoutMs keeps a fixed margin over the print timeout it is paired with", () => {
+  assert.equal(SPAWN_TIMEOUT_MARGIN_MS, 60 * 1000);
+  assert.equal(spawnTimeoutMs("8m"), printTimeoutMs("8m") + SPAWN_TIMEOUT_MARGIN_MS);
+  assert.equal(spawnTimeoutMs("3m"), printTimeoutMs("3m") + SPAWN_TIMEOUT_MARGIN_MS);
+  // DEFAULT_SPAWN_TIMEOUT_MS predates this helper; it must still agree with it.
+  assert.equal(DEFAULT_SPAWN_TIMEOUT_MS, spawnTimeoutMs(DEFAULT_PRINT_TIMEOUT));
+});
+
+test("runPrompt derives its default spawn timeout from the print timeout it is given", () => {
+  const source = read("scripts/lib/agy.mjs");
+  const fn = source.match(/export function runPrompt[\s\S]*?\n}\n/);
+  assert.ok(fn, "runPrompt not found");
+  assert.match(fn[0], /timeout: options\.timeoutMs \?\? spawnTimeoutMs\(printTimeout\)/);
+});
+
+// F102. `runSlashCommand` passed agy a 2 minute --print-timeout but spawned
+// with a flat 60 second Node timeout, below its own print timeout: a slow
+// `/usage` was killed by Node before agy's deadline, and the failure was
+// misreported as invalid JSON rather than a timeout.
+test("interpretSlashCommandRun keeps the missing and timeout failures", () => {
+  assert.equal(interpretSlashCommandRun({ error: { code: "ENOENT" }, stdout: "", stderr: "" }).failure, "missing");
+  assert.equal(interpretSlashCommandRun({ error: { code: "ETIMEDOUT" }, stdout: "", stderr: "" }).failure, "timeout");
+  assert.equal(interpretSlashCommandRun({ stdout: "not json", stderr: "" }).failure, "invalid-json");
+  const ok = interpretSlashCommandRun({ stdout: '{"a":1}', stderr: "" });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.payload, { a: 1 });
+});
+
+test("runSlashCommand's default spawn timeout exceeds its own default print timeout", () => {
+  const source = read("scripts/lib/agy.mjs");
+  const fn = source.match(/export function runSlashCommand[\s\S]*?\n}\n/);
+  assert.ok(fn, "runSlashCommand not found");
+  assert.match(fn[0], /printTimeout = options\.printTimeout \?\? "2m"/);
+  assert.match(fn[0], /timeout: options\.timeoutMs \?\? spawnTimeoutMs\(printTimeout\)/);
+  assert.ok(spawnTimeoutMs("2m") > printTimeoutMs("2m"));
+});
+
+test("runSlashCommand reports a real spawn timeout as a timeout, not invalid JSON", { skip: process.platform === "win32" }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-slash-timeout-"));
+  scratchDirs.push(dir);
+  const bin = path.join(dir, "bin");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "agy"), "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+  const previous = process.env.PATH;
+  process.env.PATH = `${bin}${path.delimiter}${previous}`;
+  try {
+    const result = runSlashCommand("usage", { timeoutMs: 100 });
+    assert.equal(result.ok, false);
+    assert.equal(result.failure, "timeout");
+  } finally {
+    process.env.PATH = previous;
+  }
 });

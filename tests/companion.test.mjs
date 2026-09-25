@@ -6,7 +6,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { extractImagePath, image, parseFlaggedArguments, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
+import { extractImagePath, image, parseFlaggedArguments, quotaRunError, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
 import { read } from "./helpers.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
@@ -624,6 +624,26 @@ test("a possessive after a public host in a query is stripped before the lookup"
   assert.deepEqual(lookedUpHosts, ["example.com"], "the possessive should have been stripped from the host before resolving");
 });
 
+// F100. The strip above takes the ASCII possessive "'s" only. A query typed
+// with a curly apostrophe (the character autocorrect and most phone
+// keyboards actually produce) leaves the host as "127.0.0.1’s", which
+// the URL parser IDNA-encodes into a real hostname the address check never
+// fires on, so the refusal would come from the resolver failing on that
+// name instead: the same misleading-reason class this file's ASCII test
+// above fixed.
+test("a curly possessive after a blocked literal in a query is stripped before the address check", async () => {
+  const argument = "see http://127.0.0.1’s page";
+  const calls = [];
+  const lookup = async () => {
+    throw new Error(`no DNS lookup should be needed to refuse ${argument}`);
+  };
+  const out = await search(argument, fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "url-blocked");
+  assert.match(out.error, /address 127\.0\.0\.1 is a local or reserved address/);
+  assert.equal(calls.length, 0);
+});
+
 // Each of these parses to a host the guard blocks, and none of them looks
 // like one as text: a single leading slash leaves nothing before the first
 // "/" to inspect, a backslash before a bracket means the token does not
@@ -778,6 +798,79 @@ test("research keeps the report when the --out write loses a race", () => {
   }
 });
 
+// F82. `resolveOutputPath` already checked --out before the run started, and
+// the write itself uses "wx" so it never silently overwrites, but neither of
+// those stops an `ok: true` run whose response is empty from creating a
+// zero-byte file and reporting `outPath` as if a report had been written:
+// the user is told the file exists and finds nothing in it, and the empty
+// name is now occupied for a rerun.
+test("research skips the --out write and says so when the response is empty", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  try {
+    const out = research(
+      "--out r.md topic",
+      () => ({ result: { conversation_id: "c", status: "SUCCESS", response: "" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      () => true,
+      root
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /empty/);
+    assert.ok(!fs.existsSync(path.join(root, "r.md")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("research skips the --out write when the response is whitespace only", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  try {
+    const out = research(
+      "--out r.md topic",
+      () => ({ result: { conversation_id: "c", status: "SUCCESS", response: "  \n\n  " }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      () => true,
+      root
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /empty/);
+    assert.ok(!fs.existsSync(path.join(root, "r.md")));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// F70. resolveOutputPath proved the parent was inside the workspace before
+// the run started, but the run itself can take minutes, and a parent
+// directory swapped for a symlink to somewhere else in that window is not
+// caught by the "wx" write, which follows the symlink to reach the final
+// path component the same way the initial check's realpathSync did. The
+// re-check immediately before the write must catch it instead.
+test("research re-checks containment immediately before the write and refuses a parent swapped for a symlink", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    fs.mkdirSync(path.join(root, "sub"));
+    const out = research(
+      "--out sub/r.md topic",
+      (prompt, options) => {
+        fs.rmSync(path.join(root, "sub"), { recursive: true, force: true });
+        fs.symlinkSync(outside, path.join(root, "sub"));
+        return fakeRun([])(prompt, options);
+      },
+      () => true,
+      root
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /inside the workspace/);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 // Every temp directory these image tests create is removed in a finally
 // block, on both the pass and the fail path, so the suite adds nothing to the
 // /tmp/agy-* pile a stray test helper elsewhere has already left behind.
@@ -875,6 +968,24 @@ test("extractImagePath is governed by the first path in the response, not a late
     fs.writeFileSync(decoy, "x");
     const response = `First I considered ${decoy}, then saved the real one to ${file}`;
     assert.equal(extractImagePath(response, brain).ok, false);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+// F72. The reverse of the case above: a legitimate path under brain named
+// first, with an outside decoy mentioned later in the same response, is the
+// accepted direction (only the first match is ever considered), verified
+// correct by execution but not pinned here until now.
+test("extractImagePath accepts the first path even when a decoy follows it", () => {
+  const { brain, file } = fakeBrain();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    const decoy = path.join(outside, "decoy.png");
+    fs.writeFileSync(decoy, "x");
+    const response = `Saved the real one to ${file}, and for reference also considered ${decoy}`;
+    assert.deepEqual(extractImagePath(response, brain), { ok: true, path: fs.realpathSync(file) });
   } finally {
     fs.rmSync(brain, { recursive: true, force: true });
     fs.rmSync(outside, { recursive: true, force: true });
@@ -984,6 +1095,110 @@ test("image keeps imagePath when the --out copy loses a race", () => {
   }
 });
 
+// F73. agy names the file it wrote under its own artifacts directory; the
+// companion only copies it to --out, so nothing ties the copy's bytes to
+// the extension the user typed. fakeBrain's file carries a PNG signature,
+// so a --out name ending .jpg is the mismatch: a one-line warning in the
+// payload, not a refusal or rename, keeping resolveOutputPath itself
+// content-agnostic.
+test("image warns when the copied file's bytes do not match the --out extension", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const out = image(
+      "--out hero.jpg a blue square",
+      () => ({ result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      () => true,
+      root,
+      brain
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, path.join(fs.realpathSync(root), "hero.jpg"));
+    assert.match(out.warning, /png/i);
+    assert.match(out.warning, /jpg|jpeg/i);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("image carries no warning when the copied file's bytes match the --out extension", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const out = image(
+      "--out hero.png a blue square",
+      () => ({ result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      () => true,
+      root,
+      brain
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.warning, undefined);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// F73. image.md tells the model which payload keys to relay on success
+// (imagePath, outPath); a warning key the doc never mentions would be
+// exactly as silent to the user as the mismatch was before this fix, just
+// one layer up. Checked against the real payload key a mismatch actually
+// produces, not just the doc's own wording.
+test("image.md documents the warning key a real extension mismatch produces", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  try {
+    const out = image(
+      "--out hero.jpg a blue square",
+      () => ({ result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      () => true,
+      root,
+      brain
+    );
+    assert.equal(typeof out.warning, "string");
+    const source = read("commands/image.md");
+    assert.match(source, /`warning`/, "image.md does not mention the warning key");
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// F70. Same re-check as research's, on the copy instead of the write: the
+// containment check resolveOutputPath already ran is not repeated right
+// before the copy, so a parent swapped for a symlink to somewhere else
+// while the run was in flight is not caught, and COPYFILE_EXCL follows the
+// symlink the same way "wx" does.
+test("image re-checks containment immediately before the copy and refuses a parent swapped for a symlink", () => {
+  const { brain, file } = fakeBrain();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "agy-outside-"));
+  try {
+    fs.mkdirSync(path.join(root, "sub"));
+    const out = image(
+      "--out sub/hero.png a blue square",
+      () => {
+        fs.rmSync(path.join(root, "sub"), { recursive: true, force: true });
+        fs.symlinkSync(outside, path.join(root, "sub"));
+        return { result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+      },
+      () => true,
+      root,
+      brain
+    );
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, undefined);
+    assert.match(out.outError, /inside the workspace/);
+    assert.deepEqual(fs.readdirSync(outside), []);
+  } finally {
+    fs.rmSync(brain, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
 // F93. An agy run that ends on a model or agent error (exit 3 since 1.2.6)
 // comes back as failure "agy-error" with the parsed AGY_ERROR line. The command
 // payload has to carry it, or the caller only sees a generic failure.
@@ -1006,4 +1221,27 @@ test("a companion payload forwards the AGY_ERROR of a failed run", () => {
   assert.equal(out.failure, "agy-error");
   assert.deepEqual(out.agyError, agyError);
   assert.equal(out.result.response, "partial");
+});
+
+// F102 review. quota's error was `stderr || "... (timeout)"`, so a timeout
+// that left any stderr behind never said it was a timeout. The failure kind
+// is now appended whether or not stderr is empty.
+test("quota names the failure kind even when agy wrote stderr", () => {
+  assert.equal(
+    quotaRunError({ ok: false, stderr: "partial output", failure: "timeout" }),
+    "partial output (timeout)"
+  );
+  assert.equal(
+    quotaRunError({ ok: false, stderr: "", failure: "timeout" }),
+    "the /usage call failed (timeout)"
+  );
+  assert.equal(
+    quotaRunError({ ok: false, stderr: "not json", failure: "invalid-json" }),
+    "not json (invalid-json)"
+  );
+});
+
+test("quota.md tells the model what a timeout failure means", () => {
+  const source = read("commands/quota.md");
+  assert.match(source, /\(timeout\)/);
 });

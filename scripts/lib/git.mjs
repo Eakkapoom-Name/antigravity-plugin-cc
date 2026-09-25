@@ -18,13 +18,20 @@ function git(args, cwd) {
   });
 }
 
+const ORIGIN_REMOTE_PREFIX = "refs/remotes/origin/";
+
 export function defaultBranch(cwd) {
   const remote = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd);
   if (remote.status === 0) {
     const ref = String(remote.stdout ?? "").trim();
-    const name = ref.split("/").pop();
-    if (name) {
-      return name;
+    // The branch name is everything after the remote-tracking prefix, not
+    // just the last path segment: a slashed name such as `release/2026`
+    // otherwise loses everything but `2026`.
+    if (ref.startsWith(ORIGIN_REMOTE_PREFIX)) {
+      const name = ref.slice(ORIGIN_REMOTE_PREFIX.length);
+      if (name) {
+        return name;
+      }
     }
   }
   // No origin/HEAD (a fresh clone, or no remote). Fall back to whichever common
@@ -35,6 +42,31 @@ export function defaultBranch(cwd) {
     }
   }
   return "main";
+}
+
+// Whether `ref` names a real commit in this repository. Used to tell a scope
+// argument (a branch, tag or commit) from ordinary review focus text that
+// happens to look like one (F125): `--end-of-options` keeps a token starting
+// with `-` from being read as a `rev-parse` flag rather than a literal ref.
+//
+// Resolving is not enough on its own: a short hex English word (`dead`,
+// `cafe`, `added`, `2024`) can resolve as an abbreviated commit id. So the
+// token counts only when git names it as a ref (`--symbolic-full-name`
+// prints the full name of a branch, tag or remote-tracking branch, and
+// nothing for a bare commit id), or when it is at least 7 hex digits, and
+// either way it must resolve to a commit.
+const COMMIT_ID = /^[0-9a-f]{7,64}$/i;
+
+export function refResolves(ref, cwd) {
+  const commit = git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${ref}^{commit}`], cwd);
+  if (commit.status !== 0) {
+    return false;
+  }
+  const named = git(["rev-parse", "--symbolic-full-name", "--verify", "--quiet", "--end-of-options", ref], cwd);
+  if (named.status === 0 && String(named.stdout ?? "").trim() !== "") {
+    return true;
+  }
+  return COMMIT_ID.test(ref);
 }
 
 // The secret scanner reads git's own unified format, and the user's git

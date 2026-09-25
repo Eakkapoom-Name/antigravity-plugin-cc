@@ -16,6 +16,7 @@ Core constraint:
 Execution mode:
 
 - `--wait`: run in the foreground. `--background`: run as a Claude background task. Strip only those two flags; forward everything else to the script as-is, including any `--allow-secret <regex>` the user gave, which is the only way a known-fixture false positive gets past the secret scan below.
+- The first word of what remains is read as a scope only when it is `staged`, `branch`, or a branch, tag, or commit name (letters, digits, `.`, `_`, `/`, `-`) that git resolves (a commit id needs at least 7 hex digits); anything else is read as focus text, with the scope defaulting to the working tree. A branch that shares its name with the first focus word wins, so to keep that word as focus, put the focus after `staged`, `branch`, or a ref.
 - If neither flag is present, estimate the size first with `git diff --shortstat` for the chosen scope, treating untracked files as reviewable work even when the diff stat is empty. Then ask once with AskUserQuestion, two options, recommended first with the `(Recommended)` suffix: `Wait for results` and `Run in background`. Recommend waiting only for a clearly tiny scope, roughly 1 or 2 files; otherwise recommend background.
 
 Foreground flow:
@@ -38,6 +39,7 @@ If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]`
 
 Reading the JSON the script prints:
 
+- `scopeNote`: the first word looked like a ref but git does not resolve it, so it was kept in the focus and the working tree was reviewed. Relay it to the user in one line, alongside whatever else the payload reports.
 - `failure: "diff-shape"`: the review did not run, because git's output did not have the shape the secret scanner reads. Report the `error`, say nothing left the machine, and stop.
 - `ok: false` with an `error`: report it and stop.
 - `empty: true`: say there is nothing to review in that scope, quoting `scope`, and list `untrackedFiles` if any.

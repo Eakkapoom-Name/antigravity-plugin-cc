@@ -26,7 +26,7 @@ import {
   runPromptWithDenialRecovery,
   runSlashCommand
 } from "./lib/agy.mjs";
-import { collectDiff, untrackedFiles } from "./lib/git.mjs";
+import { collectDiff, refResolves, untrackedFiles } from "./lib/git.mjs";
 import { reconfirmContainment, resolveOutputPath } from "./lib/output-path.mjs";
 import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
@@ -50,9 +50,15 @@ function workspace() {
 }
 
 // Splits `[scope] [--allow-secret <regex>]... [focus words...]`. Only the
-// first non-flag token can be a scope, and only when it looks like one;
-// everything else is reviewer focus.
-export function parseReviewArguments(argument) {
+// first non-flag token can be a scope, and only when it is `staged`,
+// `branch`, or a token git itself resolves to a real commit in `cwd` (see
+// `refResolves`); otherwise the whole argument is focus and the scope is the
+// working tree. The shape check runs first, so only a first word with
+// characters no ref name can hold skips git; an ordinary sentence whose
+// first word is plain letters still asks git. When such a word does not
+// resolve, `scopeNote` says so, since a mistyped ref (`mian`) would
+// otherwise pass silently as focus.
+export function parseReviewArguments(argument, cwd) {
   const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
   const allowSecret = [];
   const words = [];
@@ -71,12 +77,18 @@ export function parseReviewArguments(argument) {
     return { scope: "", focus: "", allowSecret };
   }
   const first = words[0];
-  const looksLikeScope =
-    first === "staged" || first === "branch" || /^[A-Za-z0-9._\/-]+$/.test(first);
-  if (looksLikeScope) {
+  if (first === "staged" || first === "branch") {
     return { scope: first, focus: words.slice(1).join(" "), allowSecret };
   }
-  return { scope: "", focus: words.join(" "), allowSecret };
+  const refShaped = /^[A-Za-z0-9._\/-]+$/.test(first) && !first.startsWith("-");
+  if (refShaped && refResolves(first, cwd)) {
+    return { scope: first, focus: words.slice(1).join(" "), allowSecret };
+  }
+  const parsed = { scope: "", focus: words.join(" "), allowSecret };
+  if (refShaped) {
+    parsed.scopeNote = `\`${first}\` is not a branch, tag or commit here; reviewed the working tree and kept it in the focus`;
+  }
+  return parsed;
 }
 
 // `run` is the low-level runner handed down to `runIsolated`, the same
@@ -92,15 +104,18 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
   }
 
-  const { scope, focus, allowSecret } = parseReviewArguments(argument);
+  const { scope, focus, allowSecret, scopeNote } = parseReviewArguments(argument, cwd);
+  // A first word that looked like a ref but was not one is kept in the focus;
+  // every payload from here on says so, for the command to relay.
+  const withScopeNote = (payload) => (scopeNote ? { ...payload, scopeNote } : payload);
   const collected = collect(scope, cwd);
   if (!collected.ok) {
-    return { ok: false, error: collected.error, scope: collected.scope.label };
+    return withScopeNote({ ok: false, error: collected.error, scope: collected.scope.label });
   }
 
   if (collected.empty) {
     const untracked = untrackedFiles(cwd);
-    return {
+    return withScopeNote({
       ok: true,
       empty: true,
       scope: collected.scope.label,
@@ -109,7 +124,7 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
         untracked.length > 0
           ? "No diff in this scope, but there are untracked files; they are not part of a diff review."
           : "Nothing to review in this scope."
-    };
+    });
   }
 
   // Nothing leaves for agy while a credential shape sits anywhere in the diff,
@@ -123,23 +138,23 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
   // output) whose scan proves nothing. A section with no hunk (a binary,
   // mode-only or rename-only change) still has that line and still passes.
   if (scan.diffHeaders === 0) {
-    return {
+    return withScopeNote({
       ok: false,
       failure: "diff-shape",
       scope: collected.scope.label,
       error:
         "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git` header the secret scanner can read. Check your git config for diff settings that change its output format."
-    };
+    });
   }
   if (scan.hits.length > 0) {
-    return {
+    return withScopeNote({
       ok: false,
       failure: "secrets",
       scope: collected.scope.label,
       hits: scan.hits,
       note:
         "The review did not run: the diff carries what looks like a credential. Redact it and rerun, or pass --allow-secret <regex> for a known false positive."
-    };
+    });
   }
 
   const prompt = renderPrompt(adversarial ? "adversarial-review" : "review", {
@@ -161,7 +176,7 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     run
   );
 
-  return {
+  return withScopeNote({
     ok: out.ok,
     empty: false,
     scope: collected.scope.label,
@@ -173,7 +188,7 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     failure: out.failure,
     agyError: out.agyError,
     note: out.note
-  };
+  });
 }
 
 // `transfer <brief-path> [--model <name>] [--effort <level>]`. The routing

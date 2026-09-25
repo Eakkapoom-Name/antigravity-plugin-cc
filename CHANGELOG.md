@@ -126,6 +126,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A request containing the line `AGY_RESCUE_TASK_END`, which would end the
   subagent's shell heredoc early, is refused before agy runs, with an
   `agy-rescue refused:` message.
+- `defaultBranch` strips the `refs/remotes/origin/` prefix from `origin/HEAD`
+  instead of taking the last `/`-separated segment, so a default branch named
+  `release/2026` resolves to `release/2026` rather than `2026`, which git then
+  rejected as an unknown revision.
+- `/agy:review`'s and `/agy:adversarial-review`'s first argument word is read
+  as a scope only when it is `staged`, `branch`, or a token git resolves to a
+  real commit, instead of any word shaped like one. `/agy:review check the
+  error handling` used to fail with git's own error on the unknown ref
+  `check`; it now reviews the working tree with that focus. The token must
+  be a name git reports as a branch, tag or remote-tracking ref, or at least
+  7 hex digits naming a commit, so a short hex word (`dead`, `cafe`,
+  `added`, `2024`) that happens to abbreviate a commit id stays focus. A
+  first word that looks like a ref but does not resolve (a mistyped `mian`)
+  adds a `scopeNote` to the payload, which the commands relay, since it now
+  becomes focus instead of failing.
 - A companion run that agy ends on a model or agent error (exit code 3, or an
   `AGY_ERROR:` line on stderr) is now a failure, `failure: "agy-error"`, with
   the parsed line as `agyError` and any partial response kept. Before, the

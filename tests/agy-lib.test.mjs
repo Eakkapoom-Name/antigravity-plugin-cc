@@ -33,7 +33,7 @@ import {
 } from "../scripts/lib/process.mjs";
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
 import { scanForSecrets } from "../scripts/lib/secrets.mjs";
-import { parseReviewArguments, parseTransferArguments } from "../scripts/agy-companion.mjs";
+import { parseReviewArguments, parseTransferArguments, review } from "../scripts/agy-companion.mjs";
 import { read, ROOT } from "./helpers.mjs";
 
 // F69. Every temp directory made here is removed once the file's tests are
@@ -337,15 +337,121 @@ test("defaultBranch resolves to a branch that exists", () => {
   assert.ok(["main", "master"].includes(branch), `unexpected default branch ${branch}`);
 });
 
+// F124. `ref.split("/").pop()` turned `refs/remotes/origin/release/2026` into
+// `2026`; the fix strips only the `refs/remotes/origin/` prefix. A clone's
+// `origin/HEAD` is set from the source repository's checked-out branch, with
+// no push involved.
+function scratchClone(branchName) {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "agy-clone-src-"));
+  scratchDirs.push(source);
+  spawnSync("git", ["init", "-q", "."], { cwd: source });
+  spawnSync("git", ["config", "user.email", "t@e.x"], { cwd: source });
+  spawnSync("git", ["config", "user.name", "t"], { cwd: source });
+  spawnSync("git", ["checkout", "-q", "-b", branchName], { cwd: source });
+  fs.writeFileSync(path.join(source, "f.txt"), "x\n");
+  spawnSync("git", ["add", "-A"], { cwd: source });
+  spawnSync("git", ["commit", "-qm", "c"], { cwd: source });
+  const clone = fs.mkdtempSync(path.join(os.tmpdir(), "agy-clone-"));
+  scratchDirs.push(clone);
+  spawnSync("git", ["clone", "-q", source, clone]);
+  return clone;
+}
+
+test("defaultBranch keeps a slashed default branch name intact", () => {
+  const clone = scratchClone("release/2026");
+  assert.equal(defaultBranch(clone), "release/2026");
+});
+
+// F125. Only `staged`, `branch`, or a token git resolves to a real commit is
+// a scope; an ordinary sentence's first word (`check`) used to be swallowed
+// as one just for looking word-shaped.
 test("review arguments split into a scope and free-text focus", () => {
-  assert.deepEqual(parseReviewArguments("staged"), { scope: "staged", focus: "", allowSecret: [] });
-  assert.deepEqual(parseReviewArguments("branch check the error paths"), {
+  const dir = scratchGitRepo();
+  assert.deepEqual(parseReviewArguments("staged", dir), { scope: "staged", focus: "", allowSecret: [] });
+  assert.deepEqual(parseReviewArguments("branch check the error paths", dir), {
     scope: "branch",
     focus: "check the error paths",
     allowSecret: []
   });
-  assert.deepEqual(parseReviewArguments(""), { scope: "", focus: "", allowSecret: [] });
-  assert.deepEqual(parseReviewArguments("  main  "), { scope: "main", focus: "", allowSecret: [] });
+  assert.deepEqual(parseReviewArguments("", dir), { scope: "", focus: "", allowSecret: [] });
+});
+
+test("parseReviewArguments accepts a real ref as scope, including a slashed one", () => {
+  const dir = scratchGitRepo();
+  assert.deepEqual(parseReviewArguments("  HEAD  ", dir), { scope: "HEAD", focus: "", allowSecret: [] });
+  spawnSync("git", ["branch", "release/2026"], { cwd: dir });
+  assert.deepEqual(parseReviewArguments("release/2026 look here", dir), {
+    scope: "release/2026",
+    focus: "look here",
+    allowSecret: []
+  });
+});
+
+test("parseReviewArguments treats a word git cannot resolve as focus, not scope", () => {
+  const dir = scratchGitRepo();
+  assert.deepEqual(parseReviewArguments("check the error handling", dir), {
+    scope: "",
+    focus: "check the error handling",
+    allowSecret: [],
+    scopeNote: "`check` is not a branch, tag or commit here; reviewed the working tree and kept it in the focus"
+  });
+});
+
+// F125 follow-up. A short hex English word (`dead`, `cafe`, `added`, `2024`)
+// can resolve as an abbreviated commit id and was then swallowed as a
+// scope. A token counts only when git names it as a ref, or when it is at
+// least 7 hex digits and resolves to a commit.
+test("parseReviewArguments does not read a short commit-id prefix as a scope", () => {
+  const dir = scratchGitRepo();
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: dir, encoding: "utf8" }).stdout.trim();
+  const short = sha.slice(0, 4);
+  const legacy = spawnSync("git", ["rev-parse", "--verify", "--quiet", `${short}^{commit}`], { cwd: dir });
+  assert.equal(legacy.status, 0, "the fixture no longer reproduces a short prefix resolving as a commit");
+  const parsed = parseReviewArguments(`${short} is the area to look at`, dir);
+  assert.equal(parsed.scope, "");
+  assert.equal(parsed.focus, `${short} is the area to look at`);
+  assert.equal(parseReviewArguments(`${sha.slice(0, 7)} look here`, dir).scope, sha.slice(0, 7));
+  assert.equal(parseReviewArguments(sha, dir).scope, sha);
+  assert.equal(parseReviewArguments("deadbeefdeadbeef look here", dir).scope, "");
+});
+
+test("parseReviewArguments accepts a named branch or tag even when it is a hex word", () => {
+  const dir = scratchGitRepo();
+  spawnSync("git", ["branch", "dead"], { cwd: dir });
+  spawnSync("git", ["tag", "cafe"], { cwd: dir });
+  assert.deepEqual(parseReviewArguments("dead look here", dir), { scope: "dead", focus: "look here", allowSecret: [] });
+  assert.deepEqual(parseReviewArguments("cafe", dir), { scope: "cafe", focus: "", allowSecret: [] });
+});
+
+// A mistyped ref (`mian`) used to fail loudly as a scope; now it silently
+// becomes focus, so the payload carries a note the command relays.
+test("a review whose first word looks like a ref but is not one says so in the payload", () => {
+  const dir = scratchGitRepo();
+  fs.writeFileSync(path.join(dir, "a.txt"), "one\ntwo\n");
+  const previous = process.env.CLAUDE_PROJECT_DIR;
+  process.env.CLAUDE_PROJECT_DIR = dir;
+  const scopes = [];
+  let out;
+  try {
+    out = review({
+      argument: "mian check the parser",
+      adversarial: false,
+      run: () => ({ result: { conversation_id: "c", status: "SUCCESS", response: "No findings." }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+      available: () => true,
+      collect: (scope, cwd) => {
+        scopes.push(scope);
+        return collectDiff(scope, cwd);
+      }
+    });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = previous;
+    }
+  }
+  assert.deepEqual(scopes, [""]);
+  assert.equal(out.scopeNote, "`mian` is not a branch, tag or commit here; reviewed the working tree and kept it in the focus");
 });
 
 test("parseReviewArguments lifts repeatable --allow-secret out of the focus text", () => {

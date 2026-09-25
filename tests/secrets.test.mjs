@@ -1,7 +1,20 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import { SECRET_KINDS, scanForSecrets } from "../scripts/lib/secrets.mjs";
+
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way agy-lib.test.mjs and companion.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // Every fixture is assembled at runtime so this file never holds a key-shaped
 // literal that GitHub push protection or a secret scanner would flag.
@@ -251,8 +264,10 @@ test("an added content line starting with ++ is scanned, not skipped as a header
 // Git's funcname heuristic copies a nearby line of the file into the text
 // after a hunk header's closing `@@`: in a `.env`, that is often the line
 // holding the key. That text leaves on stdin with the rest of the diff, so it
-// is scanned, and reported with side "hunk-header" at the hunk's new-file
-// start line, in the file the hunk belongs to.
+// is scanned, and reported with side "hunk-header" at the hunk's old-file
+// start line (both hunks below have equal old and new starts, so this fixture
+// alone does not discriminate the two; see the real-git test below for that),
+// in the file the hunk belongs to.
 test("text after a hunk header's closing @@ is scanned, in and past the header zone", () => {
   const secretLine = "AWS_SECRET_ACCESS_KEY=" + "k".repeat(40);
   const diff = [
@@ -294,6 +309,63 @@ test("a hunk-header hit in a deleted file is named by the old path", () => {
   assert.equal(hits.length, 1, JSON.stringify(hits));
   assert.equal(hits[0].file, "creds.txt");
   assert.equal(hits[0].side, "hunk-header");
+});
+
+// F117. A hunk-header hit is copied from the old file, so it belongs at the
+// old-file start line, not the new-file one. A real repo where an earlier
+// hunk deletes 15 lines makes the two starts differ: the funcname-copied key
+// sits at old line 24 (its true, old-file location is well above that, but
+// the hunk's own old start is the bound the docs promise) and new line 9.
+test("a hunk-header hit whose old and new starts differ is reported at the old start", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-secrets-git-"));
+  scratchDirs.push(dir);
+  spawnSync("git", ["init", "-q", "."], { cwd: dir });
+  spawnSync("git", ["config", "user.email", "t@e.x"], { cwd: dir });
+  spawnSync("git", ["config", "user.name", "t"], { cwd: dir });
+  const lines = [];
+  for (let i = 1; i <= 15; i += 1) {
+    lines.push(`filler${i}`);
+  }
+  lines.push(`AWS_SECRET_ACCESS_KEY=${"k".repeat(40)}`);
+  for (let i = 0; i < 10; i += 1) {
+    lines.push("");
+  }
+  lines.push("plain=1");
+  lines.push("tail");
+  fs.writeFileSync(path.join(dir, "a.txt"), `${lines.join("\n")}\n`);
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  spawnSync("git", ["commit", "-qm", "base"], { cwd: dir });
+
+  const updated = lines.slice(15).map((l) => (l === "plain=1" ? "plain=2" : l));
+  fs.writeFileSync(path.join(dir, "a.txt"), `${updated.join("\n")}\n`);
+
+  const result = spawnSync(
+    "git",
+    ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/"],
+    { cwd: dir, encoding: "utf8" }
+  );
+  const diff = result.stdout;
+  const starts = [...diff.matchAll(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/gm)].map((m) => [
+    Number(m[1]),
+    Number(m[2])
+  ]);
+  // The fixture, not the scanner, is wrong if there is no hunk where the two
+  // starts actually differ.
+  const differing = starts.find(([oldStart, newStart]) => oldStart !== newStart && oldStart > 0);
+  assert.ok(differing, `no hunk with differing, non-zero old/new starts: ${JSON.stringify(starts)}`);
+
+  // The key line itself also survives as a context line in the first hunk
+  // (it is not one of the 15 deleted lines), so it is caught there too; only
+  // the hunk-header hit is this test's concern.
+  const { hits } = scanForSecrets(diff, { diff: true });
+  const hunkHeaderHits = hits.filter((hit) => hit.side === "hunk-header");
+  assert.equal(hunkHeaderHits.length, 1, JSON.stringify(hits));
+  assert.equal(hunkHeaderHits[0].file, "a.txt");
+  assert.equal(
+    hunkHeaderHits[0].line,
+    differing[0],
+    "the hit should be reported at the old-file start, not the new-file one"
+  );
 });
 
 // A header-zone line that is none of the lines git emits there (a stray line

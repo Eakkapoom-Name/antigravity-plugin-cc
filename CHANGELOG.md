@@ -196,7 +196,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The review secret scan reads the text git copies after a hunk header's
   closing `@@`. Git's function-name heuristic puts a nearby file line there,
   in a `.env` often the line holding the key, and it left unscanned. A hit
-  carries `side: "hunk-header"` at the hunk's start line. An added line whose
+  carries `side: "hunk-header"` at the hunk's old-file start line, since
+  that is where git copied the text from (the new-file start only for a new
+  file, which has no old-file line at all). An added line whose
   own text starts with `++` is scanned too, instead of being skipped as a
   file header, and a header-zone or unmarked line that is none of git's own
   header lines is scanned as a safety net (`side: "header"` or

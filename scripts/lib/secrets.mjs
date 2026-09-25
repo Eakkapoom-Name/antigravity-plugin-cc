@@ -302,9 +302,13 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
     newLine = Number(hunkHeader[2]) - 1;
     const trailer = hunkHeader[3];
     if (trailer.trim()) {
-      const newStart = Number(hunkHeader[2]);
+      // The copied text is read from the old file (git's funcname heuristic
+      // walks backward through the pre-image), so it is found at or above the
+      // hunk's old-file start line. A new file has no old-file line at all
+      // (old start 0), so only then does the new-file start line stand in.
+      const oldStart = Number(hunkHeader[1]);
       scanText(line, trailer, {
-        line: newStart > 0 ? newStart : Number(hunkHeader[1]),
+        line: oldStart > 0 ? oldStart : Number(hunkHeader[2]),
         file: currentFile ?? oldFile,
         side: "hunk-header"
       });

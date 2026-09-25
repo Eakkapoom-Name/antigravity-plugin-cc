@@ -105,6 +105,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A slash-free number after a scheme in a query (`the port http:443 thing`)
   is still refused, since the URL parser reads it as an IPv4 address, but the
   reason now says the number was read as an address and suggests rewording.
+- An isolated companion run (review, whisper, search, research, image) whose
+  agy call threw, and whose temp directory then could not be removed, now
+  reports the cleanup note on the error it raises. Before, the error was
+  rethrown first and the note was dropped.
+- `/agy:quota` states an explicit Bash timeout (90000 ms), as every other
+  command that runs Bash already did; a test now pins that for all of them.
+- The test suite removes the temp directories it creates. One `npm test` run
+  left 39 `agy-*` directories behind in the system temp directory.
 
 ## [0.7.0] - 2026-09-18
 

@@ -116,6 +116,28 @@ test("setup command runs the readiness script with a timeout that outlasts both 
   );
 });
 
+// F81. Every command that runs Bash states its own timeout, or a slow run
+// falls back to the default 120000 ms and is killed mid-report. Two phrasings
+// are in use: "Bash `timeout` of `N` ms" and "Bash tool timeout to N ms".
+const BASH_COMMANDS = COMMANDS.filter((name) =>
+  /\bBash\b/.test(parseFrontmatter(read(`commands/${name}`))?.["allowed-tools"] ?? "")
+);
+
+test("at least one command grants Bash, so the timeout checks below run", () => {
+  assert.ok(BASH_COMMANDS.length > 0, "no command's allowed-tools grants Bash");
+});
+
+for (const name of BASH_COMMANDS) {
+  test(`${name} states an explicit Bash timeout`, () => {
+    const source = read(`commands/${name}`);
+    const timeout = source.match(/Bash (?:tool )?`?timeout`?(?: of| to) `?(\d+)`? ms/);
+    assert.ok(timeout, `${name} grants Bash but states no explicit Bash timeout`);
+    const ms = Number(timeout[1]);
+    assert.ok(ms > 0, `${name} states a zero Bash timeout`);
+    assert.ok(ms <= 600000, `${name} timeout ${ms} ms exceeds the Bash tool maximum`);
+  });
+}
+
 test("setup command branches on the auth failure kind instead of always saying sign in", () => {
   const source = read("commands/setup.md");
   // The script classifies three causes; the doc is what actually decides what

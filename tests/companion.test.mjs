@@ -7,6 +7,7 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 
 import { extractImagePath, image, parseFlaggedArguments, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
+import { read } from "./helpers.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
 
@@ -107,6 +108,50 @@ test("a clean transfer brief proceeds and is removed after", () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// F60. The command docs tell the model how to render a `hits[]` entry: the
+// full `<file>:<line> <kind> (<sample>)` form, or just `<line> <kind>
+// (<sample>)` when `file` is missing. A review hit always has a file (a git
+// diff always carries its `+++` header), a transfer hit never does (the brief
+// is scanned as plain text), so both real payloads are checked against the
+// wording of the doc that renders them.
+test("the documented hit forms match the real review and transfer payloads", () => {
+  const reviewOut = withWorkspace(scratchRepo(`key = "${AWS}"`), () =>
+    review({ argument: "", adversarial: false, run: fakeRun([]), available: () => true })
+  );
+  assert.equal(reviewOut.failure, "secrets");
+  const reviewHit = reviewOut.hits[0];
+  assert.equal(reviewHit.file, "a.txt");
+  assert.equal(typeof reviewHit.line, "number");
+  assert.equal(typeof reviewHit.kind, "string");
+  assert.equal(typeof reviewHit.sample, "string");
+  assert.equal(reviewHit.side, "added");
+
+  const { dir, file } = scratchBrief(`Handoff notes.\nkey = "${AWS}"\n`);
+  let transferHit;
+  try {
+    const transferOut = transfer({ argument: file, run: fakeRun([]), available: () => true });
+    assert.equal(transferOut.failure, "secrets");
+    transferHit = transferOut.hits[0];
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  assert.ok(!("file" in transferHit), "a transfer hit must not carry a file key");
+  assert.equal(typeof transferHit.line, "number");
+  assert.equal(typeof transferHit.kind, "string");
+  assert.equal(typeof transferHit.sample, "string");
+
+  const full = "`<file>:<line> <kind> (<sample>)`";
+  const fallback = "just `<line> <kind> (<sample>)` when `file` is missing";
+  for (const name of ["review.md", "adversarial-review.md"]) {
+    const source = read(`commands/${name}`);
+    assert.ok(source.includes(full), `${name} does not document the full hit form`);
+    assert.ok(source.includes(fallback), `${name} does not document the file-missing fallback`);
+  }
+  const transferDoc = read("commands/transfer.md");
+  assert.ok(transferDoc.includes("`<line> <kind> (<sample>)`"), "transfer.md does not document the file-less hit form");
+  assert.ok(!transferDoc.includes("<file>:"), "transfer.md documents a file that its hits never carry");
 });
 
 test("parseFlaggedArguments splits named flags from the free text", () => {

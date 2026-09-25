@@ -324,6 +324,11 @@ export function runIsolated(prompt, options = {}, run = runPrompt) {
     note = `isolated directory not removed: ${tmp} (${error.message})`;
   }
   if (thrown) {
+    // F52. A rethrown error is all the caller gets (main emits only its
+    // message), so the note rides on the message or it is lost.
+    if (note && thrown instanceof Error) {
+      thrown.message = `${thrown.message}; ${note}`;
+    }
     throw thrown;
   }
   return note ? { ...out, note } : out;

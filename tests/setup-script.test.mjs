@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -21,6 +21,15 @@ import {
   resolveToolPermission
 } from "../scripts/agy-setup.mjs";
 import { read } from "./helpers.mjs";
+
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way companion.test.mjs and output-path.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // The tool-permission probe asks agy to run `pwd`. agy formats that answer in
 // several ways, and a false negative here reports a working install as broken.
@@ -290,6 +299,7 @@ test("readAgySettings reports an unreadable settings file instead of throwing", 
 
 test("readAgySettings reads the mode and both booleans from a real file", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-"));
+  scratchDirs.push(home);
   const dir = path.join(home, ".gemini", "antigravity-cli");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
@@ -305,6 +315,7 @@ test("readAgySettings reads the mode and both booleans from a real file", () => 
 
 test("readAgySettings survives malformed JSON", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-settings-bad-"));
+  scratchDirs.push(home);
   const dir = path.join(home, ".gemini", "antigravity-cli");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "settings.json"), "{ not json");

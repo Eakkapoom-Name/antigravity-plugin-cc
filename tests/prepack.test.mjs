@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,6 +8,15 @@ import { spawnSync } from "node:child_process";
 
 import { strayBackupFiles } from "../scripts/prepack-check.mjs";
 import { ROOT, readJson } from "./helpers.mjs";
+
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way companion.test.mjs and output-path.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // F17. `npm pack` force-includes anything matching README*, so a README.md.bak
 // left by an editing session ships in the tarball. Neither a `files` negation
@@ -29,6 +38,7 @@ test("package.json runs the guard before packing", () => {
 
 function scratchPackage(extraFiles) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-prepack-"));
+  scratchDirs.push(dir);
   fs.writeFileSync(path.join(dir, "package.json"), '{"name":"x","version":"0.0.0"}\n');
   fs.writeFileSync(path.join(dir, "README.md"), "# x\n");
   for (const name of extraFiles) {

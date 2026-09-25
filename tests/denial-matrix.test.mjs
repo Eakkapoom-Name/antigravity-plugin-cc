@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,6 +10,15 @@ import {
   evaluateCase,
   mergeSettings
 } from "../scripts/lib/denial-matrix.mjs";
+
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way companion.test.mjs and output-path.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function caseById(id) {
   const found = DENIAL_CASES.find((entry) => entry.id === id);
@@ -125,6 +134,7 @@ test("a mode agy rejects is reported as declared but resolved to the default", (
 test("the scratch HOME guard refuses the real home directory", () => {
   assert.throws(() => assertScratchHome(os.homedir()), /refusing/i);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-home-"));
+  scratchDirs.push(scratch);
   assert.equal(assertScratchHome(scratch), path.resolve(scratch));
 });
 

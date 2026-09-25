@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,6 +18,15 @@ import {
 import { resolveWorkspaceRoot } from "../scripts/lib/workspace.mjs";
 import { main } from "../scripts/agy-companion.mjs";
 
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way companion.test.mjs and output-path.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Each test gets its own CLAUDE_PLUGIN_DATA so nothing touches real state and
 // the tests cannot see each other's writes.
 function withPluginData(run) {
@@ -32,11 +41,13 @@ function withPluginData(run) {
     } else {
       process.env.CLAUDE_PLUGIN_DATA = previous;
     }
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 function scratchRepo() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-repo-"));
+  scratchDirs.push(root);
   fs.mkdirSync(path.join(root, ".git"));
   fs.mkdirSync(path.join(root, "src", "deep"), { recursive: true });
   return root;
@@ -52,6 +63,7 @@ test("the workspace root is found from any depth inside the repository", () => {
 
 test("a directory outside any repository resolves to itself", () => {
   const loose = fs.mkdtempSync(path.join(os.tmpdir(), "agy-loose-"));
+  scratchDirs.push(loose);
   // Nothing above a temp dir has a .git, so the walk hits the filesystem root
   // and falls back rather than throwing or climbing forever.
   assert.equal(resolveWorkspaceRoot(loose), path.resolve(loose));
@@ -118,8 +130,11 @@ test("state falls back to a temp directory when the variable is unset", () => {
 
 test("two repositories sharing a basename get different state", () => {
   withPluginData(() => {
-    const a = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-a-")), "project");
-    const b = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-b-")), "project");
+    const aRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-a-"));
+    const bRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-b-"));
+    scratchDirs.push(aRoot, bRoot);
+    const a = path.join(aRoot, "project");
+    const b = path.join(bRoot, "project");
     for (const root of [a, b]) {
       fs.mkdirSync(path.join(root, ".git"), { recursive: true });
     }

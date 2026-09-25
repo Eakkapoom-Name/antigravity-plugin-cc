@@ -1,4 +1,4 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -29,6 +29,15 @@ import {
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
 import { parseReviewArguments, parseTransferArguments } from "../scripts/agy-companion.mjs";
 import { ROOT } from "./helpers.mjs";
+
+// F69. Every temp directory made here is removed once the file's tests are
+// done, the way companion.test.mjs and output-path.test.mjs already clean up.
+const scratchDirs = [];
+after(() => {
+  for (const dir of scratchDirs) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 // Captured verbatim from agy 1.2.2. The terminal event carries the same object
 // --output-format json produces, which is why the rest of the plugin did not
@@ -172,6 +181,7 @@ test("resolveCommand finds a real executable and rejects a missing one", () => {
 
 test("resolveCommand walks PATHEXT so Windows shims resolve", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-path-"));
+  scratchDirs.push(dir);
   fs.writeFileSync(path.join(dir, "faketool.CMD"), "echo hi");
   const env = { PATH: dir, PATHEXT: ".COM;.EXE;.BAT;.CMD" };
   const resolved = resolveCommand("faketool", env);
@@ -186,6 +196,7 @@ test("resolveCommand walks PATHEXT so Windows shims resolve", () => {
 
 function scratchGitRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-git-"));
+  scratchDirs.push(dir);
   spawnSync("git", ["init", "-q", "."], { cwd: dir });
   spawnSync("git", ["config", "user.email", "t@e.x"], { cwd: dir });
   spawnSync("git", ["config", "user.name", "t"], { cwd: dir });
@@ -278,6 +289,7 @@ test("quoting survives spaces, quotes and trailing backslashes", () => {
 // whole reason that leg exists.
 test("a real .cmd executes and receives its arguments intact", { skip: process.platform !== "win32" }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cmd-"));
+  scratchDirs.push(dir);
   const shim = path.join(dir, "echoargs.cmd");
   fs.writeFileSync(shim, "@echo off\r\necho ARG1=[%~1]\r\necho ARG2=[%~2]\r\n");
 
@@ -290,6 +302,7 @@ test("a real .cmd executes and receives its arguments intact", { skip: process.p
 
 test("a resolved .cmd on PATH is executable, not just findable", { skip: process.platform !== "win32" }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cmdpath-"));
+  scratchDirs.push(dir);
   fs.writeFileSync(path.join(dir, "faketool.cmd"), "@echo off\r\necho ran ok\r\n");
   const previous = process.env.PATH;
   process.env.PATH = `${dir}${path.delimiter}${previous}`;
@@ -520,6 +533,15 @@ test("runIsolated gives agy a temp directory as cwd and the only --add-dir", () 
   assert.ok(!JSON.stringify(calls[0].options).includes("/repo"), "the repo path leaked into the options");
   assert.equal(out.ok, true);
   assert.ok(!fs.existsSync(cwd), "the temp directory was not removed");
+
+  // F54. The options are what the runner sees, but argv is what agy sees, so
+  // the built argv is asserted too: one --add-dir, the temp dir, and no --mode.
+  const argv = buildArgs(calls[0].options);
+  const addDirFlags = argv.filter((arg) => arg === "--add-dir");
+  assert.equal(addDirFlags.length, 1, `argv carries ${addDirFlags.length} --add-dir flags, not one`);
+  assert.equal(argv[argv.indexOf("--add-dir") + 1], cwd);
+  assert.ok(!argv.includes("--mode"), "argv carries --mode");
+  assert.ok(!argv.join(" ").includes("/repo"), "the repo path leaked into argv");
 });
 
 test("runIsolated removes the temp directory after a failed run and after a throw", () => {
@@ -547,6 +569,85 @@ test("runIsolated never passes --mode through", () => {
     return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
   });
   assert.equal(seen.mode, undefined);
+});
+
+// F53. Both fault branches of runIsolated need the filesystem to fail, so
+// the two calls are stubbed on the shared `node:fs` object agy.mjs imports
+// and restored in `finally` whatever the assertions do.
+test("runIsolated reports an isolation failure when the temp directory cannot be made", () => {
+  const original = fs.mkdtempSync;
+  const calls = [];
+  fs.mkdtempSync = () => {
+    throw new Error("ENOSPC: no space left");
+  };
+  try {
+    const out = runIsolated("x", {}, (prompt, options) => {
+      calls.push({ prompt, options });
+      return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+    });
+    assert.equal(calls.length, 0, "agy ran without an isolated directory");
+    assert.equal(out.ok, false);
+    assert.equal(out.failure, "isolation");
+    assert.match(out.result.error, /could not create an isolated directory: ENOSPC/);
+    assert.deepEqual(out.events, []);
+    assert.deepEqual(out.deniedActions, []);
+  } finally {
+    fs.mkdtempSync = original;
+  }
+});
+
+test("runIsolated returns the run with a note when the temp directory cannot be removed", () => {
+  const original = fs.rmSync;
+  let seen;
+  fs.rmSync = () => {
+    throw new Error("EBUSY: resource busy");
+  };
+  try {
+    const out = runIsolated("x", {}, (_prompt, options) => {
+      seen = options.cwd;
+      return { result: { status: "SUCCESS", response: "ok" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+    });
+    assert.equal(out.ok, true);
+    assert.equal(out.result.response, "ok");
+    assert.match(out.note, /isolated directory not removed: /);
+    assert.ok(out.note.includes(seen), "the note does not name the directory");
+    assert.match(out.note, /EBUSY/);
+  } finally {
+    fs.rmSync = original;
+    if (seen) {
+      fs.rmSync(seen, { recursive: true, force: true });
+    }
+  }
+});
+
+// F52. When the run itself threw, the error is rethrown, so the cleanup note
+// has nowhere to go but the error: main() emits only `error.message`.
+test("runIsolated carries the failed-cleanup note on a rethrown error", () => {
+  const original = fs.rmSync;
+  let seen;
+  fs.rmSync = () => {
+    throw new Error("EBUSY: resource busy");
+  };
+  try {
+    assert.throws(
+      () =>
+        runIsolated("x", {}, (_prompt, options) => {
+          seen = options.cwd;
+          throw new Error("spawn exploded");
+        }),
+      (error) => {
+        assert.match(error.message, /spawn exploded/);
+        assert.match(error.message, /isolated directory not removed: /);
+        assert.ok(error.message.includes(seen), "the note does not name the directory");
+        return true;
+      }
+    );
+  } finally {
+    fs.rmSync = original;
+    if (seen) {
+      fs.rmSync(seen, { recursive: true, force: true });
+    }
+  }
 });
 
 // F95. A companion run under a 590000 ms Bash timeout needs agy's deadline

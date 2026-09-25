@@ -6,6 +6,7 @@ import path from "node:path";
 
 import {
   MIN_AGY_VERSION,
+  VERIFIED_AGY_VERSION,
   buildReport,
   classifyProbeFailure,
   compareVersions,
@@ -14,10 +15,12 @@ import {
   evaluateCommandProbe,
   evaluateReadProbe,
   meetsMinimumVersion,
+  newerThanVerified,
   permissionNextStep,
   readAgySettings,
   resolveToolPermission
 } from "../scripts/agy-setup.mjs";
+import { read } from "./helpers.mjs";
 
 // The tool-permission probe asks agy to run `pwd`. agy formats that answer in
 // several ways, and a false negative here reports a working install as broken.
@@ -556,4 +559,74 @@ test("a below-floor report with no version still names the floor", () => {
     checkToolPermissions: () => assert.fail("the tool probe ran below the floor")
   });
   assert.match(report.nextSteps[0], /\(unparsable version\) is below the 1\.2\.4/);
+});
+
+// F93. agy updates itself silently, and every contract line is stamped with
+// the version it was checked on. The floor refuses an agy that is too old; a
+// newer one than the contract was last verified on still runs, but setup says
+// so, so drift is noticed instead of discovered mid-run.
+test("the verified version is the one the runtime contract is stamped with", () => {
+  assert.equal(compareVersions(VERIFIED_AGY_VERSION, MIN_AGY_VERSION), 1);
+  const runtime = read("skills/agy-cli-runtime/SKILL.md");
+  assert.ok(
+    runtime.includes(`Re-checked on agy ${VERIFIED_AGY_VERSION}`),
+    `skills/agy-cli-runtime/SKILL.md is not stamped with ${VERIFIED_AGY_VERSION}`
+  );
+});
+
+test("newerThanVerified is true only above the verified version", () => {
+  assert.equal(newerThanVerified(VERIFIED_AGY_VERSION), false);
+  assert.equal(newerThanVerified("1.2.4"), false);
+  assert.equal(newerThanVerified("99.0.0"), true);
+  assert.equal(newerThanVerified("not a version"), false);
+  assert.equal(newerThanVerified(null), false);
+});
+
+function readyReport(version) {
+  return buildReport({
+    cwd: os.tmpdir(),
+    node: { available: true, detail: "v22.0.0" },
+    agy: {
+      available: true,
+      detail: `agy ${version}`,
+      path: "/usr/bin/agy",
+      version,
+      minimumVersion: MIN_AGY_VERSION,
+      meetsMinimum: true,
+      verifiedVersion: VERIFIED_AGY_VERSION,
+      newerThanVerified: newerThanVerified(version)
+    },
+    agySettings: { toolPermission: "always-proceed" },
+    gateOn: true,
+    checkAuth: () => ({ available: true, loggedIn: true, detail: "ok", failureKind: null, durationSeconds: 1 }),
+    checkToolPermissions: () => ({ available: true, detail: "ok", deniedActions: [], command: null, read: null, durationSeconds: 1 })
+  });
+}
+
+test("an agy newer than the verified version stays ready and gets a drift warning", () => {
+  const report = readyReport("99.0.0");
+  assert.equal(report.ready, true);
+  assert.equal(report.nextSteps.length, 1);
+  assert.match(report.nextSteps[0], /agy 99\.0\.0 is newer than/);
+  assert.ok(report.nextSteps[0].includes(VERIFIED_AGY_VERSION));
+});
+
+test("an agy at the verified version gets no drift warning", () => {
+  const report = readyReport(VERIFIED_AGY_VERSION);
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.nextSteps, []);
+});
+
+test("the floor still wins over the drift warning", () => {
+  const report = buildReport({
+    cwd: os.tmpdir(),
+    node: { available: true, detail: "v22.0.0" },
+    agy: { available: true, version: "1.1.28", minimumVersion: MIN_AGY_VERSION, meetsMinimum: false, newerThanVerified: false },
+    agySettings: { toolPermission: "request-review" },
+    gateOn: false,
+    checkAuth: () => assert.fail("the auth probe ran below the floor"),
+    checkToolPermissions: () => assert.fail("the tool probe ran below the floor")
+  });
+  assert.equal(report.nextSteps.length, 1);
+  assert.match(report.nextSteps[0], /below the 1\.2\.4/);
 });

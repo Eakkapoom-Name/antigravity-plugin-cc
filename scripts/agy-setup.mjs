@@ -45,6 +45,12 @@ function checkNode() {
 // refuses it by name instead. `agy --version` prints a bare `1.2.6`.
 export const MIN_AGY_VERSION = "1.2.4";
 
+// F93. The version the CLI contract in skills/agy-cli-runtime/SKILL.md was last
+// re-checked on; a test keeps the two in step. agy updates itself silently, so
+// setup warns on anything newer instead of refusing it: the floor above is what
+// refuses, and a newer agy usually still works.
+export const VERIFIED_AGY_VERSION = "1.2.11";
+
 export function compareVersions(a, b) {
   const parse = (value) => String(value ?? "").trim().split(".").map((part) => Number.parseInt(part, 10) || 0);
   const left = parse(a);
@@ -67,6 +73,13 @@ export function meetsMinimumVersion(version, minimum = MIN_AGY_VERSION) {
   return compareVersions(version, minimum) >= 0;
 }
 
+export function newerThanVerified(version, verified = VERIFIED_AGY_VERSION) {
+  if (!/^\d+(\.\d+)*$/.test(String(version ?? "").trim())) {
+    return false;
+  }
+  return compareVersions(version, verified) > 0;
+}
+
 function checkAgy() {
   // `which` is Unix-only, and it was the reason this check could not work on
   // Windows at all. Resolving through PATH and PATHEXT covers both, and finds
@@ -83,7 +96,9 @@ function checkAgy() {
       path: agyPath,
       version: null,
       minimumVersion: MIN_AGY_VERSION,
-      meetsMinimum: false
+      meetsMinimum: false,
+      verifiedVersion: VERIFIED_AGY_VERSION,
+      newerThanVerified: false
     };
   }
   const printed = version.stdout.trim();
@@ -93,7 +108,9 @@ function checkAgy() {
     path: agyPath,
     version: printed,
     minimumVersion: MIN_AGY_VERSION,
-    meetsMinimum: meetsMinimumVersion(printed)
+    meetsMinimum: meetsMinimumVersion(printed),
+    verifiedVersion: VERIFIED_AGY_VERSION,
+    newerThanVerified: newerThanVerified(printed)
   };
 }
 
@@ -525,6 +542,14 @@ export function buildReport({
         nextSteps.push(permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission));
       }
     }
+  }
+
+  // A warning, not a refusal: ready is unaffected. Only reached above the
+  // floor, so the below-floor report keeps its single next step.
+  if (agy.available && agy.meetsMinimum && agy.newerThanVerified) {
+    nextSteps.push(
+      `agy ${agy.version} is newer than ${VERIFIED_AGY_VERSION}, the version this plugin's CLI contract was last verified on. Delegation should still work; if a run fails in a way these docs do not describe, check \`agy changelog\` for a print-mode or result-shape change.`
+    );
   }
 
   const ready = agy.available && agy.meetsMinimum && auth.available && toolPermissions.available;

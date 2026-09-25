@@ -41,6 +41,8 @@ export function emptyResult(overrides = {}) {
   };
 }
 
+const NO_RESULT_EVENT = "agy produced no result event";
+
 // Reduces the NDJSON event stream to the one result object the rest of the
 // plugin already knows how to handle, so `agy-result-handling` does not have to
 // learn a second shape.
@@ -69,7 +71,7 @@ export function normalizeStreamOutput(stdout) {
 
   if (!result) {
     return {
-      result: emptyResult({ error: "agy produced no result event" }),
+      result: emptyResult({ error: NO_RESULT_EVENT }),
       events,
       deniedActions: [],
       ok: false
@@ -148,7 +150,33 @@ export function runPrompt(prompt, options = {}) {
     timeout: options.timeoutMs ?? DEFAULT_SPAWN_TIMEOUT_MS,
     maxBuffer: 64 * 1024 * 1024
   });
+  return interpretPromptRun(spawned);
+}
 
+// Since agy 1.2.6 a headless turn that ends on a model or agent error prints
+// one `AGY_ERROR: {...}` JSON line on stderr and exits 3. Returns the parsed
+// object, the raw text when it is not JSON, or null when there is no such line.
+export function parseAgyError(stderr) {
+  const lines = String(stderr ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("AGY_ERROR:"));
+  if (lines.length === 0) {
+    return null;
+  }
+  const text = lines[lines.length - 1].slice("AGY_ERROR:".length).trim();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+// Split from runPrompt so the classification can be tested on stubbed spawn
+// results. Exit 3 is a failure whatever the result event says: since 1.2.10
+// agy exits 3 after streaming part of a response, and the JSON then carries
+// that partial response, which is kept. The AGY_ERROR line is checked on any
+// exit code, because 1.2.10 still only warns on multi-turn stream-json.
+export function interpretPromptRun(spawned) {
   const stderr = String(spawned.stderr ?? "").trim();
 
   if (spawned.error?.code === "ENOENT") {
@@ -159,17 +187,30 @@ export function runPrompt(prompt, options = {}) {
   }
 
   const normalized = normalizeStreamOutput(spawned.stdout);
+  const agyError = parseAgyError(stderr);
+  let result = normalized.result;
+  let ok = normalized.ok;
   let failure = null;
-  if (!normalized.ok) {
-    failure = normalized.deniedActions.length > 0 ? "denied" : "failed";
+  if (normalized.deniedActions.length > 0) {
+    failure = "denied";
+  } else if (spawned.status === 3 || agyError !== null) {
+    ok = false;
+    failure = "agy-error";
+    if (agyError !== null && result.error === NO_RESULT_EVENT) {
+      const text = typeof agyError === "string" ? agyError : JSON.stringify(agyError);
+      result = { ...result, error: `AGY_ERROR: ${text}` };
+    }
+  } else if (!ok) {
+    failure = "failed";
   }
   return {
-    result: normalized.result,
+    result,
     events: normalized.events,
     deniedActions: normalized.deniedActions,
     stderr,
-    ok: normalized.ok,
-    failure
+    ok,
+    failure,
+    agyError
   };
 }
 

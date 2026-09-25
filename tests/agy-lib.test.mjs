@@ -14,7 +14,9 @@ import {
   deniedActions,
   denialConstraintPrompt,
   effortRejected,
+  interpretPromptRun,
   normalizeStreamOutput,
+  parseAgyError,
   runIsolated,
   runPromptWithDenialRecovery
 } from "../scripts/lib/agy.mjs";
@@ -557,4 +559,105 @@ test("companion runs default to an 8m print timeout under a 9 minute spawn timeo
   assert.equal(DEFAULT_SPAWN_TIMEOUT_MS, 9 * 60 * 1000);
   assert.ok(DEFAULT_SPAWN_TIMEOUT_MS < 590000);
   assert.deepEqual(buildArgs({}).slice(-2), ["--print-timeout", "8m"]);
+});
+
+// F93. Since agy 1.2.6 a headless turn that ends on a model or agent error
+// exits 3 and prints a structured `AGY_ERROR: {...}` line on stderr; since
+// 1.2.10 that also covers a run that streamed part of a response first, and
+// the JSON result then carries the partial response. No run here has produced
+// a real AGY_ERROR line, so this fixture is synthesized from the 1.2.6 and
+// 1.2.10 changelog text (canonical status, error code, retryability, error
+// ID) and its field names are unverified. The code keeps whatever JSON agy
+// prints rather than depending on those names.
+const AGY_ERROR_LINE =
+  'AGY_ERROR: {"status":"UNAVAILABLE","code":503,"retryable":true,"error_id":"synthetic-1"}';
+
+function partialResultStdout(response) {
+  return `${JSON.stringify({
+    event: "result",
+    result: { conversation_id: "c-partial", status: "ERROR", response, error: "model error" }
+  })}\n`;
+}
+
+test("parseAgyError reads the last AGY_ERROR line as JSON", () => {
+  assert.deepEqual(parseAgyError(`noise\n${AGY_ERROR_LINE}\n`), {
+    status: "UNAVAILABLE",
+    code: 503,
+    retryable: true,
+    error_id: "synthetic-1"
+  });
+  assert.equal(parseAgyError("jetski: no output produced"), null);
+  assert.equal(parseAgyError(""), null);
+  assert.equal(parseAgyError(undefined), null);
+});
+
+test("parseAgyError keeps an AGY_ERROR line that is not JSON as its raw text", () => {
+  assert.equal(parseAgyError("AGY_ERROR: model went away"), "model went away");
+});
+
+test("exit 3 with a partial response is a failure that keeps the response and the AGY_ERROR", () => {
+  const out = interpretPromptRun({
+    status: 3,
+    stdout: partialResultStdout("Half an answer"),
+    stderr: AGY_ERROR_LINE
+  });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.equal(out.result.response, "Half an answer");
+  assert.equal(out.result.conversation_id, "c-partial");
+  assert.equal(out.agyError.code, 503);
+  assert.match(out.stderr, /AGY_ERROR:/);
+});
+
+test("exit 3 is a failure even when the result event says SUCCESS", () => {
+  const out = interpretPromptRun({ status: 3, stdout: `${REAL_RESULT_EVENT}\n`, stderr: AGY_ERROR_LINE });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.equal(out.result.response, "OK\n");
+});
+
+test("exit 3 with no result event carries the AGY_ERROR into the result error", () => {
+  const out = interpretPromptRun({ status: 3, stdout: "", stderr: AGY_ERROR_LINE });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.match(out.result.error, /AGY_ERROR/);
+  assert.match(out.result.error, /UNAVAILABLE/);
+});
+
+test("exit 3 with no AGY_ERROR line is still an agy-error failure", () => {
+  const out = interpretPromptRun({ status: 3, stdout: `${REAL_RESULT_EVENT}\n`, stderr: "" });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.equal(out.agyError, null);
+});
+
+// agy 1.2.10 notes that multi-turn stream-json sessions "still warn and
+// continue", so the stderr line can appear without exit 3.
+test("an AGY_ERROR line on a zero exit is still a failure", () => {
+  const out = interpretPromptRun({ status: 0, stdout: `${REAL_RESULT_EVENT}\n`, stderr: AGY_ERROR_LINE });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.equal(out.agyError.status, "UNAVAILABLE");
+});
+
+test("a denial keeps its own failure name so recovery still fires", () => {
+  const out = interpretPromptRun({
+    status: 0,
+    stdout: `${JSON.stringify({ event: "result", result: DENIED_READ_RESULT })}\n`,
+    stderr: ""
+  });
+  assert.equal(out.failure, "denied");
+  assert.deepEqual(out.deniedActions, ["read_file"]);
+});
+
+test("a clean exit with a SUCCESS result stays ok and reports no AGY_ERROR", () => {
+  const out = interpretPromptRun({ status: 0, stdout: `${REAL_RESULT_EVENT}\n`, stderr: "" });
+  assert.equal(out.ok, true);
+  assert.equal(out.failure, null);
+  assert.equal(out.agyError, null);
+});
+
+test("interpretPromptRun keeps the missing and timeout failures", () => {
+  assert.equal(interpretPromptRun({ error: { code: "ENOENT" }, stdout: "", stderr: "" }).failure, "missing");
+  assert.equal(interpretPromptRun({ error: { code: "ETIMEDOUT" }, stdout: "", stderr: "" }).failure, "timeout");
 });

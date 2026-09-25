@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `/agy:setup` warns, without failing, when the installed agy is newer than
+  1.2.11, the version the CLI contract was last verified on. The report
+  carries `agy.verifiedVersion` and `agy.newerThanVerified`. The 1.2.4 floor
+  is unchanged.
+
 ### Changed
 
 - The rescue subagent writes agy's JSON to a temporary file
@@ -31,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under the 590000 ms Bash timeout, and the spawn timeout now ends before it,
   so a hung agy returns a timeout instead of a backgrounded call. The
   stop-review gate keeps 9m, which fits its 660 s hook limit.
+- The CLI contract in the `agy-cli-runtime` skill is re-checked on agy 1.2.11
+  (`--help`, `agy changelog`, three live runs) and says which lines were
+  re-checked and which are carried over. It now documents exit code 3 and the
+  `AGY_ERROR` line, the `max` effort level, and that `agy -p "/changelog"`
+  stops at 1.2.5 while `agy changelog` is current.
+- Rescue tasks include a `<verification_loop>` only when tests are relevant
+  and a test command is known, and then name the command and the directory to
+  run it from. `<action_safety>` leaves routine edits to agy and asks it to
+  stop only for a choice that changes scope, public behaviour, or
+  dependencies, so fewer runs end on a question.
 
 ### Fixed
 
@@ -53,6 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A request containing the line `AGY_RESCUE_TASK_END`, which would end the
   subagent's shell heredoc early, is refused before agy runs, with an
   `agy-rescue refused:` message.
+- A companion run that agy ends on a model or agent error (exit code 3, or an
+  `AGY_ERROR:` line on stderr) is now a failure, `failure: "agy-error"`, with
+  the parsed line as `agyError` and any partial response kept. Before, the
+  exit code was ignored and the `AGY_ERROR` line was only part of `stderr`.
 
 ## [0.7.0] - 2026-09-18
 

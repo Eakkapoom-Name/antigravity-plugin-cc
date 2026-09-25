@@ -562,3 +562,53 @@ test("the stop gate does not resume a denied review", () => {
     "the stop gate resumes a denied review, doubling the wait before it blocks"
   );
 });
+
+// F93. Setup warns, without refusing, when agy is newer than the version the
+// CLI contract was last verified on. The command has to relay that warning and
+// keep it from reading as a failure.
+test("setup command relays the newer-than-verified warning without failing setup", () => {
+  const source = read("commands/setup.md");
+  assert.match(source, /agy\.newerThanVerified/);
+  assert.match(source, /agy\.verifiedVersion/);
+  assert.match(source, /`ready` stays true/);
+});
+
+// F92. Wrapping every rescue in a <verification_loop> and a stop-and-ask
+// <action_safety> cost +55% input tokens on a one-line fix, ran tests nobody
+// asked for, and invited plan-only endings that each cost an /agy:continue
+// round trip. The loop is now conditional and names its command and
+// directory; routine edits are agy's call. The softer wording must not tell
+// agy to skip asking or confirming: that phrasing trips the Claude Code
+// classifier (see the agy-result-handling skill).
+function promptingBullet(source, tag) {
+  const match = source.match(new RegExp(`^- \`<${tag}>\`:[\\s\\S]*?(?=\\n- |\\n\\n)`, "m"));
+  assert.ok(match, `prompting skill has no <${tag}> bullet`);
+  return match[0];
+}
+
+test("the prompting skill includes the verification loop only when tests are relevant", () => {
+  const prompting = read("skills/agy-prompting/SKILL.md");
+  const loop = promptingBullet(prompting, "verification_loop");
+  assert.doesNotMatch(loop, /required for fixes and implementation/);
+  assert.match(loop, /only when tests are relevant to the request/);
+  assert.match(loop, /name the test command and the directory to run it from/);
+  assert.match(loop, /rather than inventing one/);
+  assert.match(prompting, /`verification_loop` only when tests are relevant/);
+});
+
+test("the prompting skill lets routine edits through without inviting a stop-and-ask", () => {
+  const safety = promptingBullet(read("skills/agy-prompting/SKILL.md"), "action_safety");
+  assert.doesNotMatch(safety, /stop to ask when the task turns out to need a decision/);
+  assert.match(safety, /Routine choices inside that scope/);
+  assert.match(safety, /changes scope, public behaviour, or dependencies/);
+  assert.doesNotMatch(safety, /without (asking|confirm)|skip[^.]*confirm/i);
+});
+
+test("the rescue agent adds a verification loop only for relevant tests, with command and directory", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.doesNotMatch(agent, /for fixes a `<verification_loop>` and `<action_safety>`/);
+  assert.match(agent, /`<verification_loop>` only when tests are relevant to the request/);
+  assert.match(agent, /name that command and the directory to run it from/);
+  assert.match(agent, /Never invent a test command/);
+  assert.doesNotMatch(agent, /without (asking|confirm)|skip[^.]*confirm/i);
+});

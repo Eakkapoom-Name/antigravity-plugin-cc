@@ -837,3 +837,27 @@ test("image keeps imagePath when the --out copy loses a race", () => {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// F93. An agy run that ends on a model or agent error (exit 3 since 1.2.6)
+// comes back as failure "agy-error" with the parsed AGY_ERROR line. The command
+// payload has to carry it, or the caller only sees a generic failure.
+test("a companion payload forwards the AGY_ERROR of a failed run", () => {
+  const agyError = { status: "UNAVAILABLE", code: 503 };
+  const out = whisper(
+    "what is 2+2",
+    () => ({
+      result: { status: "ERROR", response: "partial", conversation_id: "c1" },
+      events: ["result"],
+      deniedActions: [],
+      stderr: `AGY_ERROR: ${JSON.stringify(agyError)}`,
+      ok: false,
+      failure: "agy-error",
+      agyError
+    }),
+    () => true
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "agy-error");
+  assert.deepEqual(out.agyError, agyError);
+  assert.equal(out.result.response, "partial");
+});

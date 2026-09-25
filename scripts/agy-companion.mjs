@@ -153,6 +153,7 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     recovery: out.recovery,
     stderr: out.stderr,
     failure: out.failure,
+    agyError: out.agyError,
     note: out.note
   };
 }
@@ -241,7 +242,8 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
     recovery: out.recovery,
     effortDropped,
     stderr: out.stderr,
-    failure: out.failure
+    failure: out.failure,
+    agyError: out.agyError
   };
 }
 
@@ -309,6 +311,7 @@ function resultPayload(out, extra = {}) {
     effortDropped: out.effortDropped,
     stderr: out.run.stderr,
     failure: out.run.failure,
+    agyError: out.run.agyError,
     note: out.run.note,
     ...extra
   };

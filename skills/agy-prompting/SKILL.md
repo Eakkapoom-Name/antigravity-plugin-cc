@@ -22,29 +22,40 @@ Include the blocks the task needs; leave the rest out.
   and their order when the answer is a report; say "one line" when it is one
   line.
 - `<done_state>`: what finished looks like. agy does not infer it. For a fix:
-  the named tests pass. For a review: every hunk considered. For an image: the
+  the change is made, and when a `<verification_loop>` names tests, they pass.
+  For a review: every hunk considered. For an image: the
   file exists at the path the output contract named.
-- `<verification_loop>`: required for fixes and implementation. Run the tests
-  the change touches, in one-shot mode (no watch mode), report the command and
-  its result, and do not claim a pass you did not observe. Wait for or stop
-  anything agy moved to the background before replying: since agy 1.2.9 a
-  leftover background task holds the finished answer until the print timeout.
+- `<verification_loop>`: only when tests are relevant to the request: a fix or
+  implementation in code that tests cover, or a request that asks for tests.
+  Leave it out for docs, comments, config, and read-only runs. When it is
+  included, name the test command and the directory to run it from (for
+  example `npm test`, from the repository root), taken from the request or the
+  context given with it; when neither names a command, leave the block out
+  rather than inventing one. Run it in one-shot mode (no watch mode), report
+  the command and its result, and do not claim a pass you did not observe.
+  Wait for or stop anything agy moved to the background before replying: since
+  agy 1.2.9 a leftover background task holds the finished answer until the
+  print timeout.
 - `<grounding_rules>`: required for review and research. No claim without a
   source URL or an inspected artifact. Say when sources disagree. Say when
   evidence is thin rather than filling the gap.
 - `<action_safety>`: for write-capable runs. Stay inside the named files or
-  output location, make no unrelated refactors, change no dependencies unless
-  asked, and stop to ask when the task turns out to need a decision the
-  prompt did not make. Leave no server or other process you started running;
-  stop it by its PID or job id, never by name or port (no pkill, killall,
-  `kill -1`, or `kill 0`). If the user asked for a process to stay up, start
-  it detached (nohup or setsid, output to a file) and report its PID; agy
-  waits on anything else and kills it at exit.
+  output location, make no unrelated refactors, and change no dependencies
+  unless asked. Routine choices inside that scope, such as naming, placement,
+  and the small restructuring a fix needs, are agy's to make; it lists them in
+  its reply. End the run on a question only when the task needs a choice the
+  request did not make that changes scope, public behaviour, or dependencies,
+  and then say what is undecided. Leave no server or other process you started
+  running; stop it by its PID or job id, never by name or port (no pkill,
+  killall, `kill -1`, or `kill 0`). If the user asked for a process to stay
+  up, start it detached (nohup or setsid, output to a file) and report its
+  PID; agy waits on anything else and kills it at exit.
 
 ## Which blocks, by task
 
-- Fix or implementation: `task`, `done_state`, `verification_loop`,
-  `action_safety`.
+- Fix or implementation: `task`, `done_state`, `action_safety`, and
+  `verification_loop` only when tests are relevant and a test command is
+  known (see the block above).
 - Review: `task`, `output_contract`, `grounding_rules`. The review templates
   carry this contract in prose today; they predate the tagged block form, so
   read them for the substance, not as a worked example of the tags. New

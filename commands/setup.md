@@ -28,6 +28,7 @@ Run it with an explicit Bash `timeout` of `590000` ms. The script fires three ag
 The script runs every check itself (agy on PATH, an auth probe, a command probe and a file-read probe that detect headless permission auto-denial, and the stop-review gate state) and prints one JSON report:
 
 - `ready`: true only when `agy` is available and meets `agy.minimumVersion`, and `auth` and `toolPermissions` are both available.
+- `agy.verifiedVersion` and `agy.newerThanVerified`: the agy version this plugin's CLI contract was last verified on, and whether the installed agy is newer than it. agy updates itself silently, so this is how drift shows up.
 - `agy` / `auth` / `toolPermissions`: each has `available` and a `detail` line; probe sections also carry `durationSeconds`. On failure, `detail` quotes the decisive stderr line when there is one.
 - `toolPermissions.command` and `toolPermissions.read`: the two tool probes, each with `available`, `detail`, `deniedActions`, and `durationSeconds`. The read probe plants a file in the workspace root and asks agy to read it back, which is what every rescue does first; the file is removed before the report prints.
 - `toolPermissions.deniedActions`: the tool names agy refused, as it reports them in `denied_actions` (`command`, `read_file`). Empty on older agy versions that do not report denials in the JSON, in which case the probes fall back to judging the response text.
@@ -43,7 +44,7 @@ If `agy.meetsMinimum` is false, report both `agy.version` and `agy.minimumVersio
 
 Present the final report to the user:
 
-- If `ready` is true, report the agy version, both probe round-trip times, that delegation via `/agy:rescue` is ready, and the gate state. Add one line for auto mode sessions: a ready agy can still have its `/agy:rescue` launch refused by Claude Code's own auto mode classifier, one layer before agy runs, and the remedy for that is `/permissions`, not this command.
+- If `ready` is true, report the agy version, both probe round-trip times, that delegation via `/agy:rescue` is ready, and the gate state. If `agy.newerThanVerified` is true, also relay its `nextSteps` warning, naming `agy.version` and `agy.verifiedVersion`. It is a warning only: `ready` stays true, delegation works, and there is nothing to fix unless a run later fails in a way the docs do not describe. Add one line for auto mode sessions: a ready agy can still have its `/agy:rescue` launch refused by Claude Code's own auto mode classifier, one layer before agy runs, and the remedy for that is `/permissions`, not this command.
 - If `agy.available` is false, tell the user to install the Antigravity CLI; do not guess an install command, point them to the official Antigravity documentation.
 - If `auth.available` is false, quote `auth.detail`, then branch on `auth.failureKind`. These are three different problems and only one of them is a login problem, so do not offer the sign-in fix for all three:
   - `environment`: say plainly that this is not a login failure and that the user's credentials are fine. The shell that ran the probe blocked a syscall agy needs, usually a sandbox refusing its local loopback listener (`listen tcp 127.0.0.1:0: socket: operation not permitted`). Relay the `nextSteps` guidance to rerun from an unrestricted terminal.

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 
 import { placeholdersIn, promptPath, readPrompt, renderPrompt } from "../scripts/lib/prompts.mjs";
 import { read } from "./helpers.mjs";
@@ -96,4 +97,25 @@ test("the image template carries all four blocks the SKILL.md row names", () => 
     assert.match(template, new RegExp(`<${tag}>`), `image template is missing <${tag}>`);
   }
   assert.match(template, /NO_IMAGE_TOOL/);
+});
+
+// F95. Since agy 1.2.9 a headless run holds its finished answer until the
+// print-timeout deadline while any background task it started is still
+// running. `run_command` is available in every print-mode run, isolated or
+// not, so every companion template ends with the same line the rescue agent
+// uses. The line is read from the agent file so the two cannot drift.
+test("every companion prompt ends with the rescue agent's leave-nothing-running line", () => {
+  const agent = read("agents/agy-rescue.md");
+  const match = agent.match(/`(Before you reply, make sure nothing you started is still running:[^`]*)`/);
+  assert.ok(match, "agents/agy-rescue.md has no closing line to copy");
+  const line = match[1];
+  const names = fs.readdirSync(path.dirname(promptPath("review")))
+    .filter((name) => name.endsWith(".md"))
+    .map((name) => name.slice(0, -3));
+  assert.ok(names.length >= 9, `only ${names.length} prompt templates found`);
+  for (const name of names) {
+    const lines = readPrompt(name).trimEnd().split("\n");
+    assert.equal(lines[lines.length - 1], line, `prompts/${name}.md does not end with the closing line`);
+    assert.equal(lines[lines.length - 2], "", `prompts/${name}.md does not set the closing line apart`);
+  }
 });

@@ -549,7 +549,7 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   const prompt = renderPrompt("research", { TOPIC: rest });
   const out = runWithEffortFallback(
     prompt,
-    { model: flags.model, effort: flags.effort, printTimeout: "9m" },
+    { model: flags.model, effort: flags.effort, printTimeout: "8m" },
     (p, options) => runIsolated(p, options, run)
   );
   const payload = resultPayload(out);

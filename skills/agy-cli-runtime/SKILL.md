@@ -11,25 +11,26 @@ Use this skill only inside the `agy:agy-rescue` subagent or the `/agy:*` command
 Base invocation:
 
 ```bash
-agy -p "<task text>" --output-format json --print-timeout 8m --add-dir "$PWD"
+root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$PWD
+agy -p "<task text>" --output-format json --print-timeout 8m --add-dir "$root"
 ```
 
 Changed since the contract below was verified, and measured on agy 1.2.10 on 2026-09-25 (agy updated itself to 1.2.11 the same day; not re-measured):
 
-- A bare print-mode run no longer treats its cwd as the project. Started in the repository without `--add-dir`, agy reported no active workspace, `pwd` gave `~/.gemini/antigravity-cli/scratch`, and a "create a file in the current directory" task wrote into that scratch directory. Always pass `--add-dir "$PWD"`, an absolute path, from the repository root.
-- Since agy 1.2.9 a headless run that leaves a background task running waits for it until the `--print-timeout` deadline (30 minute cap) before printing its result, and agy moves any command that runs longer than 10 seconds into the background. The deadline counts from when agy sends the message, after its startup and sign-in, which took up to 28 seconds. When it passes, agy stops the task and still prints its JSON. The rescue template therefore tells agy to leave nothing running, and to start any process the user wants kept up detached (nohup or setsid), since agy waits on a tracked background task and kills it at exit.
+- A bare print-mode run no longer treats its cwd as the project. Started in the repository without `--add-dir`, agy reported no active workspace, `pwd` gave `~/.gemini/antigravity-cli/scratch`, and a "create a file in the current directory" task wrote into that scratch directory. Always pass `--add-dir` with the repository root as an absolute path: `git rev-parse --show-toplevel`, falling back to `$PWD` outside a git repository, which matches the workspace root the companion script uses.
+- Since agy 1.2.9 a headless run that leaves a background task running waits for it until the `--print-timeout` deadline (30 minute cap) before printing its result, and agy moves any command that runs longer than 10 seconds into the background. The deadline counts from when agy sends the message, after its startup and sign-in, which took up to 28 seconds. When it passes, agy stops the task and still prints its JSON. The rescue template and every companion prompt template (`prompts/*.md`, the stop-review gate included) therefore tell agy to leave nothing running, and to start any process the user wants kept up detached (nohup or setsid), since agy waits on a tracked background task and kills it at exit.
 - The `--print-timeout` default is unlimited since agy 1.2.6, so never omit the flag.
 
 Flag contract (verified against agy 1.2.4). Re-checked on agy 1.2.5 on 2026-09-18 without re-measuring each line: the 11-row `npm run test:denials` harness passed on 1.2.5, three cwd probes ran commands in the invoking directory, `agy --help` showed no flag this contract lacks, and the 1.2.4 and 1.2.5 `/changelog` sections name no print-mode, flag, permission, or result-shape change.
 
 - `-p` / `--print`: run one prompt non-interactively and print the response.
 - `--output-format json`: single JSON result object on stdout.
-- `--print-timeout <dur>`: agy-side wait limit. Default was 5m on 1.2.4 and is unlimited since 1.2.6. The rescue subagent uses 8m with a 590000 ms Bash tool timeout, which leaves room for agy's startup and shutdown so the common case ends in the foreground. When a Bash call outlives its timeout, Claude Code 2.1.282 moves it to the background rather than killing it, so agy's own deadline is the real cap. The companion script uses 9m under its own 10 minute spawn timeout.
+- `--print-timeout <dur>`: agy-side wait limit. Default was 5m on 1.2.4 and is unlimited since 1.2.6. The rescue subagent uses 8m with a 590000 ms Bash tool timeout, which leaves room for agy's startup and shutdown so the common case ends in the foreground. When a Bash call outlives its timeout, Claude Code 2.1.282 moves it to the background rather than killing it, so agy's own deadline is the real cap. The companion script uses 8m under its own 9 minute spawn timeout, which ends before a 590000 ms Bash timeout, so a hung agy comes back as a timeout failure. The stop-review gate is not a Bash call: it keeps 9m under a 10 minute spawn timeout inside the hook's 660 s limit.
 - `--mode accept-edits`: auto-approve file edits. Add for write-capable runs. Omit for read-only runs (review, diagnosis, research).
 - `-c` / `--continue`: continue the most recent agy conversation. `--conversation <id>`: resume a specific one.
 - `--model <name>`: only when the user asked for a specific model. List with `agy models`; do not hardcode model names.
 - `--effort <low|medium|high>`: only when the user asked for a specific effort. Some models reject it before any model call: agy exits 1 with `--effort is not supported for model "<name>"` (1.2.4, `claude-opus-4-6-thinking`). That spends no quota, so rerun once without `--effort` and say the flag was dropped. The companion does this itself for `/agy:transfer` and reports `effortDropped: true`.
-- `--add-dir <path>`: add directories to the agy workspace. Repeatable. Pass the repository root itself too, as `--add-dir "$PWD"`; see the note under the base invocation.
+- `--add-dir <path>`: add directories to the agy workspace. Repeatable. Pass the repository root itself too, as `--add-dir "$root"` from the base invocation; see the note under it.
 - `--agent <name>`: select an agy-side agent. List with `agy agents`. Leave unset by default.
 - Never pass `--dangerously-skip-permissions` unless the user explicitly asked for it in this session.
 
@@ -86,6 +87,6 @@ Print-mode slash commands (verified on agy 1.2.4): `agy -p "/usage" --output-for
 Rules:
 
 - One `agy` invocation per handoff. No retries without being asked.
-- Run from the repository root the task concerns, and add it with `--add-dir "$PWD"`. Running from the root alone was enough on agy 1.2.5 and is not on 1.2.10.
+- Run from the repository root the task concerns, and add it with `--add-dir "$root"` (the git top level, or `$PWD` outside git). Running from the root alone was enough on agy 1.2.5 and is not on 1.2.10.
 - Escape the task text safely; prefer a single-quoted heredoc into a shell variable when the text contains quotes.
 - Known limit: rescue runs are capped at 8 minutes of agy time by `--print-timeout`. Report a timeout as a timeout; do not silently retry.

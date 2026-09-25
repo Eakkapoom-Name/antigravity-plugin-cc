@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `conversation_id` now says there is nothing to resume.
 - The rescue print timeout is 8m under the same 590000 ms Bash timeout, leaving
   room for agy's startup and shutdown so the common case ends in the foreground.
+- `/agy:review`, `/agy:adversarial-review`, `/agy:transfer`, and
+  `/agy:research` now give agy 8m instead of 9m, under a 9 minute spawn
+  timeout instead of 10. 9m plus up to 28 s of agy startup left about 22 s
+  under the 590000 ms Bash timeout, and the spawn timeout now ends before it,
+  so a hung agy returns a timeout instead of a backgrounded call. The
+  stop-review gate keeps 9m, which fits its 660 s hook limit.
 
 ### Fixed
 
@@ -34,8 +40,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to run tests one-shot and leave nothing running before it replies, stopping
   only what it started, by PID, and starting any process meant to stay up
   detached. This is an instruction to the model, not a guarantee.
-- Rescue runs pass `--add-dir "$PWD"`. On agy 1.2.10 a run without it works in
+- Rescue runs pass the repository root as `--add-dir`: the git top level, or
+  `$PWD` outside a git repository. On agy 1.2.10 a run without it works in
   agy's own scratch directory instead of the repository.
+- Every companion prompt, the stop-review gate included, now ends with the
+  same leave-nothing-running line as rescue, so a review, transfer, search,
+  or gate run is not held until its print timeout by a background task.
 - The rescue subagent now knows how to wait when Claude Code moves its Bash call
   to the background, instead of improvising.
 - A Claude Code auto mode denial on the rescue call is returned with its

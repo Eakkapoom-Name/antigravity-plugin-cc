@@ -4,7 +4,7 @@ argument-hint: "[--model <name>] [--effort <low|medium|high>] [--out <path>] <to
 allowed-tools: Bash(node:*)
 ---
 
-Run a structured research report through agy. Use a Bash `timeout` of `590000` ms; the companion caps agy at a 9 minute print timeout.
+Run a structured research report through agy. Use a Bash `timeout` of `590000` ms; the companion caps agy at an 8 minute print timeout.
 
 ```bash
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" research "$ARGUMENTS"

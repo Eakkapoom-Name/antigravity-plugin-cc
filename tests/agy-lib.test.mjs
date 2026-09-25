@@ -9,6 +9,8 @@ import { spawnSync } from "node:child_process";
 import {
   buildArgs,
   buildStreamInput,
+  DEFAULT_PRINT_TIMEOUT,
+  DEFAULT_SPAWN_TIMEOUT_MS,
   deniedActions,
   denialConstraintPrompt,
   effortRejected,
@@ -543,4 +545,16 @@ test("runIsolated never passes --mode through", () => {
     return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
   });
   assert.equal(seen.mode, undefined);
+});
+
+// F95. A companion run under a 590000 ms Bash timeout needs agy's deadline
+// plus its startup (up to 28 s seen on 1.2.9) to fit well inside it: 9m left
+// 22 s, 8m leaves 82 s. The spawn timeout keeps its one minute over the print
+// timeout and now also ends under the Bash timeout, so a hung agy comes back
+// as a timeout failure instead of a backgrounded call.
+test("companion runs default to an 8m print timeout under a 9 minute spawn timeout", () => {
+  assert.equal(DEFAULT_PRINT_TIMEOUT, "8m");
+  assert.equal(DEFAULT_SPAWN_TIMEOUT_MS, 9 * 60 * 1000);
+  assert.ok(DEFAULT_SPAWN_TIMEOUT_MS < 590000);
+  assert.deepEqual(buildArgs({}).slice(-2), ["--print-timeout", "8m"]);
 });

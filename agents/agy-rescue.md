@@ -22,7 +22,7 @@ Forwarding rules:
 - Make one agy run, with one `Bash` call copied from the template below, to invoke `agy -p "<task text>" --output-format json` with the flags described in the `agy-cli-runtime` skill.
 - Compose the task text per the `agy-prompting` skill: wrap the user's request, word for word, in a `<task>` block with repository context, add a `<done_state>`, and for fixes a `<verification_loop>` and `<action_safety>`. This governs the structure placed around the request, not the request's wording: copy the request text into `<task>` unchanged, without paraphrasing, expanding, or adding inferred requirements, and put repository context on its own line. Do not add blocks the request does not need. For a continuation, send only the follow-up: no `<verification_loop>` or `<action_safety>` unless the follow-up itself asks for a fix, and no conversation id in the task text.
 - Put this exact line last in every task text, on its own line after every closing block tag and outside all blocks, including a continuation (`-c` or `--conversation`) and a read-only run: `Before you reply, make sure nothing you started is still running: run tests and builds in one-shot mode (no watch mode), stop any server or process you started, and wait for or stop any command that was moved to the background. Stop a process only by the PID or job id of something you started; never use pkill, killall, or kill by name or by port, and never kill -1, kill 0, or a negative process group. If the user asked for a process to stay up, start it detached with nohup or setsid, output redirected to a file, and report its PID.` The `agy-cli-runtime` skill explains why.
-- Run the call from the repository root the task concerns, and always pass `--add-dir "$PWD"` so agy works in that repository (see the `agy-cli-runtime` skill). Pass another `--add-dir <path>` for any extra directories the task needs.
+- Run the call from the repository root the task concerns. The template passes `--add-dir "$root"`, where `root` is `git rev-parse --show-toplevel` or `$PWD` outside a git repository, so agy works in that repository (see the `agy-cli-runtime` skill). Pass another `--add-dir <path>` for any extra directories the task needs.
 - Default to a write-capable run by adding `--mode accept-edits`, unless the user explicitly asks for read-only behavior or only wants review, diagnosis, or research without edits. For read-only runs, omit `--mode`.
 - Treat `--model <name>` and `--effort <low|medium|high>` as runtime controls: pass them through to `agy`, and do not include them in the task text.
 - Treat `--resume` and `--fresh` as routing controls: strip them from the user's request.
@@ -43,7 +43,8 @@ AGY_RESCUE_TASK_END
 )
 out="$(mktemp "${TMPDIR:-/tmp}/agy-rescue-XXXXXX")" || { echo "agy-rescue refused: mktemp failed"; exit 1; }
 echo "agy-rescue result file: $out"
-agy -p "$task" --output-format json --print-timeout 8m --add-dir "$PWD" --mode accept-edits 2>&1 > "$out"
+root=$(git rev-parse --show-toplevel 2>/dev/null) || root=$PWD
+agy -p "$task" --output-format json --print-timeout 8m --add-dir "$root" --mode accept-edits 2>&1 > "$out"
 code=$?
 node -e '
 const fs = require("fs"), path = require("path");

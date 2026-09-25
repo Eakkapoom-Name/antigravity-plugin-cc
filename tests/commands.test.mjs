@@ -280,9 +280,10 @@ test("rescue command treats denied actions as a failed run", () => {
 // writes land there. The repo has to be added explicitly, by absolute path.
 test("rescue agent adds the repository root as the agy workspace", () => {
   const agent = read("agents/agy-rescue.md");
-  assert.match(agent, /--add-dir "\$PWD"/);
+  assert.match(agent, /--add-dir "\$root"/);
+  assert.match(agent, /root=\$\(git rev-parse --show-toplevel 2>\/dev\/null\) \|\| root=\$PWD/);
   const runtime = read("skills/agy-cli-runtime/SKILL.md");
-  assert.match(runtime, /--add-dir "\$PWD"/);
+  assert.match(runtime, /--add-dir "\$root"/);
   assert.match(runtime, /scratch/);
 });
 
@@ -377,24 +378,28 @@ case "$STUB_MODE" in
   error) printf '%s\\n' '{"conversation_id":"","status":"ERROR","response":"","error":"bad model"}'; exit 1 ;;
   nojson) echo "not json" ;;
   symlink) out="$(readlink /proc/$$/fd/1)"; rm -f "$out"; ln -s /etc/hostname "$out" ;;
+  args) printf '%s\n' "$@" > "$STUB_ARGS"; printf '%s\n' '{"conversation_id":"c-1","status":"SUCCESS","response":"ok"}' ;;
 esac
 `;
 
 // Runs the template with the stub first on PATH (or no agy at all) and returns
 // the summary parsed from the last AGY_RESCUE_SUMMARY line of its output.
-function runTemplate(mode, taskText, { withAgy = true } = {}) {
+// `setup` may prepare the temp dir and return a subdirectory to run from.
+function runTemplate(mode, taskText, { withAgy = true, setup } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-test-"));
   try {
     const bin = path.join(dir, "bin");
     fs.mkdirSync(bin);
+    const cwd = setup ? setup(dir) : dir;
+    const argsFile = path.join(dir, "agy-args");
     if (withAgy) fs.writeFileSync(path.join(bin, "agy"), STUB_AGY, { mode: 0o755 });
     // Keep node and the coreutils reachable while hiding any real agy.
     const nodeDir = path.dirname(process.execPath);
     const script = rescueTemplate().replace("<task text>", taskText);
     const run = spawnSync("bash", ["-c", script], {
-      cwd: dir,
+      cwd,
       encoding: "utf8",
-      env: { ...process.env, PATH: [bin, nodeDir, "/usr/bin", "/bin"].join(path.delimiter), STUB_MODE: mode, TMPDIR: dir }
+      env: { ...process.env, PATH: [bin, nodeDir, "/usr/bin", "/bin"].join(path.delimiter), STUB_MODE: mode, STUB_ARGS: argsFile, TMPDIR: dir }
     });
     const lines = run.stdout.trim().split("\n");
     const last = lines[lines.length - 1];
@@ -402,7 +407,9 @@ function runTemplate(mode, taskText, { withAgy = true } = {}) {
     const summary = JSON.parse(last.slice("AGY_RESCUE_SUMMARY ".length));
     let fileText = null;
     try { fileText = fs.readFileSync(summary.result_file, "utf8"); } catch {}
-    return { run, summary, fileText, dir };
+    let args = null;
+    try { args = fs.readFileSync(argsFile, "utf8").split("\n"); } catch {}
+    return { run, summary, fileText, dir, args };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -453,6 +460,39 @@ test("rescue template reports non-JSON stdout as a null status", { skip: !HAS_BA
   const { summary, fileText } = runTemplate("nojson", "task");
   assert.equal(summary.status, null);
   assert.equal(fileText.trim(), "not json");
+});
+
+// F96. The workspace agy gets is the repository root, the same root the
+// companion uses, even when the subagent's shell sits in a subdirectory.
+// Outside a git repository the template falls back to the current directory.
+const HAS_GIT = spawnSync("git", ["--version"]).status === 0;
+
+function addDirOf(args) {
+  const at = args.indexOf("--add-dir");
+  assert.ok(at >= 0, `agy got no --add-dir: ${args.join(" ")}`);
+  return args[at + 1];
+}
+
+test("rescue template adds the git top level from a subdirectory", { skip: !HAS_BASH || !HAS_GIT }, () => {
+  let root;
+  const { run, args } = runTemplate("args", "task", {
+    setup: (dir) => {
+      root = path.join(dir, "repo");
+      fs.mkdirSync(path.join(root, "sub"), { recursive: true });
+      assert.equal(spawnSync("git", ["init", "-q", root]).status, 0);
+      root = fs.realpathSync(root);
+      return path.join(root, "sub");
+    }
+  });
+  assert.equal(addDirOf(args), root);
+  assert.doesNotMatch(run.stdout, /fatal:/);
+});
+
+test("rescue template falls back to the current directory outside git", { skip: !HAS_BASH }, () => {
+  const { run, args, dir } = runTemplate("args", "task");
+  assert.equal(path.resolve(addDirOf(args)), path.resolve(dir));
+  // git's "not a git repository" error must not leak into the tool output.
+  assert.doesNotMatch(run.stdout, /fatal:/);
 });
 
 // F22. The setup report now carries the user's agy permission mode, which is

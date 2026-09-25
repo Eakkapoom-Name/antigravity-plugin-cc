@@ -5,8 +5,8 @@ import path from "node:path";
 
 import { commandAvailable, runCommand } from "./process.mjs";
 
-export const DEFAULT_PRINT_TIMEOUT = "9m";
-export const DEFAULT_SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_PRINT_TIMEOUT = "8m";
+export const DEFAULT_SPAWN_TIMEOUT_MS = 9 * 60 * 1000;
 
 // argv is capped (2097152 bytes on the machine this was measured on), and a
 // branch diff passed as `agy -p "<diff>"` blows past it and fails opaquely.

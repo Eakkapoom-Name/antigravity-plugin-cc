@@ -536,7 +536,7 @@ test("research renders the report template, runs isolated, and writes --out only
     assert.equal(out.ok, true);
     assert.match(calls[0].prompt, /rust async runtimes/);
     assert.match(calls[0].prompt, /Sources/);
-    assert.equal(calls[0].options.printTimeout, "9m");
+    assert.equal(calls[0].options.printTimeout, "8m");
     assert.equal(calls[0].options.effort, "high");
     assert.ok(calls[0].options.cwd.startsWith(os.tmpdir()));
     assert.ok(!JSON.stringify(calls[0].options).includes(root), "the workspace root reached agy");

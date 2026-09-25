@@ -34,7 +34,15 @@ send, per command:
   asks agy to read it back. The gate on/off/status form of the same command
   sends nothing to agy at all.
 - The stop-review gate: the previous Claude turn, and whatever agy reads in the
-  repository to check it.
+  repository to check it. The older in-repository `.claude/agy.local.md` gate
+  flag is honoured only when git reports it untracked or ignored and it is
+  not reached through a symlink; one committed to the repository (directly,
+  through a committed `.claude` symlink or submodule, or under a case
+  variant of the path) cannot turn the gate on for someone who clones it,
+  and when git refuses to answer for the repository the file is not
+  honoured. Residual: with no `.git` at the workspace root (a tarball or zip
+  download) or no git installed, there is nothing to ask, and the file is
+  still honoured.
 
 ## Guards
 

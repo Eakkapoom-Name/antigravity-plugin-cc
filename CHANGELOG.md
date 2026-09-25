@@ -103,6 +103,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rescue runs pass the repository root as `--add-dir`: the git top level, or
   `$PWD` outside a git repository. On agy 1.2.10 a run without it works in
   agy's own scratch directory instead of the repository.
+- The Stop-review gate's legacy `.claude/agy.local.md` flag is honoured only
+  when git reports it untracked or ignored, instead of unconditionally
+  whenever no state file exists yet. A copy of that file committed to the
+  repository could otherwise turn the gate on, unreviewed, for anyone who
+  cloned it. The check covers a committed `.claude` symlink or gitlink and
+  case variants of the path (`.CLAUDE/agy.local.md`), ignores any GIT_*
+  variable in the environment, and the file is read only when it is the
+  workspace's own `.claude/agy.local.md`, not reached through a symlink. With
+  no `.git` at the workspace root (a tarball or zip download) or no git
+  installed, the file is still read the way it always was. Tradeoff: when git
+  refuses the repository (dubious ownership, a corrupt index), the legacy
+  file is not honoured, so a user relying on it loses the gate there until
+  `/agy:setup gate on` enables it through state.
 - Every companion prompt, the stop-review gate included, now ends with the
   same leave-nothing-running line as rescue, so a review, transfer, search,
   or gate run is not held until its print timeout by a background task.

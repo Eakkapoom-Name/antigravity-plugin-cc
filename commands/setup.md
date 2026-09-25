@@ -12,7 +12,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" gate "<on|off|status>"
 
 - The gate is a Stop hook that hands the previous Claude turn to a read-only agy review before the session is allowed to end. It is off by default and per workspace.
 - The flag is stored outside the repository, keyed by a hash of the workspace root, so it is no longer a file you can accidentally commit. The script reports the exact `stateFile` it wrote.
-- A gate enabled under the old `.claude/agy.local.md` file is still honoured until you set it through this command; after that, the stored value wins.
+- A gate enabled under the old `.claude/agy.local.md` file is still honoured until you set it through this command, but only when that file is a plain local file git does not track (a committed or symlinked copy is ignored); after that, the stored value wins.
 - `gate off`: turn the gate off for this workspace.
 - `gate on`: warn the user that ending a turn can now take up to the agy review round-trip, and that the review only blocks when the previous turn made code changes with unresolved issues.
 - `gate status` (or bare `gate`): report `enabled`, the `workspace` it applies to, and the `stateFile` it read.

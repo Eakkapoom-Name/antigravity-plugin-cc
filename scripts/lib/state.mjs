@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 
 import { resolveWorkspaceRoot } from "./workspace.mjs";
+import { runCommand } from "./process.mjs";
 
 const STATE_VERSION = 1;
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
@@ -12,9 +13,17 @@ export const PLUGIN_NAMESPACE = "agy-plugin-cc";
 const FALLBACK_STATE_ROOT = path.join(os.tmpdir(), PLUGIN_NAMESPACE);
 const STATE_FILE_NAME = "state.json";
 
-// Where the gate flag used to live, inside the project. Still read, so a user
-// who enabled the gate before this release does not silently lose it.
+// Where the gate flag used to live, inside the project. Still read (when it
+// is not tracked by git, see `legacyGateIsTracked` below), so a user who
+// enabled the gate locally before this release does not silently lose it.
 export const LEGACY_SETTINGS_FILE = path.join(".claude", "agy.local.md");
+
+// Index paths are always `/`-separated, even on Windows, where
+// `LEGACY_SETTINGS_FILE` above is `.claude\agy.local.md`; comparing against
+// that backslashed form would never match, and the tracked file would be
+// misread as untracked.
+const LEGACY_SETTINGS_INDEX_PATH = LEGACY_SETTINGS_FILE.split(path.sep).join("/").toLowerCase();
+const LEGACY_SETTINGS_DIR_INDEX_PATH = ".claude";
 
 export function defaultState() {
   return { version: STATE_VERSION, config: { stopReviewGate: false } };
@@ -80,10 +89,83 @@ export function saveState(cwd, state) {
   return file;
 }
 
+// A committed copy of the legacy file would silently turn the gate on for
+// anyone who clones the repository, so it is honoured only when git reports
+// it untracked (or ignored). Returns true when the file must not be honoured.
+//
+// Asking about the file alone is not enough: a repository can commit
+// `.claude` itself as a symlink (mode 120000) or a gitlink (mode 160000),
+// and on a case-insensitive filesystem `.CLAUDE/agy.local.md` or
+// `.claude/AGY.local.md` is the same file. So every index entry under a
+// case-insensitive `.claude` is listed, and the file counts as tracked when
+// any entry is `.claude` itself (any mode) or the legacy file, compared
+// case-insensitively. A tracked sibling such as `.claude/settings.json`
+// does not count.
+//
+// Only a clean git answer decides. With no `.git` at the workspace root (a
+// tarball or zip download) or no git on PATH (an ENOENT spawn error) there
+// is nothing to ask, and the file is read the way it always was. Any other
+// failure with a `.git` present (git refusing the repository for dubious
+// ownership, a corrupt index) means git could not vouch for the file, so it
+// is not honoured. Every GIT_* variable is dropped from the environment so
+// an ambient GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE cannot point the
+// check at another repository's index.
+function legacyGateIsTracked(workspaceRoot) {
+  if (!fs.existsSync(path.join(workspaceRoot, ".git"))) {
+    return false;
+  }
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!/^GIT_/i.test(key)) {
+      env[key] = value;
+    }
+  }
+  const result = runCommand(
+    "git",
+    ["ls-files", "-z", "--stage", "--", `:(icase)${LEGACY_SETTINGS_DIR_INDEX_PATH}`],
+    { cwd: workspaceRoot, encoding: "utf8", env }
+  );
+  if (result.error) {
+    return result.error.code !== "ENOENT";
+  }
+  if (result.status !== 0) {
+    return true;
+  }
+  // `-z --stage` entries are `<mode> <object> <stage>\t<path>`, NUL-ended.
+  return String(result.stdout ?? "")
+    .split("\0")
+    .filter(Boolean)
+    .some((entry) => {
+      const tab = entry.indexOf("\t");
+      const entryPath = (tab === -1 ? entry : entry.slice(tab + 1)).toLowerCase();
+      return entryPath === LEGACY_SETTINGS_DIR_INDEX_PATH || entryPath === LEGACY_SETTINGS_INDEX_PATH;
+    });
+}
+
+// The legacy file is honoured only as the workspace's own
+// `.claude/agy.local.md`: a symlinked `.claude` or a symlinked file would
+// read content from somewhere git's answer about this path does not cover.
+function legacyGateFileIsDirect(workspaceRoot, file) {
+  try {
+    return fs.realpathSync.native(file) === path.join(fs.realpathSync.native(workspaceRoot), LEGACY_SETTINGS_FILE);
+  } catch {
+    return false;
+  }
+}
+
 // The pre-0.7 format: `stop_review_gate: true` in the frontmatter of a file
-// committed inside the project.
+// living inside the project, honoured only when that file is reached
+// directly and is not tracked by git (see `legacyGateFileIsDirect` and
+// `legacyGateIsTracked`).
 export function readLegacyGate(cwd) {
-  const file = path.join(resolveWorkspaceRoot(cwd), LEGACY_SETTINGS_FILE);
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const file = path.join(workspaceRoot, LEGACY_SETTINGS_FILE);
+  if (!legacyGateFileIsDirect(workspaceRoot, file)) {
+    return null;
+  }
+  if (legacyGateIsTracked(workspaceRoot)) {
+    return null;
+  }
   let raw;
   try {
     raw = fs.readFileSync(file, "utf8");

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 
 import {
   defaultState,
@@ -167,7 +168,7 @@ test("corrupt state falls back to the default rather than throwing", () => {
 
 test("a gate enabled under the old in-repository file still works", () => {
   withPluginData(() => {
-    const root = scratchRepo();
+    const root = scratchGitRepo();
     fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
     fs.writeFileSync(
       path.join(root, ".claude", "agy.local.md"),
@@ -193,7 +194,7 @@ test("stored state wins over the legacy file once it exists", () => {
 
 test("a legacy file without the flag, or without frontmatter, reads as unset", () => {
   withPluginData(() => {
-    const root = scratchRepo();
+    const root = scratchGitRepo();
     fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
     const file = path.join(root, ".claude", "agy.local.md");
 
@@ -205,6 +206,235 @@ test("a legacy file without the flag, or without frontmatter, reads as unset", (
 
     fs.writeFileSync(file, "---\nstop_review_gate: false\n---\n");
     assert.equal(readLegacyGate(root), false);
+  });
+});
+
+// A real repository, unlike `scratchRepo()`'s bare `.git` directory: git
+// treats an empty `.git` folder as "not a git repository" (exit 128), and
+// with a `.git` present any such refusal means the legacy file is not
+// honoured, so every legacy-file test that expects it read needs a `.git`
+// git itself recognizes.
+function scratchGitRepo() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-legacy-git-"));
+  scratchDirs.push(root);
+  spawnSync("git", ["init", "-q", "."], { cwd: root });
+  spawnSync("git", ["config", "user.email", "t@e.x"], { cwd: root });
+  spawnSync("git", ["config", "user.name", "t"], { cwd: root });
+  fs.writeFileSync(path.join(root, "a.txt"), "one\n");
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  spawnSync("git", ["commit", "-qm", "base"], { cwd: root });
+  return root;
+}
+
+function writeLegacyGateFile(root) {
+  fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, ".claude", "agy.local.md"),
+    "---\nstop_review_gate: true\n---\n\nLocal settings.\n"
+  );
+}
+
+// F116. A `.claude/agy.local.md` committed to the repository used to turn
+// the gate on for anyone who cloned it. Only an untracked (local-only) copy
+// is honoured now.
+test("a legacy gate file committed to the repository is ignored", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    writeLegacyGateFile(root);
+    spawnSync("git", ["add", "-A"], { cwd: root });
+    spawnSync("git", ["commit", "-qm", "commit the legacy gate file"], { cwd: root });
+    assert.equal(readLegacyGate(root), null);
+    assert.equal(gateEnabled(root), false, "a committed legacy file silently enabled the gate");
+  });
+});
+
+test("an untracked legacy gate file in a real git repository still works", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    writeLegacyGateFile(root);
+    // Deliberately not `git add`ed: the file exists locally but git has never
+    // been told to track it.
+    assert.equal(readLegacyGate(root), true);
+    assert.equal(gateEnabled(root), true, "an untracked legacy file was ignored");
+  });
+});
+
+test("a legacy gate file outside any git repository is unaffected by the tracked check", () => {
+  withPluginData(() => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-legacy-nogit-"));
+    scratchDirs.push(root);
+    writeLegacyGateFile(root);
+    assert.equal(readLegacyGate(root), true);
+    assert.equal(gateEnabled(root), true, "a legacy file outside a git repository was ignored");
+  });
+});
+
+function git(root, ...args) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout;
+}
+
+// Runs `run` with the given environment overrides, restoring every key after.
+function withEnv(overrides, run) {
+  const previous = {};
+  for (const key of Object.keys(overrides)) {
+    previous[key] = process.env[key];
+    process.env[key] = overrides[key];
+  }
+  try {
+    return run();
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+// F116 follow-up. `git ls-files --error-unmatch -- .claude/agy.local.md`
+// exits 1 when `.claude` itself is what the repository commits (a symlink,
+// mode 120000, or a gitlink, mode 160000), while reading the file follows
+// the link: the committed repository still turned the gate on.
+test("a legacy gate file reached through a committed .claude symlink is ignored", (t) => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    fs.mkdirSync(path.join(root, "cfg"));
+    fs.writeFileSync(path.join(root, "cfg", "agy.local.md"), "---\nstop_review_gate: true\n---\n");
+    try {
+      fs.symlinkSync("cfg", path.join(root, ".claude"), "dir");
+    } catch {
+      t.skip("symlinks are not available here");
+      return;
+    }
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "commit a .claude symlink");
+    assert.match(git(root, "ls-files", "--stage", "--", ".claude"), /^120000 /);
+    assert.equal(readLegacyGate(root), null);
+    assert.equal(gateEnabled(root), false, "a committed .claude symlink enabled the gate");
+  });
+});
+
+// The realpath guard on its own: an untracked symlink is not something git
+// can vouch for either way, and the file it reaches is not the workspace's
+// own `.claude/agy.local.md`.
+test("a legacy gate file reached through any symlink is ignored, even untracked or outside git", (t) => {
+  withPluginData(() => {
+    for (const root of [scratchGitRepo(), fs.mkdtempSync(path.join(os.tmpdir(), "agy-legacy-nogit-"))]) {
+      scratchDirs.push(root);
+      const target = fs.mkdtempSync(path.join(os.tmpdir(), "agy-legacy-target-"));
+      scratchDirs.push(target);
+      fs.writeFileSync(path.join(target, "agy.local.md"), "---\nstop_review_gate: true\n---\n");
+      try {
+        fs.symlinkSync(target, path.join(root, ".claude"), "dir");
+      } catch {
+        t.skip("symlinks are not available here");
+        return;
+      }
+      assert.equal(readLegacyGate(root), null, `a symlinked .claude was honoured in ${root}`);
+      fs.rmSync(path.join(root, ".claude"));
+      fs.mkdirSync(path.join(root, ".claude"));
+      fs.symlinkSync(path.join(target, "agy.local.md"), path.join(root, ".claude", "agy.local.md"));
+      assert.equal(readLegacyGate(root), null, `a symlinked agy.local.md was honoured in ${root}`);
+    }
+  });
+});
+
+test("a legacy gate file under a committed .claude gitlink is ignored", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    writeLegacyGateFile(root);
+    const head = git(root, "rev-parse", "HEAD").trim();
+    git(root, "update-index", "--add", "--cacheinfo", `160000,${head},.claude`);
+    git(root, "commit", "-qm", "commit a .claude gitlink");
+    const exact = spawnSync("git", ["ls-files", "--error-unmatch", "--", ".claude/agy.local.md"], { cwd: root });
+    assert.notEqual(exact.status, 0, "the fixture no longer reproduces the gitlink bypass");
+    assert.equal(readLegacyGate(root), null);
+    assert.equal(gateEnabled(root), false, "a committed .claude gitlink enabled the gate");
+  });
+});
+
+// On a case-insensitive filesystem a committed `.CLAUDE/agy.local.md` or
+// `.claude/AGY.local.md` is the same file as `.claude/agy.local.md`. The
+// index comparison ignores case everywhere, so this is checked on Linux too,
+// where the two happen to be separate files.
+test("a case-variant legacy gate path tracked by git is treated as tracked", () => {
+  for (const tracked of [path.join(".CLAUDE", "agy.local.md"), path.join(".claude", "AGY.local.md")]) {
+    withPluginData(() => {
+      const root = scratchGitRepo();
+      fs.mkdirSync(path.join(root, path.dirname(tracked)), { recursive: true });
+      fs.writeFileSync(path.join(root, tracked), "---\nstop_review_gate: true\n---\n");
+      git(root, "add", "-A");
+      git(root, "commit", "-qm", "commit a case-variant legacy file");
+      writeLegacyGateFile(root);
+      assert.equal(readLegacyGate(root), null, `a tracked ${tracked} did not count as tracked`);
+    });
+  }
+});
+
+// A tracked sibling under `.claude` (a shared settings.json) is not the
+// legacy file and must not switch off a legitimate local gate.
+test("a tracked .claude/settings.json does not disable an untracked legacy gate", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    fs.mkdirSync(path.join(root, ".claude"));
+    fs.writeFileSync(path.join(root, ".claude", "settings.json"), "{}\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-qm", "commit shared settings");
+    writeLegacyGateFile(root);
+    assert.equal(readLegacyGate(root), true);
+  });
+});
+
+// With a `.git` present, a git that refuses the repository (a corrupt index
+// here; dubious ownership does the same) cannot say the file is untracked,
+// so the file is not honoured.
+test("a legacy gate file is not honoured when git refuses the repository", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    writeLegacyGateFile(root);
+    fs.writeFileSync(path.join(root, ".git", "index"), "garbage\n");
+    const probe = spawnSync("git", ["ls-files"], { cwd: root });
+    assert.notEqual(probe.status, 0, "the corrupt index fixture no longer makes git fail");
+    assert.equal(readLegacyGate(root), null);
+    assert.equal(gateEnabled(root), false, "a legacy file was honoured although git refused the repository");
+  });
+});
+
+// An ambient GIT_DIR (or GIT_WORK_TREE, GIT_INDEX_FILE) would point the check
+// at some other repository's index, where the file may well be untracked.
+test("a stray GIT_DIR in the environment does not redirect the tracked check", () => {
+  withPluginData(() => {
+    const committed = scratchGitRepo();
+    writeLegacyGateFile(committed);
+    git(committed, "add", "-A");
+    git(committed, "commit", "-qm", "commit the legacy gate file");
+    const other = scratchGitRepo();
+    withEnv({ GIT_DIR: path.join(other, ".git"), GIT_WORK_TREE: other }, () => {
+      assert.equal(readLegacyGate(committed), null, "GIT_DIR made a committed legacy file look untracked");
+    });
+    const local = scratchGitRepo();
+    writeLegacyGateFile(local);
+    withEnv({ GIT_DIR: path.join(committed, ".git"), GIT_WORK_TREE: committed }, () => {
+      assert.equal(readLegacyGate(local), true, "GIT_DIR made an untracked legacy file look tracked");
+    });
+  });
+});
+
+// The documented fallback: with git not installed there is nothing to ask,
+// and the legacy file is read the way it always was.
+test("a legacy gate file is still honoured when git is not installed", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    writeLegacyGateFile(root);
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), "agy-nopath-"));
+    scratchDirs.push(empty);
+    withEnv({ PATH: empty }, () => {
+      assert.equal(readLegacyGate(root), true);
+    });
   });
 });
 

@@ -83,15 +83,17 @@ export function parseReviewArguments(argument) {
 // injectable third parameter `runIsolated` itself already defines (defaulting
 // to the real `runPrompt`). Isolation is therefore not something a caller can
 // opt out of by injecting a runner: whatever `run` is, it only ever sees the
-// temp cwd `runIsolated` builds, never the repository path.
-export function review({ argument, adversarial, run = runPrompt, available = agyAvailable }) {
+// temp cwd `runIsolated` builds, never the repository path. `collect` is the
+// diff collector, injectable the same way so a test can hand in a diff shape
+// real git no longer produces once its format is pinned.
+export function review({ argument, adversarial, run = runPrompt, available = agyAvailable, collect = collectDiff }) {
   const cwd = workspace();
   if (!available()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
   }
 
   const { scope, focus, allowSecret } = parseReviewArguments(argument);
-  const collected = collectDiff(scope, cwd);
+  const collected = collect(scope, cwd);
   if (!collected.ok) {
     return { ok: false, error: collected.error, scope: collected.scope.label };
   }
@@ -115,6 +117,20 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
   // Blocking, not redacting: a redacted diff reviews differently, and the user
   // is one --allow-secret away when the hit is a fixture.
   const scan = scanForSecrets(collected.diff, { allow: allowSecret, diff: true });
+  // Fail closed on a diff the scanner could not read as one: every real
+  // `git diff` file section starts with a `diff --git` line, so a non-empty
+  // diff with none is some other shape (color escapes, an external driver's
+  // output) whose scan proves nothing. A section with no hunk (a binary,
+  // mode-only or rename-only change) still has that line and still passes.
+  if (scan.diffHeaders === 0) {
+    return {
+      ok: false,
+      failure: "diff-shape",
+      scope: collected.scope.label,
+      error:
+        "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git` header the secret scanner can read. Check your git config for diff settings that change its output format."
+    };
+  }
   if (scan.hits.length > 0) {
     return {
       ok: false,
@@ -131,8 +147,9 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     DIFF: collected.diff
   });
 
-  // Isolated: agy gets a temp directory, not the repo, so a review does not
-  // see the project. The diff rides on stdin, so its size is irrelevant. A denial here
+  // Isolated: agy gets a temp directory, not the repo, as its cwd; whether it
+  // can still reach the project by absolute path is up to agy's own
+  // toolPermission setting. The diff rides on stdin, so its size is irrelevant. A denial here
   // is worth one resume: the diff is already in the prompt.
   const out = runIsolated(
     prompt,

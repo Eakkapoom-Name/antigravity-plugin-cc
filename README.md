@@ -141,8 +141,10 @@ Examples:
 ```
 
 The review runs isolated: agy runs from a temp directory, not your
-repository, and receives the diff in the prompt (on stdin), so it never sees
-your files. If the diff trips the secret scanner, the run stops and reports
+repository, and receives the diff in the prompt (on stdin). That is a
+working-directory change, not a sandbox: whether agy can still reach paths
+outside that directory depends on agy's own `toolPermission` setting (under
+`always-proceed` it can read a file by absolute path). If the diff trips the secret scanner, the run stops and reports
 what it found; pass `--allow-secret <regex>` (repeatable) to admit a known
 false positive.
 
@@ -168,8 +170,9 @@ Examples:
 ```
 
 Same isolation and secret scan as `/agy:review`: agy runs from a temp
-directory and receives the diff in the prompt (on stdin), so it never sees
-your files, and a diff that trips the secret scanner stops the run until
+directory and receives the diff in the prompt (on stdin), and whether it can
+reach paths outside that directory depends on agy's `toolPermission` setting.
+A diff that trips the secret scanner stops the run until
 you redact it or pass `--allow-secret <regex>` (repeatable) for a known false
 positive.
 
@@ -225,10 +228,11 @@ Examples:
 
 One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
 with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
-runs from an isolated temp directory, so it does not see your project. That is
-a working-directory change rather than a sandbox: agy's own
-`allowNonWorkspaceAccess` setting, with an absolute path in the prompt text,
-still reaches outside it. Nothing in this command's text is checked for a URL;
+runs from an isolated temp directory, not your project. That is a
+working-directory change rather than a sandbox: whether agy can reach paths
+outside it depends on agy's own `toolPermission` setting (`always-proceed`
+reads by absolute path), and agy's `allowNonWorkspaceAccess` setting, with an
+absolute path in the prompt text, still reaches outside it. Nothing in this command's text is checked for a URL;
 the local-network guard belongs to `/agy:search` alone.
 
 ### `/agy:search`

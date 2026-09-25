@@ -67,6 +67,57 @@ test("--allow-secret lets a known fixture through and the run is isolated", () =
   assert.match(calls[0].prompt, /whole evidence/);
 });
 
+// A diff whose shape the scanner does not recognize (no `diff --git` header
+// at all, here because every line starts with an ANSI color escape) cannot be
+// trusted as scanned, so it never reaches agy. The other shapes below carry a
+// `diff --git` header but no hunk, and still go through.
+function collected(diff) {
+  return () => ({ ok: true, scope: { label: "working tree against HEAD" }, diff, error: null, empty: diff.trim().length === 0 });
+}
+
+function reviewWith(diff, adversarial = false) {
+  const calls = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-companion-"));
+  const out = withWorkspace(dir, () =>
+    review({ argument: "", adversarial, run: fakeRun(calls), available: () => true, collect: collected(diff) })
+  );
+  return { out, calls };
+}
+
+test("a diff of unrecognized shape is refused, not sent unscanned", () => {
+  const esc = "\x1b";
+  const colored = [
+    `${esc}[1mdiff --git a/a.txt b/a.txt${esc}[m`,
+    `${esc}[1mindex aaa..bbb 100644${esc}[m`,
+    `${esc}[1m--- a/a.txt${esc}[m`,
+    `${esc}[1m+++ b/a.txt${esc}[m`,
+    `${esc}[36m@@ -1 +1,2 @@${esc}[m`,
+    " one",
+    `${esc}[32m+two${esc}[m`,
+    ""
+  ].join("\n");
+  for (const adversarial of [false, true]) {
+    const { out, calls } = reviewWith(colored, adversarial);
+    assert.equal(calls.length, 0, "agy ran on an unrecognized diff");
+    assert.equal(out.ok, false);
+    assert.equal(out.failure, "diff-shape");
+    assert.match(out.error, /diff shape not recognized, refusing to send it unscanned/);
+  }
+});
+
+test("binary-only, mode-only and rename-only diffs still go through", () => {
+  const shapes = [
+    ["diff --git a/b.bin b/b.bin", "index 1111111..2222222 100644", "Binary files a/b.bin and b/b.bin differ", ""],
+    ["diff --git a/run.sh b/run.sh", "old mode 100644", "new mode 100755", ""],
+    ["diff --git a/old.txt b/new.txt", "similarity index 100%", "rename from old.txt", "rename to new.txt", ""]
+  ];
+  for (const lines of shapes) {
+    const { out, calls } = reviewWith(lines.join("\n"));
+    assert.equal(out.ok, true, JSON.stringify(out));
+    assert.equal(calls.length, 1, lines[0]);
+  }
+});
+
 function scratchBrief(content) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-brief-"));
   const file = path.join(dir, "brief.md");

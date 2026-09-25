@@ -202,10 +202,11 @@ test("a hit in the second file of a multi-file diff reports that file and a real
 // same three characters a real file header starts with. Round 1 of this fix
 // treated any such line as a header by prefix alone, which reset the file
 // and line tracking mid-hunk and misattributed every later hit in that hunk.
-// This line must still be excluded from scanning (the existing, unchanged
-// contract: a line starting with `+++` is never scanned), but it must not be
-// mistaken for a header, and it must still advance the line count, since it
-// occupies a real line in the new file.
+// It must not be mistaken for a header, and it must still advance the line
+// count, since it occupies a real line in the new file. It was once also
+// excluded from scanning by prefix alone, which let a secret on an added line
+// starting with `++` leave unscanned: a `+++` line is only a file header
+// inside the header zone, so past it the line is content and is scanned.
 test("a +++-shaped content line mid-hunk does not reset file or line tracking", () => {
   const diff = [
     "diff --git a/notes.txt b/notes.txt",
@@ -224,9 +225,138 @@ test("a +++-shaped content line mid-hunk does not reset file or line tracking", 
   // Not reset to null/a bogus name: still the one real file in this diff.
   assert.equal(hits[0].file, "notes.txt");
   // New file line 1 and 2 are the two context lines; line 3 is the
-  // +++-shaped content line (still counted, just not scanned); line 4 is
-  // the secret. Not 1 (a reset newLine) and not the raw diff offset (9).
+  // +++-shaped content line; line 4 is the secret. Not 1 (a reset newLine)
+  // and not the raw diff offset (9).
   assert.equal(hits[0].line, 4);
+});
+
+test("an added content line starting with ++ is scanned, not skipped as a header", () => {
+  const diff = [
+    "diff --git a/notes.txt b/notes.txt",
+    "index aaa..bbb 100644",
+    "--- a/notes.txt",
+    "+++ b/notes.txt",
+    "@@ -1,1 +1,2 @@",
+    " line one",
+    `+++ counter; key = "${AWS}";`
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].kind, "aws-access-key-id");
+  assert.equal(hits[0].file, "notes.txt");
+  assert.equal(hits[0].line, 2);
+  assert.equal(hits[0].side, "added");
+});
+
+// Git's funcname heuristic copies a nearby line of the file into the text
+// after a hunk header's closing `@@`: in a `.env`, that is often the line
+// holding the key. That text leaves on stdin with the rest of the diff, so it
+// is scanned, and reported with side "hunk-header" at the hunk's new-file
+// start line, in the file the hunk belongs to.
+test("text after a hunk header's closing @@ is scanned, in and past the header zone", () => {
+  const secretLine = "AWS_SECRET_ACCESS_KEY=" + "k".repeat(40);
+  const diff = [
+    "diff --git a/.env b/.env",
+    "index aaa..bbb 100644",
+    "--- a/.env",
+    "+++ b/.env",
+    `@@ -6,4 +6,4 @@ ${secretLine}`,
+    " ",
+    "-plain=1",
+    "+plain=2",
+    `@@ -20,2 +20,2 @@ ${GH}`,
+    "-other=1",
+    "+other=2"
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.deepEqual(
+    hits.map(({ kind, line, file, side }) => ({ kind, line, file, side })),
+    [
+      { kind: "secret-assignment", line: 6, file: ".env", side: "hunk-header" },
+      { kind: "github-token", line: 20, file: ".env", side: "hunk-header" }
+    ]
+  );
+  assert.ok(!JSON.stringify(hits).includes("k".repeat(16)), "the value leaked into the report");
+});
+
+test("a hunk-header hit in a deleted file is named by the old path", () => {
+  const diff = [
+    "diff --git a/creds.txt b/creds.txt",
+    "deleted file mode 100644",
+    "index aaa..0000000",
+    "--- a/creds.txt",
+    "+++ /dev/null",
+    `@@ -1,2 +0,0 @@ key ${AWS}`,
+    "-one",
+    "-two"
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].file, "creds.txt");
+  assert.equal(hits[0].side, "hunk-header");
+});
+
+// A header-zone line that is none of the lines git emits there (a stray line
+// a diff driver or a hand edit put in) is still text that leaves, so it is
+// scanned, side "header", numbered by its offset into the raw diff.
+test("an unrecognized header-zone line is scanned as a safety net", () => {
+  const diff = [
+    "diff --git a/x b/x",
+    `stray ${AWS}`,
+    "index aaa..bbb 100644",
+    "--- a/x",
+    "+++ b/x",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b"
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].side, "header");
+  assert.equal(hits[0].line, 2);
+});
+
+// The recognized header lines stay unscanned, and none of them trips a
+// pattern: no false positive on an ordinary multi-file diff's headers.
+test("ordinary git header lines produce no hit", () => {
+  const diff = [
+    "diff --git a/.env b/.env",
+    "new file mode 100644",
+    "index 0000000..e69de29",
+    "--- /dev/null",
+    "+++ b/.env",
+    "@@ -0,0 +1 @@",
+    "+PLAIN=1",
+    "diff --git a/old_SECRET_TOKEN_name.txt b/new_SECRET_TOKEN_name.txt",
+    "similarity index 90%",
+    "rename from old_SECRET_TOKEN_name.txt",
+    "rename to new_SECRET_TOKEN_name.txt",
+    "index 1234567..89abcde 100644",
+    "--- a/old_SECRET_TOKEN_name.txt",
+    "+++ b/new_SECRET_TOKEN_name.txt",
+    "@@ -1,3 +1,3 @@ function main() {",
+    " a",
+    "-b",
+    "+c",
+    "diff --git a/bin.dat b/bin.dat",
+    "old mode 100644",
+    "new mode 100755",
+    "index 1111111..2222222",
+    "Binary files a/bin.dat and b/bin.dat differ",
+    "diff --git a/gone.txt b/gone.txt",
+    "deleted file mode 100644",
+    "index 3333333..0000000",
+    "--- a/gone.txt",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-bye",
+    "\\ No newline at end of file",
+    ""
+  ].join("\n");
+  const result = scanForSecrets(diff, { diff: true });
+  assert.deepEqual(result.hits, []);
+  assert.equal(result.diffHeaders, 4);
+  assert.equal(result.hunks, 3);
 });
 
 // `\ No newline at end of file` is a real line git emits mid-hunk whenever

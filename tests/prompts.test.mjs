@@ -162,18 +162,36 @@ test("the whisper output contract carries no stray Sources sentence", () => {
 // running. `run_command` is available in every print-mode run, isolated or
 // not, so every companion template ends with the same line the rescue agent
 // uses. The line is read from the agent file so the two cannot drift.
+//
+// The line's last sentence (start a process the user asked to keep up with
+// nohup or setsid) is dropped from the read-only templates: their untrusted
+// input (a diff, a web page, a search result, the previous turn) could claim
+// the user asked for exactly that. Templates where the user drives the task
+// keep the full line.
+const READ_ONLY_PROMPTS = ["review", "adversarial-review", "stop-review-gate", "search", "fetch"];
+
 test("every companion prompt ends with the rescue agent's leave-nothing-running line", () => {
   const agent = read("agents/agy-rescue.md");
   const match = agent.match(/`(Before you reply, make sure nothing you started is still running:[^`]*)`/);
   assert.ok(match, "agents/agy-rescue.md has no closing line to copy");
   const line = match[1];
+  const readOnlyLine = line.replace(/ If the user asked for a process to stay up.*$/, "");
+  assert.ok(readOnlyLine.length < line.length, "the agent line has no keep-it-up sentence to drop");
+  assert.ok(!/nohup|setsid/.test(readOnlyLine));
   const names = fs.readdirSync(path.dirname(promptPath("review")))
     .filter((name) => name.endsWith(".md"))
     .map((name) => name.slice(0, -3));
   assert.ok(names.length >= 9, `only ${names.length} prompt templates found`);
+  for (const name of READ_ONLY_PROMPTS) {
+    assert.ok(names.includes(name), `no prompts/${name}.md`);
+  }
   for (const name of names) {
+    const expected = READ_ONLY_PROMPTS.includes(name) ? readOnlyLine : line;
     const lines = readPrompt(name).trimEnd().split("\n");
-    assert.equal(lines[lines.length - 1], line, `prompts/${name}.md does not end with the closing line`);
+    assert.equal(lines[lines.length - 1], expected, `prompts/${name}.md does not end with the right closing line`);
     assert.equal(lines[lines.length - 2], "", `prompts/${name}.md does not set the closing line apart`);
+    if (READ_ONLY_PROMPTS.includes(name)) {
+      assert.ok(!/nohup|setsid/.test(readPrompt(name)), `read-only prompts/${name}.md still offers a detached start`);
+    }
   }
 });

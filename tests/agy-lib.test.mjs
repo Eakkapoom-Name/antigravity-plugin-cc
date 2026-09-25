@@ -32,6 +32,7 @@ import {
   runCommand
 } from "../scripts/lib/process.mjs";
 import { collectDiff, defaultBranch, resolveScope, untrackedFiles } from "../scripts/lib/git.mjs";
+import { scanForSecrets } from "../scripts/lib/secrets.mjs";
 import { parseReviewArguments, parseTransferArguments } from "../scripts/agy-companion.mjs";
 import { read, ROOT } from "./helpers.mjs";
 
@@ -211,10 +212,23 @@ function scratchGitRepo() {
   return dir;
 }
 
+// The scanner reads git's own unified format, so every diff pins that format
+// against the user's config: no color escapes, no external diff driver, no
+// textconv filter, the default a/ b/ prefixes, and the one-line submodule form
+// that still carries a `diff --git` header.
+const PINNED_DIFF_FLAGS = [
+  "--no-color",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--src-prefix=a/",
+  "--dst-prefix=b/",
+  "--submodule=short"
+];
+
 test("scope selection maps arguments onto the right git command", () => {
-  assert.deepEqual(resolveScope("staged", ROOT).args, ["diff", "--cached"]);
-  assert.deepEqual(resolveScope("", ROOT).args, ["diff", "HEAD"]);
-  assert.deepEqual(resolveScope("some-ref", ROOT).args, ["diff", "some-ref...HEAD"]);
+  assert.deepEqual(resolveScope("staged", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "--cached"]);
+  assert.deepEqual(resolveScope("", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "HEAD"]);
+  assert.deepEqual(resolveScope("some-ref", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "some-ref...HEAD"]);
   assert.equal(resolveScope("branch", ROOT).kind, "branch");
 });
 
@@ -226,6 +240,81 @@ test("a working tree change is collected as a real diff", () => {
   assert.equal(collected.empty, false);
   assert.match(collected.diff, /-one/);
   assert.match(collected.diff, /\+two/);
+});
+
+// Git's funcname heuristic copies the nearest earlier line that starts with a
+// letter into the hunk header, so a key line followed by blank lines ends up
+// after the closing `@@` of a hunk that edits a later line.
+test("a secret git copies into a hunk header from a real diff is caught", () => {
+  const dir = scratchGitRepo();
+  const secretLine = "AWS_SECRET_ACCESS_KEY=" + "k".repeat(40);
+  fs.writeFileSync(path.join(dir, ".env"), `${secretLine}\n\n\n\n\n\n\n\nplain=1\nother\n`);
+  spawnSync("git", ["add", "-A"], { cwd: dir });
+  spawnSync("git", ["commit", "-qm", "env"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, ".env"), `${secretLine}\n\n\n\n\n\n\n\nplain=2\nother\n`);
+  const collected = collectDiff("", dir);
+  assert.equal(collected.ok, true);
+  // The fixture, not the scanner, is wrong if this first check fails.
+  assert.match(collected.diff, /^@@ .* @@ AWS_SECRET_ACCESS_KEY=/m);
+  assert.ok(!/^[-+ ]AWS_SECRET_ACCESS_KEY=/m.test(collected.diff), "the key line is a content line; this test needs it only in the header");
+  const { hits } = scanForSecrets(collected.diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  assert.equal(hits[0].side, "hunk-header");
+  assert.equal(hits[0].file, ".env");
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+function scratchRepoWithSecretChange() {
+  const dir = scratchGitRepo();
+  fs.writeFileSync(path.join(dir, "a.txt"), `one\nkey = "${"AKIA" + "IOSFODNN7EXAMPLE"}"\n`);
+  return dir;
+}
+
+test("a repo configured for color.ui=always still yields a plain, scannable diff", () => {
+  const dir = scratchRepoWithSecretChange();
+  spawnSync("git", ["config", "color.ui", "always"], { cwd: dir });
+  spawnSync("git", ["config", "color.diff", "always"], { cwd: dir });
+  // Prefix config would name the file `w/a.txt`; the pinned prefixes keep it `a.txt`.
+  spawnSync("git", ["config", "diff.mnemonicPrefix", "true"], { cwd: dir });
+  const collected = collectDiff("", dir);
+  assert.equal(collected.ok, true);
+  assert.ok(!collected.diff.includes("\x1b"), "the diff carries ANSI escapes");
+  const scan = scanForSecrets(collected.diff, { diff: true });
+  assert.equal(scan.diffHeaders, 1);
+  assert.equal(scan.hits.length, 1, JSON.stringify(scan.hits));
+  assert.equal(scan.hits[0].file, "a.txt");
+  assert.equal(scan.hits[0].side, "added");
+});
+
+// With diff.suppressBlankEmpty a blank context line is printed as an empty
+// line, not a lone space, and the scanner would stop counting it.
+test("a repo with diff.suppressBlankEmpty still numbers hits by the real line", () => {
+  const dir = scratchGitRepo();
+  fs.writeFileSync(path.join(dir, "a.txt"), "one\n\nthree\n");
+  spawnSync("git", ["commit", "-qam", "blank"], { cwd: dir });
+  spawnSync("git", ["config", "diff.suppressBlankEmpty", "true"], { cwd: dir });
+  fs.writeFileSync(path.join(dir, "a.txt"), `one\n\nthree\nkey = "${"AKIA" + "IOSFODNN7EXAMPLE"}"\n`);
+  const collected = collectDiff("", dir);
+  const scan = scanForSecrets(collected.diff, { diff: true });
+  assert.equal(scan.hits.length, 1, JSON.stringify(scan.hits));
+  assert.equal(scan.hits[0].line, 4);
+});
+
+test("a repo with diff.external or a textconv filter still yields git's own diff", { skip: process.platform === "win32" }, () => {
+  const dir = scratchRepoWithSecretChange();
+  const script = path.join(dir, "..", `${path.basename(dir)}-driver.sh`);
+  scratchDirs.push(script);
+  fs.writeFileSync(script, "#!/bin/sh\necho nothing to see here\n", { mode: 0o755 });
+  spawnSync("git", ["config", "diff.external", script], { cwd: dir });
+  spawnSync("git", ["config", "diff.hide.textconv", script], { cwd: dir });
+  fs.writeFileSync(path.join(dir, ".gitattributes"), "a.txt diff=hide\n");
+  const collected = collectDiff("", dir);
+  assert.equal(collected.ok, true);
+  assert.ok(!collected.diff.includes("nothing to see here"), "an external driver or textconv shaped the diff");
+  const scan = scanForSecrets(collected.diff, { diff: true });
+  assert.equal(scan.diffHeaders, 1);
+  assert.equal(scan.hits.length, 1, JSON.stringify(scan.hits));
+  assert.equal(scan.hits[0].file, "a.txt");
 });
 
 test("a clean tree reports empty rather than inventing a review", () => {

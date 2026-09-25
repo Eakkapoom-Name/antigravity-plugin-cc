@@ -196,3 +196,46 @@ test("agy-prompting's done_state definition carries no review example the review
   );
 });
 
+
+// Isolation is a working-directory change, not a sandbox: under agy's
+// `always-proceed` toolPermission agy can read outside its temp directory by
+// absolute path, so no doc may promise it never sees the project's files.
+test("no doc claims an isolated run cannot see the project", () => {
+  for (const file of [
+    "README.md",
+    "SECURITY.md",
+    "commands/review.md",
+    "commands/adversarial-review.md",
+    "scripts/agy-companion.mjs"
+  ]) {
+    const text = read(file).replace(/\s*\/\/\s*/g, " ").replace(/\s+/g, " ");
+    assert.ok(
+      !/(?:never sees|does not see|cannot see) (?:your files|the project|your project)/i.test(text),
+      `${file} still claims an isolated agy run cannot see the project`
+    );
+  }
+  for (const file of ["README.md", "SECURITY.md", "commands/review.md", "commands/adversarial-review.md"]) {
+    assert.match(read(file), /toolPermission/, `${file} does not say reach outside the temp directory depends on toolPermission`);
+  }
+});
+
+// Every `side` a diff-mode hit can carry, and the shape refusal, must be
+// named in the command docs that render them.
+test("the review command docs explain every hit side and the diff-shape refusal", () => {
+  for (const file of ["commands/review.md", "commands/adversarial-review.md"]) {
+    const text = read(file);
+    for (const needle of ["`removed`", "`hunk-header`", "`header`", "`unrecognized`", 'failure: "diff-shape"']) {
+      assert.ok(text.includes(needle), `${file} does not explain ${needle}`);
+    }
+  }
+});
+
+// The scan covers hunk-header text and non-content lines too, and a diff of
+// unrecognized shape is refused; SECURITY.md must say so rather than claim
+// only content lines are scanned.
+test("SECURITY.md describes what the diff scan covers after the hunk-header and shape fixes", () => {
+  const security = read("SECURITY.md").replace(/\s+/g, " ");
+  assert.match(security, /hunk header/i);
+  assert.match(security, /--no-color/);
+  assert.match(security, /not recognized|unrecognized shape|shape it does not recognize/i);
+});

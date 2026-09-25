@@ -12,9 +12,11 @@ send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
   Not the rest of the repository: these run from an isolated temp directory,
-  so agy does not see your files. That is a working-directory change, not a
-  sandbox; with agy's own `allowNonWorkspaceAccess` setting on and an absolute
-  path in the text, agy can still reach outside that directory.
+  not your project. That is a working-directory change, not a sandbox:
+  whether agy can reach paths outside that directory depends on agy's own
+  `toolPermission` setting (under `always-proceed` it can read a file by
+  absolute path), and with agy's `allowNonWorkspaceAccess` setting on and an
+  absolute path in the text, agy can still reach outside it.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files.
 - `/agy:rescue`, `/agy:continue`: the task text, and whatever agy then reads
@@ -40,14 +42,23 @@ send, per command:
   credential shape (AWS key id, private key block, GitHub, Slack or Google
   tokens, bearer tokens, `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments,
   `scheme://user:password@host` URLs) blocks the run and names the line and
-  kind, never the value. Every line of a diff is scanned, removed and context
-  lines included, because the whole diff is what leaves.
+  kind, never the value. The whole diff is what leaves, so the whole diff is
+  scanned: added, removed and context lines, the text git copies from the file
+  into a hunk header after its closing `@@`, and any line that is not one of
+  git's own header lines. Only the `diff --git`, `---`/`+++`, hunk-header and
+  extended header lines (index, mode, rename, binary notice), which carry
+  paths and hashes, are not. Every diff is collected with its format pinned
+  against your git config (`--no-color --no-ext-diff --no-textconv`, default
+  `a/`/`b/` prefixes, `--submodule=short`), and a non-empty diff whose shape
+  is not recognized (no `diff --git` header at all) is refused rather than
+  sent unscanned.
   `--allow-secret <regex>` belongs to `/agy:review` and
   `/agy:adversarial-review`, where it admits a known fixture. `/agy:transfer`
   has no such flag: a blocked brief is resolved by editing the brief.
 - `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
-  `/agy:research` and `/agy:image` run agy from an isolated temp directory, so
-  agy does not see the project. Three other runs are not isolated this way.
+  `/agy:research` and `/agy:image` run agy from an isolated temp directory
+  rather than the project; whether agy can still reach paths outside it
+  depends on agy's `toolPermission` setting. Three other runs are not isolated this way.
   `/agy:quota` is read-only and sends no user text. `/agy:setup`'s readiness
   check writes a marker file into the actual workspace root for its read probe
   to read back, so it runs against the workspace, not an isolated directory.

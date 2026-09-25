@@ -35,7 +35,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves on stdin, so a key deleted by the change was leaving unseen. A hit
   on a removed line is reported at its old-file line number and named by the
   old path, and diff-mode `hits[]` entries carry `side` (`added`, `removed`
-  or `context`). `--allow-secret` remains the way past a known fixture.
+  or `context`; the hunk-header fix below adds `hunk-header`, `header` and
+  `unrecognized`). `--allow-secret` remains the way past a known fixture.
 
 - The rescue subagent writes agy's JSON to a temporary file
   (`${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, mode 0600, never deleted) and returns
@@ -192,6 +193,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<task>`/`<output_contract>`/`<grounding_rules>` form as `review.md`,
   instead of carrying its contract entirely in prose; its JSON schema
   contract is unchanged.
+- The review secret scan reads the text git copies after a hunk header's
+  closing `@@`. Git's function-name heuristic puts a nearby file line there,
+  in a `.env` often the line holding the key, and it left unscanned. A hit
+  carries `side: "hunk-header"` at the hunk's start line. An added line whose
+  own text starts with `++` is scanned too, instead of being skipped as a
+  file header, and a header-zone or unmarked line that is none of git's own
+  header lines is scanned as a safety net (`side: "header"` or
+  `"unrecognized"`, numbered by its offset into the raw diff).
+- Review diffs are collected with their format pinned against the user's git
+  config (`--no-color --no-ext-diff --no-textconv`, default `a/`/`b/`
+  prefixes, `--submodule=short`, and through `-c` color off and
+  `diff.suppressBlankEmpty` off, which otherwise shifted hit line numbers). With
+  `color.ui=always` every line started with an ANSI escape and the scan
+  found nothing; `diff.external` and textconv replaced the diff with free-form
+  output. `/agy:review` and `/agy:adversarial-review` now also refuse, with
+  `failure: "diff-shape"` and no agy call, a non-empty diff that has no
+  `diff --git` header the scanner can read. Binary, mode-only and
+  rename-only changes still go through.
+- The README, SECURITY.md and the review command docs no longer say an
+  isolated run never sees your files: agy runs from a temp directory, and
+  whether it can reach paths outside it depends on agy's own
+  `toolPermission` setting. SECURITY.md now says which diff lines the scan
+  covers.
+- The read-only prompt templates (review, adversarial review, the stop-review
+  gate, search, fetch) no longer tell agy to start a process the user asked
+  to keep up with nohup or setsid, since their untrusted input could claim
+  the user asked. They still tell it to leave nothing running. Templates
+  where the user drives the task keep the full line.
 
 ## [0.7.0] - 2026-09-18
 

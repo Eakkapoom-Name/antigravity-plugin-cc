@@ -6,8 +6,16 @@ import { runCommand } from "./process.mjs";
 // before.
 const MAX_DIFF_BUFFER = 64 * 1024 * 1024;
 
+// Color is also switched off through config, ahead of the subcommand, as a
+// second lock behind `--no-color` on the diff itself. `diff.suppressBlankEmpty`
+// has no command-line flag: set, it prints a blank context line as an empty
+// line instead of a lone space, and the scanner stops counting those lines.
 function git(args, cwd) {
-  return runCommand("git", args, { cwd, encoding: "utf8", maxBuffer: MAX_DIFF_BUFFER });
+  return runCommand("git", ["-c", "color.ui=never", "-c", "color.diff=never", "-c", "diff.suppressBlankEmpty=false", ...args], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: MAX_DIFF_BUFFER
+  });
 }
 
 export function defaultBranch(cwd) {
@@ -29,20 +37,36 @@ export function defaultBranch(cwd) {
   return "main";
 }
 
+// The secret scanner reads git's own unified format, and the user's git
+// config can change that format: `color.ui=always` puts an ANSI escape in
+// front of every line (the scanner then recognizes no line at all), and
+// `diff.external` or a textconv filter replaces the diff with a program's
+// free-form output. `diff.noprefix`/`diff.mnemonicPrefix` change the path
+// prefixes a hit is attributed by, and `diff.submodule=log` drops the
+// `diff --git` header for a submodule change. Every diff pins all of these.
+const PINNED_DIFF_FLAGS = [
+  "--no-color",
+  "--no-ext-diff",
+  "--no-textconv",
+  "--src-prefix=a/",
+  "--dst-prefix=b/",
+  "--submodule=short"
+];
+
 // `staged`, `branch`, a base ref, or the working tree. Returns the scope that
 // was actually used, so the caller can report it rather than assume.
 export function resolveScope(argument, cwd) {
   const scope = String(argument ?? "").trim();
   if (scope === "staged") {
-    return { kind: "staged", args: ["diff", "--cached"], label: "staged changes" };
+    return { kind: "staged", args: ["diff", ...PINNED_DIFF_FLAGS, "--cached"], label: "staged changes" };
   }
   if (!scope) {
-    return { kind: "working-tree", args: ["diff", "HEAD"], label: "working tree against HEAD" };
+    return { kind: "working-tree", args: ["diff", ...PINNED_DIFF_FLAGS, "HEAD"], label: "working tree against HEAD" };
   }
   const base = scope === "branch" ? defaultBranch(cwd) : scope;
   return {
     kind: "branch",
-    args: ["diff", `${base}...HEAD`],
+    args: ["diff", ...PINNED_DIFF_FLAGS, `${base}...HEAD`],
     label: `branch against ${base}`
   };
 }

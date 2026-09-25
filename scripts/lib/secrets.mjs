@@ -233,22 +233,83 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   // notice). `newLine` and `oldLine` come from each hunk's `@@ -a,b +c,d @@`
   // header and are then walked forward one line at a time: an added line
   // advances `newLine`, a removed line `oldLine`, a context line both,
-  // including a content line that happens to read `+++ ...` or `--- ...`
-  // (it still occupies a real line even though, per the existing, unchanged
-  // contract, a line starting with `+++` is never itself scanned; a `---`
-  // line past the header zone is content and is scanned, since `--` is a
-  // common line prefix, a CLI flag or an SQL comment). The
-  // `\ No newline at end of file` marker advances neither, being a note
-  // about the line just shown rather than a line of its own. Until a hunk
-  // header has actually been seen, there is no reliable line number to
-  // report; a hit in that state falls back to the raw line offset with no
-  // file, rather than reporting a number that looks right but is not.
-  const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+  // including a content line that happens to read `+++ ...` or `--- ...`.
+  // Past the header zone both of those are content and are scanned: a `+++`
+  // line is only a file header inside the zone, and an added line whose own
+  // text starts with `++` (a C increment, a Markdown diff snippet) renders
+  // the same way; `--` is a common line prefix too, a CLI flag or an SQL
+  // comment. The `\ No newline at end of file` marker advances neither,
+  // being a note about the line just shown rather than a line of its own.
+  // Until a hunk header has actually been seen, there is no reliable line
+  // number to report; a hit in that state falls back to the raw line offset
+  // with no file, rather than reporting a number that looks right but is not.
+  //
+  // Nothing that leaves goes unscanned. The text after a hunk header's
+  // closing `@@` is git's funcname heuristic at work: a line copied from the
+  // file near the hunk (in a `.env`, often the very line holding the key),
+  // so it is scanned and a hit is reported with side "hunk-header", at the
+  // hunk's new-file start line (the old-file start for a deleted file). A
+  // header-zone line that is none of the lines git emits there is scanned
+  // too, side "header", at its raw offset into the diff; so is any line past
+  // the zone that carries no `+`, `-`, space or `\` marker, side
+  // "unrecognized". The `diff --git`, `---`, `+++` and hunk-header lines
+  // themselves are not scanned, nor are the other extended header lines git
+  // writes (index, mode, rename, copy, similarity, binary notice): they carry
+  // paths and hashes, not file content.
+  //
+  // `diffHeaders` and `hunks` count the `diff --git` and hunk-header lines
+  // recognized, so a caller can refuse a diff whose shape was not recognized
+  // at all (color escapes in front of every line, an external diff driver's
+  // free-form output) instead of trusting a scan that found nothing to read.
+  const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
+  const GIT_HEADER_LINE =
+    /^(?:index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?|(?:old|new|deleted file|new file) mode [0-7]+|similarity index \d+%|dissimilarity index \d+%|(?:rename|copy) (?:from|to) .*|Binary files .* differ|GIT binary patch)$/;
   let currentFile = null;
   let oldFile = null;
   let newLine = null;
   let oldLine = null;
   let inHeaderZone = false;
+  let diffHeaders = 0;
+  let hunks = 0;
+
+  function scanText(line, text, location) {
+    if (allowed.some((pattern) => pattern.test(line))) {
+      return;
+    }
+    for (const { kind, regex, valueGroup } of PATTERNS) {
+      const match = text.match(regex);
+      if (!match) {
+        continue;
+      }
+      const value = valueGroup ? match[valueGroup] : match[0];
+      if (valueGroup && (PLACEHOLDER.test(value) || ENV_REFERENCE.test(value))) {
+        continue;
+      }
+      const hit = { line: location.line, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) };
+      if (diff) {
+        hit.file = location.file;
+        hit.side = location.side;
+      }
+      hits.push(hit);
+      return;
+    }
+  }
+
+  // Opens a hunk and scans the text git copied in after its closing `@@`.
+  function openHunk(line, hunkHeader) {
+    hunks += 1;
+    oldLine = Number(hunkHeader[1]) - 1;
+    newLine = Number(hunkHeader[2]) - 1;
+    const trailer = hunkHeader[3];
+    if (trailer.trim()) {
+      const newStart = Number(hunkHeader[2]);
+      scanText(line, trailer, {
+        line: newStart > 0 ? newStart : Number(hunkHeader[1]),
+        file: currentFile ?? oldFile,
+        side: "hunk-header"
+      });
+    }
+  }
 
   lines.forEach((line, index) => {
     let hitLine = index + 1;
@@ -257,6 +318,7 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
 
     if (diff) {
       if (line.startsWith("diff --git ")) {
+        diffHeaders += 1;
         inHeaderZone = true;
         currentFile = null;
         oldFile = null;
@@ -279,25 +341,29 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
         const hunkHeader = line.match(HUNK_HEADER);
         if (hunkHeader) {
           inHeaderZone = false;
-          oldLine = Number(hunkHeader[1]) - 1;
-          newLine = Number(hunkHeader[2]) - 1;
+          openHunk(line, hunkHeader);
+          return;
         }
-        // Any other line before the first `@@` (mode/rename/index lines, a
-        // binary-file notice) carries no line to advance or scan.
+        // The other lines git writes before the first `@@` (mode, rename,
+        // index lines, a binary-file notice) carry no line to advance and no
+        // file content. Anything else is scanned as a safety net.
+        if (!line || GIT_HEADER_LINE.test(line)) {
+          return;
+        }
+        scanText(line, line, { line: hitLine, file: currentFile ?? oldFile, side: "header" });
         return;
       }
 
       // Past the header zone: a further `@@` opens this file's next hunk.
       const hunkHeader = line.match(HUNK_HEADER);
       if (hunkHeader) {
-        oldLine = Number(hunkHeader[1]) - 1;
-        newLine = Number(hunkHeader[2]) - 1;
+        openHunk(line, hunkHeader);
         return;
       }
 
       // The leading marker says which file(s) the line occupies a line of.
-      // `\ No newline at end of file` starts with none of the three and so
-      // neither advances a counter nor is scanned.
+      // `\ No newline at end of file` neither advances a counter nor is
+      // scanned; a line with no marker at all is scanned at its raw offset.
       const tracked = newLine !== null;
       if (line.startsWith("+")) {
         side = "added";
@@ -309,11 +375,11 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
         side = "context";
         newLine = tracked ? newLine + 1 : null;
         oldLine = tracked ? oldLine + 1 : null;
-      } else {
+      } else if (!line || line.startsWith("\\")) {
         return;
-      }
-      if (line.startsWith("+++")) {
-        return; // counted above, never scanned: the existing contract
+      } else {
+        scanText(line, line, { line: hitLine, file: null, side: "unrecognized" });
+        return;
       }
       if (tracked) {
         hitLine = side === "removed" ? oldLine : newLine;
@@ -321,27 +387,8 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       }
     }
 
-    if (allowed.some((pattern) => pattern.test(line))) {
-      return;
-    }
-    for (const { kind, regex, valueGroup } of PATTERNS) {
-      const match = line.match(regex);
-      if (!match) {
-        continue;
-      }
-      const value = valueGroup ? match[valueGroup] : match[0];
-      if (valueGroup && (PLACEHOLDER.test(value) || ENV_REFERENCE.test(value))) {
-        continue;
-      }
-      const hit = { line: hitLine, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) };
-      if (diff) {
-        hit.file = hitFile;
-        hit.side = side;
-      }
-      hits.push(hit);
-      break;
-    }
+    scanText(line, line, { line: hitLine, file: hitFile, side });
   });
 
-  return { hits };
+  return diff ? { hits, diffHeaders, hunks } : { hits };
 }

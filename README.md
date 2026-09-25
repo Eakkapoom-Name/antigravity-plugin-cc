@@ -140,6 +140,12 @@ Examples:
 /agy:review branch pay extra attention to error handling
 ```
 
+The review runs isolated: agy runs from a temp directory, not your
+repository, and receives the diff in the prompt (on stdin), so it never sees
+your files. If the diff trips the secret scanner, the run stops and reports
+what it found; pass `--allow-secret <regex>` (repeatable) to admit a known
+false positive.
+
 This command is read-only and will not perform any changes.
 
 ### `/agy:adversarial-review`
@@ -160,6 +166,12 @@ Examples:
 /agy:adversarial-review
 /agy:adversarial-review --background question whether this caching design is safe
 ```
+
+Same isolation and secret scan as `/agy:review`: agy runs from a temp
+directory and receives the diff in the prompt (on stdin), so it never sees
+your files, and a diff that trips the secret scanner stops the run until
+you redact it or pass `--allow-secret <regex>` (repeatable) for a known false
+positive.
 
 This command is read-only. It does not fix code.
 

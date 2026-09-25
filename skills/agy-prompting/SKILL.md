@@ -23,8 +23,7 @@ Include the blocks the task needs; leave the rest out.
   line.
 - `<done_state>`: what finished looks like. agy does not infer it. For a fix:
   the change is made, and when a `<verification_loop>` names tests, they pass.
-  For a review: every hunk considered. For an image: the
-  file exists at the path the output contract named.
+  For an image: the file exists at the path the output contract named.
 - `<verification_loop>`: only when tests are relevant to the request: a fix or
   implementation in code that tests cover, or a request that asks for tests.
   Leave it out for docs, comments, config, and read-only runs. When it is
@@ -56,10 +55,10 @@ Include the blocks the task needs; leave the rest out.
 - Fix or implementation: `task`, `done_state`, `action_safety`, and
   `verification_loop` only when tests are relevant and a test command is
   known (see the block above).
-- Review: `task`, `output_contract`, `grounding_rules`. The review templates
-  carry this contract in prose today; they predate the tagged block form, so
-  read them for the substance, not as a worked example of the tags. New
-  templates use the tags directly.
+- Review: `task`, `output_contract`, `grounding_rules`. `prompts/review.md`
+  uses these tags. `prompts/adversarial-review.md` still carries the contract
+  in prose, so read it for the substance, not as a worked example of the tags.
+  New templates use the tags directly.
 - Research or search (`research`, `search`): `task`, `output_contract`,
   `grounding_rules`.
 - Fetch a single URL (`fetch`): `task`, `output_contract`. It renders one page

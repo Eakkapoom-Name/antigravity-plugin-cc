@@ -113,6 +113,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   command that runs Bash already did; a test now pins that for all of them.
 - The test suite removes the temp directories it creates. One `npm test` run
   left 39 `agy-*` directories behind in the system temp directory.
+- The README's `/agy:review` and `/agy:adversarial-review` sections now
+  document `--allow-secret` and the isolated temp directory the review runs
+  from; they had shown only the pre-0.7 examples.
+- `prompts/review.md` now carries the tagged `<task>`, `<output_contract>` and
+  `<grounding_rules>` blocks the newer prompt templates use, instead of prose
+  predating that form.
+- `prompts/whisper.md`'s `<task>` block now holds the question itself, not
+  just an instruction to answer a question sitting outside any tag.
+- `prompts/whisper.md`'s output contract no longer mentions a `Sources:` list;
+  whisper's row in `agy-prompting`'s block table carries no `grounding_rules`
+  to back that claim.
+- `SECURITY.md`'s Guards section names exactly which commands run agy from an
+  isolated temp directory, instead of generalizing to all read-only commands,
+  and names the runs that are not isolated (`/agy:quota`, `/agy:setup`'s
+  readiness check, which writes a marker file into the workspace root, and the
+  stop-review gate). It, the review command docs and the review code comment
+  no longer claim isolation means agy "cannot write into the project".
+- `agy-prompting`'s `<done_state>` definition no longer gives a review example
+  the Review row of "Which blocks, by task" does not list.
 
 ## [0.7.0] - 2026-09-18
 

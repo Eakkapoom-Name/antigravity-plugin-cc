@@ -45,8 +45,14 @@ send, per command:
   `--allow-secret <regex>` belongs to `/agy:review` and
   `/agy:adversarial-review`, where it admits a known fixture. `/agy:transfer`
   has no such flag: a blocked brief is resolved by editing the brief.
-- Read-only commands run agy in an isolated temp directory so they cannot
-  write into the project.
+- `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
+  `/agy:research` and `/agy:image` run agy from an isolated temp directory, so
+  agy does not see the project. Three other runs are not isolated this way.
+  `/agy:quota` is read-only and sends no user text. `/agy:setup`'s readiness
+  check writes a marker file into the actual workspace root for its read probe
+  to read back, so it runs against the workspace, not an isolated directory.
+  The stop-review gate runs agy with the repository as its cwd and as its
+  `--add-dir`, because it reviews the working tree itself.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:
   a URL given as the whole argument, and a URL-shaped word inside an ordinary

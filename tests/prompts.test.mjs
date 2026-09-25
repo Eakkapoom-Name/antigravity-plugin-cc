@@ -99,6 +99,33 @@ test("the image template carries all four blocks the SKILL.md row names", () => 
   assert.match(template, /NO_IMAGE_TOOL/);
 });
 
+// F61. review.md predated the tagged block form the newer templates use.
+test("the review template carries the block tags the newer templates use", () => {
+  const template = readPrompt("review");
+  for (const tag of ["task", "output_contract", "grounding_rules"]) {
+    assert.match(template, new RegExp(`<${tag}>`), `review template is missing <${tag}>`);
+  }
+  assert.deepEqual(placeholdersIn(template).sort(), ["DIFF", "FOCUS"]);
+});
+
+// F62. {{PROMPT}} sat outside any tag, after a bare "Question:" line, so the
+// <task> block held only the meta-instruction to answer it, not the question
+// itself.
+test("the whisper template's task block holds the question, not just meta-instruction", () => {
+  const template = readPrompt("whisper");
+  const match = template.match(/<task>([\s\S]*?)<\/task>/);
+  assert.ok(match, "whisper template has no <task> block");
+  assert.match(match[1], /\{\{PROMPT\}\}/, "whisper's <task> block does not hold {{PROMPT}}");
+});
+
+// F63. SKILL.md's block definitions place source-citation language in
+// grounding_rules, which whisper's row does not list, so its output contract
+// should not carry a Sources: sentence either.
+test("the whisper output contract carries no stray Sources sentence", () => {
+  const template = readPrompt("whisper");
+  assert.ok(!/Sources:/.test(template), "whisper template still mentions Sources:");
+});
+
 // F95. Since agy 1.2.9 a headless run holds its finished answer until the
 // print-timeout deadline while any background task it started is still
 // running. `run_command` is available in every print-mode run, isolated or

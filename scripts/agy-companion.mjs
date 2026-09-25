@@ -131,8 +131,8 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     DIFF: collected.diff
   });
 
-  // Isolated: agy gets a temp directory, not the repo, so a review cannot
-  // write. The diff rides on stdin, so its size is irrelevant. A denial here
+  // Isolated: agy gets a temp directory, not the repo, so a review does not
+  // see the project. The diff rides on stdin, so its size is irrelevant. A denial here
   // is worth one resume: the diff is already in the prompt.
   const out = runIsolated(
     prompt,

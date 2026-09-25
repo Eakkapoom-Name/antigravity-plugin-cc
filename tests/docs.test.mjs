@@ -106,6 +106,31 @@ test("the README mode table does not claim the default mode refuses reads", () =
   assert.match(row, /inside the workspace was allowed/i);
 });
 
+// F41. Task 3 added --allow-secret and isolated-review behavior to the review
+// and adversarial-review command docs but never to the README, which still
+// showed the old examples with no mention of either.
+test("the README documents --allow-secret and review isolation", () => {
+  const readme = read("README.md");
+  const reviewIndex = readme.indexOf("### `/agy:review`");
+  const adversarialIndex = readme.indexOf("### `/agy:adversarial-review`");
+  const rescueIndex = readme.indexOf("### `/agy:rescue`");
+  assert.ok(reviewIndex > -1 && adversarialIndex > reviewIndex && rescueIndex > adversarialIndex);
+  const reviewSection = readme.slice(reviewIndex, adversarialIndex);
+  const adversarialSection = readme.slice(adversarialIndex, rescueIndex);
+  for (const section of [
+    ["/agy:review", reviewSection],
+    ["/agy:adversarial-review", adversarialSection]
+  ]) {
+    const [name, text] = section;
+    assert.match(text, /--allow-secret/, `README's ${name} section does not document --allow-secret`);
+    assert.match(text, /isolat/i, `README's ${name} section does not document review isolation`);
+    assert.ok(
+      !/reads the diff from a\s+temp directory/.test(text),
+      `README's ${name} section says agy reads the diff from a temp directory; it gets the diff on stdin`
+    );
+  }
+});
+
 // A new command file with no matching README section leaves users unable to
 // discover it. The heading convention is a backticked command name, matching
 // every existing `### /agy:<name>` section in this file.
@@ -126,5 +151,48 @@ test("SECURITY.md says what leaves the machine and how to report", () => {
   for (const phrase of ["diff", "transfer brief", "secret scan", "isolated", "report"]) {
     assert.ok(security.toLowerCase().includes(phrase), `SECURITY.md does not mention ${phrase}`);
   }
+});
+
+// F87. The Guards bullet claimed isolated commands "cannot write into the
+// project", overstating what a cwd change guarantees. The review command docs
+// and the companion's review comment carried the same claim.
+test("SECURITY.md Guards section does not claim isolation blocks writes", () => {
+  for (const file of [
+    "SECURITY.md",
+    "commands/review.md",
+    "commands/adversarial-review.md",
+    "scripts/agy-companion.mjs"
+  ]) {
+    assert.ok(
+      !/cannot\s+write into the project|a review cannot\s+(?:\/\/\s*)?write/.test(read(file)),
+      `${file} still claims isolated reviews cannot write into the project`
+    );
+  }
+});
+
+// F75. The Guards bullet generalized "read-only commands" to mean isolated,
+// but /agy:quota is read-only and is not run from an isolated temp directory.
+test("SECURITY.md Guards section does not overgeneralize which commands are isolated", () => {
+  const security = read("SECURITY.md");
+  const guardsIndex = security.indexOf("## Guards");
+  assert.ok(guardsIndex > -1, "SECURITY.md has no Guards section");
+  const guards = security.slice(guardsIndex);
+  assert.ok(
+    !/Read-only commands run agy in an isolated temp directory/.test(guards),
+    "SECURITY.md Guards section still generalizes read-only commands as isolated"
+  );
+  assert.match(guards, /agy:quota/, "SECURITY.md Guards section does not name the /agy:quota counter-example");
+});
+
+// F86. The <done_state> definition gave a review example ("every hunk
+// considered") that the Review row of "Which blocks, by task" does not list;
+// the review templates carry no done_state block, so the example is dropped
+// rather than adding done_state to the row.
+test("agy-prompting's done_state definition carries no review example the review row omits", () => {
+  const skill = read("skills/agy-prompting/SKILL.md");
+  assert.ok(
+    !/For a review: every hunk considered/.test(skill),
+    "agy-prompting SKILL.md still gives done_state a review example the Review row omits"
+  );
 });
 

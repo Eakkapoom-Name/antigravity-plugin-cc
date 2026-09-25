@@ -110,7 +110,8 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     };
   }
 
-  // Nothing leaves for agy while a credential shape sits in the added lines.
+  // Nothing leaves for agy while a credential shape sits anywhere in the diff,
+  // removed and context lines included, since the whole diff goes on stdin.
   // Blocking, not redacting: a redacted diff reviews differently, and the user
   // is one --allow-secret away when the hit is a fixture.
   const scan = scanForSecrets(collected.diff, { allow: allowSecret, diff: true });

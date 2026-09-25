@@ -13,8 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1.2.11, the version the CLI contract was last verified on. The report
   carries `agy.verifiedVersion` and `agy.newerThanVerified`. The 1.2.4 floor
   is unchanged.
+- The secret scan catches a credential-bearing URL
+  (`postgres://user:password@host`), the connection-string leak that none of
+  the earlier patterns covered because the key name (`DATABASE_URL`) carries
+  no secret word. A placeholder or environment reference in the password
+  position is not a hit.
 
 ### Changed
+
+- The secret scan reads every line of a review diff, removed and context
+  lines included, not only the added lines as 0.7.0 stated: the whole diff
+  leaves on stdin, so a key deleted by the change was leaving unseen. A hit
+  on a removed line is reported at its old-file line number and named by the
+  old path, and diff-mode `hits[]` entries carry `side` (`added`, `removed`
+  or `context`). `--allow-secret` remains the way past a known fixture.
 
 - The rescue subagent writes agy's JSON to a temporary file
   (`${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, mode 0600, never deleted) and returns
@@ -51,6 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `--allow-secret` refuses a pattern that nests a quantifier inside a
+  quantified group, such as `(a+)+`, with the same error as a syntax error,
+  instead of letting it hang the scan on an ordinary long line.
 - `/agy:rescue` and `/agy:continue` should no longer sit for minutes after agy
   has finished. Since agy 1.2.9 a run that leaves a background task running
   holds its answer until the print timeout, so every rescue task now tells agy

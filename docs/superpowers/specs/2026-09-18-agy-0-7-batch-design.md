@@ -81,8 +81,13 @@ success, after an agy failure, and after a thrown error.
 New `scripts/lib/secrets.mjs`:
 
 ```
-scanForSecrets(text, { allow = [] }) -> { hits: [{ line, kind, sample }] }
+scanForSecrets(text, { allow = [], diff = false })
+  -> { hits: [{ line, kind, sample, file?, side? }] }
 ```
+
+Amended 2026-09-25 (F76, F34, F33): the diff-mode scope, the credential URL
+pattern, and the allow-pattern guard below replace the added-lines-only rule
+this section first stated.
 
 Called in the companion before `renderPrompt` for `review`,
 `adversarial-review`, and `transfer`. New commands send no repo text and skip
@@ -100,23 +105,44 @@ Patterns, hand-rolled, no dependency:
 - Assignment where the key name contains `SECRET`, `TOKEN`, `PASSWORD`,
   `API_KEY` and the value is 16 or more characters and not a placeholder
   (`xxx`, `changeme`, `<...>`, `${...}`).
+- Credential-bearing URL: `scheme://user:password@host`, the connection
+  string shape (`DATABASE_URL=postgres://app:hunter2@db/app`) that no key
+  name catches. No length floor on the password; a placeholder or an
+  environment reference in its place (`${DB_PASSWORD}`, `$DB_PASSWORD`) is
+  not a hit. The scheme run is capped at 64 characters so the pattern stays
+  linear on a long line.
 
-Only added lines (`+` prefix) of a diff are scanned. `sample` is the first six
-characters plus the length, never the value.
+Every content line of a diff is scanned: added, removed and context lines
+alike. The whole diff leaves on stdin, and the commonest real case is the
+review of the commit that removes a key someone committed, whose value sits in
+a `-` line; the first version of this section scanned `+` lines only and let
+that leave unseen. In diff mode a hit carries `file` and `side` (`added`,
+`removed` or `context`). An added or context hit is numbered in the new file,
+from the `+c,d` side of the hunk header, since that is the line a user can
+open. A removed hit has no new-file line, so it is numbered in the old file
+from the `-a,b` side and named by the `---` path, which is also what names a
+hit in a deleted file (`+++ /dev/null`). `sample` is the first six characters
+plus the length for the kinds with a fixed non-secret prefix, and the length
+alone where the whole match is the value, never the value.
 
 On a hit the run is blocked: `{ ok: false, failure: "secrets", hits }`. The
-command prints `file:line kind` per hit and two ways forward: redact and rerun,
-or `--allow-secret <regex>`, repeatable, matched against the full line. No
-environment variable off-switch.
+command prints `file:line kind` per hit, saying which hits sit on removed
+lines, and two ways forward: redact and rerun, or `--allow-secret <regex>`,
+repeatable, matched against the full line. An allow pattern that nests a
+quantifier inside a quantified group (`(a+)+`) is refused like a syntax error,
+since it can hang the scan on an ordinary long line. No environment variable
+off-switch.
 
 Out of scope: entropy scoring, untracked files, rescue prompts.
 
 Tests (`tests/secrets.test.mjs`): each pattern hits on a documented example
 value built by concatenation at runtime (AWS publishes
 `AKIAIOSFODNN7EXAMPLE`; GitHub shape is `"ghp_" + "x".repeat(36)`), so the
-test file holds no key-shaped literal. Negatives: placeholders, removed lines,
-short values, `sha256:` digests. Companion test: a hit returns
-`failure: "secrets"` and `buildArgs` is never called.
+test file holds no key-shaped literal. Negatives: placeholders, short values,
+`sha256:` digests, URLs with no password. Diff mode: a removed hit numbered
+in the old file, a context hit in the new, a hit in a deleted file named by
+the old path. Companion test: a hit returns `failure: "secrets"` and
+`buildArgs` is never called.
 
 ## Section 3: `/agy:whisper`
 

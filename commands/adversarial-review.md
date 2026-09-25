@@ -34,7 +34,7 @@ Background flow:
 
 The script collects the diff, renders the prompt, and passes the diff to agy on stdin, so size is not a constraint. It also passes `--json-schema` pointing at `schemas/review-output.schema.json`, so the structured shape is enforced by agy rather than only requested in the prompt. The review itself runs isolated: agy sees a temp directory, never the repository, so it cannot write into the project.
 
-If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `<file>:<line> <kind> (<sample>)`, or just `<line> <kind> (<sample>)` when `file` is missing, say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
+If the JSON has `failure: "secrets"`, the review did not run. List each `hits[]` entry as `<file>:<line> <kind> (<sample>)`, or just `<line> <kind> (<sample>)` when `file` is missing. A hit whose `side` is `removed` sits on a line the change deletes: say so, since its `line` is in the old version of the file, not the working tree. Say nothing left the machine, and give both ways forward: redact and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
 
 Reading the JSON the script prints:
 

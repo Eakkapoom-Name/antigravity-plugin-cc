@@ -13,7 +13,8 @@ const PLACEHOLDER = /^(?:x{3,}|\*{3,}|changeme|change-me|<[^>]*>|\$\{[^}]*\}|you
 // example, still ends the string with characters the dotted or bracketed
 // branches do not allow, so it still counts as a hit. The bare $NAME branch
 // is further narrowed to the conventional shell-variable shape (upper-case
-// letters, digits, underscores, starting with a letter or underscore):
+// letters, digits, underscores, starting with an upper-case letter or
+// underscore):
 // without that narrowing, anchoring alone would not help, because a real
 // secret that happens to be pure mixed-case letters and digits after a
 // leading $ is, by shape, indistinguishable from a variable name.
@@ -37,6 +38,17 @@ const PATTERNS = [
   { kind: "slack-token", regex: /\bxox[abprs]-[A-Za-z0-9-]{20,}\b/ },
   { kind: "google-api-key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/ },
   {
+    // `scheme://user:password@host`, the connection-string leak that no
+    // identifier word catches (DATABASE_URL, CONNECTION_STRING). The user
+    // part stops at `:` and the password at `@`, so the two runs never
+    // overlap; the scheme run is capped because an unbounded one, retried
+    // from every word boundary of a long `a.a.a.` line, went quadratic when
+    // measured. No length floor: `hunter2` is the shape being caught.
+    kind: "credential-url",
+    regex: /\b[a-z][a-z0-9+.-]{0,63}:\/\/[^\s\/:@]*:([^\s\/?#@]+)@/i,
+    valueGroup: 1
+  },
+  {
     kind: "authorization-header",
     regex: /\b(?:Authorization\s*:\s*)?Bearer\s+([A-Za-z0-9._~+\/=-]{20,})/i,
     valueGroup: 1
@@ -50,13 +62,96 @@ const PATTERNS = [
 
 export const SECRET_KINDS = PATTERNS.map((pattern) => pattern.kind);
 
+// The length of an unbounded quantifier starting at `index`: `*`, `+`, or a
+// brace with an open or ranged upper end (`{2,}`, `{1,5}`). `?` and an exact
+// `{3}` repeat a bounded number of times and cannot multiply backtracking.
+function quantifierLengthAt(source, index) {
+  const char = source[index];
+  if (char === "*" || char === "+") {
+    return 1;
+  }
+  if (char === "{") {
+    const brace = source.slice(index).match(/^\{\d+,\d*\}/);
+    return brace ? brace[0].length : 0;
+  }
+  return 0;
+}
+
+// Heuristic ReDoS guard for a CLI-supplied allow pattern: a quantifier
+// applied to a group that itself contains a quantifier (`(a+)+`, `(a*)*`,
+// `((ab)+)*`) is the shape that hangs `RegExp.test` on an ordinary long line,
+// and a syntax check alone lets it through. This walks the source once,
+// skipping escapes and character classes, and tracks per group whether a
+// quantifier was seen inside it. It is a heuristic: an overlapping
+// alternation such as `(a|aa)+` is not caught.
+function hasNestedQuantifier(source) {
+  const outerSaw = [];
+  let sawQuantifier = false;
+  let i = 0;
+  while (i < source.length) {
+    const char = source[i];
+    if (char === "\\") {
+      i += 2;
+      continue;
+    }
+    if (char === "[") {
+      // JavaScript, not POSIX: `[]` is an empty class and `[^]` matches any
+      // character, so the first unescaped `]` always closes the class.
+      i += 1;
+      if (source[i] === "^") {
+        i += 1;
+      }
+      while (i < source.length && source[i] !== "]") {
+        i += source[i] === "\\" ? 2 : 1;
+      }
+      i += 1;
+      continue;
+    }
+    if (char === "(") {
+      outerSaw.push(sawQuantifier);
+      sawQuantifier = false;
+      i += 1;
+      continue;
+    }
+    if (char === ")") {
+      const innerSaw = sawQuantifier;
+      sawQuantifier = (outerSaw.pop() ?? false) || innerSaw;
+      i += 1;
+      const length = quantifierLengthAt(source, i);
+      if (length > 0) {
+        if (innerSaw) {
+          return true;
+        }
+        sawQuantifier = true; // the quantified group counts for its enclosing group
+        i += length;
+      }
+      continue;
+    }
+    const length = quantifierLengthAt(source, i);
+    if (length > 0) {
+      sawQuantifier = true;
+      i += length;
+      continue;
+    }
+    i += 1;
+  }
+  return false;
+}
+
 function compileAllow(allow) {
   return allow.map((source) => {
+    let pattern;
     try {
-      return new RegExp(source);
+      pattern = new RegExp(source);
     } catch (error) {
       throw new Error(`invalid allow pattern ${JSON.stringify(source)}: ${error.message}`);
     }
+    if (hasNestedQuantifier(source)) {
+      throw new Error(
+        `invalid allow pattern ${JSON.stringify(source)}: a quantifier nested inside a quantified group can hang the scan; rewrite it without the nesting`
+      );
+    }
+    return pattern;
   });
 }
 
@@ -78,10 +173,17 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   const hits = [];
   const lines = String(text ?? "").split(/\r?\n/);
 
-  // Diff bookkeeping: which file, and which line of that file's new content,
-  // a `+` line lands on. Without this a hit is reported at its offset into
-  // the raw diff text, counting `diff --git`, `index` and `@@` lines, which
-  // matches nothing a user can find in an editor.
+  // Diff bookkeeping: which file, and which line of that file, a content
+  // line lands on. Without this a hit is reported at its offset into the raw
+  // diff text, counting `diff --git`, `index` and `@@` lines, which matches
+  // nothing a user can find in an editor. Every content line is scanned,
+  // added, removed and context alike: the whole diff leaves on stdin, and the
+  // commonest real case is the review of the commit that removes a key
+  // someone committed, whose value sits in a `-` line. An added or context
+  // hit is numbered in the new file, the one a user can open; a removed hit
+  // has no new-file line, so it is numbered in the old file from the
+  // `@@ -a,b` side and named by the `---` path (a deleted file has no `+++`
+  // path), and `side` on the hit says which numbering applies.
   //
   // A `+++`/`---` line is only ever trusted as a real file header inside a
   // "header zone": the span from a `diff --git` line up to that file's first
@@ -96,49 +198,61 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   // for a header, however many literal `+` or `-` characters it starts with,
   // until the next `diff --git` reopens the zone for the following file.
   //
-  // `currentFile` is set from the `+++ b/<path>` header seen inside the zone
-  // (reset to null the moment the zone opens, so a multi-file diff never
-  // carries a stale name into the next file even for a hunk-less section
-  // such as a binary-file notice). `newLine` comes from each hunk's
-  // `@@ -a,b +c,d @@` header and is then walked forward one line at a time:
-  // an added or context line advances it, including a content line that
-  // happens to read `+++ ...` or `--- ...` (it still occupies a real line
-  // in the new file even though, per the existing, unchanged contract, a
-  // line starting with `+++` is never itself scanned); a removed line does
-  // not, and neither does the `\ No newline at end of file` marker, which
-  // is a note about the line just shown rather than a line of its own.
-  // Until a hunk header has actually been seen, there is no reliable line
-  // number to report; a hit in that state falls back to the raw line offset
-  // with no file, rather than reporting a number that looks right but is not.
+  // `currentFile` and `oldFile` are set from the `+++ b/<path>` and
+  // `--- a/<path>` headers seen inside the zone (both reset to null the
+  // moment the zone opens, so a multi-file diff never carries a stale name
+  // into the next file even for a hunk-less section such as a binary-file
+  // notice). `newLine` and `oldLine` come from each hunk's `@@ -a,b +c,d @@`
+  // header and are then walked forward one line at a time: an added line
+  // advances `newLine`, a removed line `oldLine`, a context line both,
+  // including a content line that happens to read `+++ ...` or `--- ...`
+  // (it still occupies a real line even though, per the existing, unchanged
+  // contract, a line starting with `+++` is never itself scanned; a `---`
+  // line past the header zone is content and is scanned, since `--` is a
+  // common line prefix, a CLI flag or an SQL comment). The
+  // `\ No newline at end of file` marker advances neither, being a note
+  // about the line just shown rather than a line of its own. Until a hunk
+  // header has actually been seen, there is no reliable line number to
+  // report; a hit in that state falls back to the raw line offset with no
+  // file, rather than reporting a number that looks right but is not.
+  const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
   let currentFile = null;
+  let oldFile = null;
   let newLine = null;
+  let oldLine = null;
   let inHeaderZone = false;
 
   lines.forEach((line, index) => {
     let hitLine = index + 1;
     let hitFile = null;
+    let side = null;
 
     if (diff) {
       if (line.startsWith("diff --git ")) {
         inHeaderZone = true;
         currentFile = null;
+        oldFile = null;
         newLine = null;
+        oldLine = null;
         return;
       }
 
       if (inHeaderZone) {
-        if (line.startsWith("---")) {
-          return; // old-file header; the path this function tracks comes from +++
+        const oldHeader = line.match(/^--- (?:a\/)?(.*)$/);
+        if (oldHeader) {
+          oldFile = oldHeader[1] === "/dev/null" ? null : oldHeader[1];
+          return;
         }
         const fileHeader = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
         if (fileHeader) {
           currentFile = fileHeader[1] === "/dev/null" ? null : fileHeader[1];
           return;
         }
-        const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        const hunkHeader = line.match(HUNK_HEADER);
         if (hunkHeader) {
           inHeaderZone = false;
-          newLine = Number(hunkHeader[1]) - 1;
+          oldLine = Number(hunkHeader[1]) - 1;
+          newLine = Number(hunkHeader[2]) - 1;
         }
         // Any other line before the first `@@` (mode/rename/index lines, a
         // binary-file notice) carries no line to advance or scan.
@@ -146,26 +260,37 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       }
 
       // Past the header zone: a further `@@` opens this file's next hunk.
-      const hunkHeader = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      const hunkHeader = line.match(HUNK_HEADER);
       if (hunkHeader) {
-        newLine = Number(hunkHeader[1]) - 1;
+        oldLine = Number(hunkHeader[1]) - 1;
+        newLine = Number(hunkHeader[2]) - 1;
         return;
       }
 
-      // Only an added or context line occupies a line of the new file. A
-      // removal does not, and neither does `\ No newline at end of file`
-      // (a note about the line just shown, not a line of its own); both are
-      // caught by requiring the leading `+` or space explicitly, rather
-      // than by excluding `-`, which that marker does not start with.
-      if (newLine !== null && (line.startsWith("+") || line.startsWith(" "))) {
-        newLine += 1;
-      }
-      const isAdded = line.startsWith("+") && !line.startsWith("+++");
-      if (!isAdded) {
+      // The leading marker says which file(s) the line occupies a line of.
+      // `\ No newline at end of file` starts with none of the three and so
+      // neither advances a counter nor is scanned.
+      const tracked = newLine !== null;
+      if (line.startsWith("+")) {
+        side = "added";
+        newLine = tracked ? newLine + 1 : null;
+      } else if (line.startsWith("-")) {
+        side = "removed";
+        oldLine = tracked ? oldLine + 1 : null;
+      } else if (line.startsWith(" ")) {
+        side = "context";
+        newLine = tracked ? newLine + 1 : null;
+        oldLine = tracked ? oldLine + 1 : null;
+      } else {
         return;
       }
-      hitLine = newLine !== null ? newLine : index + 1;
-      hitFile = newLine !== null ? currentFile : null;
+      if (line.startsWith("+++")) {
+        return; // counted above, never scanned: the existing contract
+      }
+      if (tracked) {
+        hitLine = side === "removed" ? oldLine : newLine;
+        hitFile = side === "removed" ? oldFile : currentFile;
+      }
     }
 
     if (allowed.some((pattern) => pattern.test(line))) {
@@ -183,6 +308,7 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       const hit = { line: hitLine, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) };
       if (diff) {
         hit.file = hitFile;
+        hit.side = side;
       }
       hits.push(hit);
       break;

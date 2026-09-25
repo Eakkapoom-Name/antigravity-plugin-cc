@@ -38,8 +38,10 @@ send, per command:
 
 - A secret scan runs on every diff and transfer brief before it leaves. A
   credential shape (AWS key id, private key block, GitHub, Slack or Google
-  tokens, bearer tokens, `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments)
-  blocks the run and names the line and kind, never the value.
+  tokens, bearer tokens, `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments,
+  `scheme://user:password@host` URLs) blocks the run and names the line and
+  kind, never the value. Every line of a diff is scanned, removed and context
+  lines included, because the whole diff is what leaves.
   `--allow-secret <regex>` belongs to `/agy:review` and
   `/agy:adversarial-review`, where it admits a known fixture. `/agy:transfer`
   has no such flag: a blocked brief is resolved by editing the brief.

@@ -10,6 +10,8 @@ Run a structured research report through agy. Use a Bash `timeout` of `590000` m
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" research "$ARGUMENTS"
 ```
 
+If the JSON has `failure: "agy-error"`, agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr): report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished report.
+
 Present `result.response` as-is; the section order (Summary, Key findings, Disagreements and thin evidence, Caveats, Sources) is the contract, keep it. Report `result.conversation_id` on its own line as resumable via `/agy:continue`. If `outPath` is present, say the report was also written there. If `outError` is present, say the report was produced but could not be written to disk, and quote `outError`; if `outError` says the response was empty, say instead that nothing was written because agy returned no report. If `effortDropped` is true, say the model rejected `--effort` and the run repeated without it.
 
 `--out <path>` is resolved inside the workspace, its parent must exist, and it never overwrites: if `ok` is false and `error` mentions `--out`, the run did not start; relay the reason. If the text returned is not JSON and contains `denied by the Claude Code auto mode classifier`, agy never ran; follow the `agy-result-handling` skill.

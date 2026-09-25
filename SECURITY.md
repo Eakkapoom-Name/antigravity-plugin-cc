@@ -18,7 +18,8 @@ send, per command:
   absolute path), and with agy's `allowNonWorkspaceAccess` setting on and an
   absolute path in the text, agy can still reach outside it.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
-  conversation and can quote files.
+  conversation and can quote files. agy then has the repository as its
+  workspace (its cwd and its `--add-dir`) and can read files the brief names.
 - `/agy:rescue`, `/agy:continue`: the task text, and whatever agy then reads
   or runs in your repository under agy's own permission settings. agy's full
   JSON answer is saved to `${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, created by
@@ -66,12 +67,16 @@ send, per command:
 - `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
   `/agy:research` and `/agy:image` run agy from an isolated temp directory
   rather than the project; whether agy can still reach paths outside it
-  depends on agy's `toolPermission` setting. Three other runs are not isolated this way.
-  `/agy:quota` is read-only and sends no user text. `/agy:setup`'s readiness
-  check writes a marker file into the actual workspace root for its read probe
-  to read back, so it runs against the workspace, not an isolated directory.
-  The stop-review gate runs agy with the repository as its cwd and as its
-  `--add-dir`, because it reviews the working tree itself.
+  depends on agy's `toolPermission` setting. Six other runs are not isolated
+  this way. `/agy:quota` is read-only and sends no user text. `/agy:setup`'s
+  readiness check writes a marker file into the actual workspace root for its
+  read probe to read back, so it runs against the workspace, not an isolated
+  directory. The stop-review gate runs agy with the repository as its cwd and
+  as its `--add-dir`, because it reviews the working tree itself.
+  `/agy:transfer` likewise runs agy with the repository as its cwd and as its
+  `--add-dir`. `/agy:rescue` and `/agy:continue` run agy with the repository
+  as its cwd and, by default, `--mode accept-edits`, so agy can edit it
+  there; a run the user asks to keep read-only drops `--mode`.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:
   a URL given as the whole argument, and a URL-shaped word inside an ordinary

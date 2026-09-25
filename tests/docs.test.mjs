@@ -230,6 +230,58 @@ test("the review command docs explain every hit side and the diff-shape refusal"
   }
 });
 
+// F118. `interpretPromptRun` returns `ok: false, failure: "agy-error",
+// agyError, result` with no top-level `error`, so the generic "ok: false
+// with an error" bullet never catches it, and a non-empty `result.response`
+// needs to be labelled partial rather than presented as finished.
+test("review, adversarial-review, research and search docs handle failure: agy-error", () => {
+  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/research.md", "commands/search.md"]) {
+    const text = read(file);
+    assert.ok(text.includes('failure: "agy-error"'), `${file} does not name failure: "agy-error"`);
+    assert.match(text, /agyError/, `${file} does not tell the model to quote agyError`);
+    assert.match(text, /partial/i, `${file} does not say a partial result.response must be labelled as such`);
+  }
+});
+
+// F119. review.md and adversarial-review.md both carry the tagged block
+// form; the skill's own table should say so for both, not just review.md.
+test("agy-prompting says both review templates use the tagged blocks", () => {
+  const skill = read("skills/agy-prompting/SKILL.md");
+  assert.ok(
+    !/still carries the contract\s+in prose/.test(skill),
+    "agy-prompting SKILL.md still says adversarial-review.md is untagged"
+  );
+  const reviewRowIndex = skill.indexOf("Review: `task`, `output_contract`, `grounding_rules`");
+  assert.ok(reviewRowIndex > -1, "agy-prompting SKILL.md has no Review row in its block table");
+  const row = skill.slice(reviewRowIndex, skill.indexOf("\n", reviewRowIndex + 200));
+  assert.match(row, /prompts\/review\.md/);
+  assert.match(row, /prompts\/adversarial-review\.md/);
+});
+
+// F122. Six commands run agy without the isolated-temp-directory guard:
+// quota, setup's readiness check, the stop-review gate, transfer, rescue and
+// continue. All six must be named, not just the first three.
+test("SECURITY.md Guards section names all six non-isolated runs", () => {
+  const security = read("SECURITY.md");
+  const guardsIndex = security.indexOf("## Guards");
+  const guards = security.slice(guardsIndex);
+  for (const name of ["agy:quota", "agy:setup", "stop-review gate", "agy:transfer", "agy:rescue", "agy:continue"]) {
+    assert.ok(guards.includes(name), `SECURITY.md Guards section does not name ${name} among the non-isolated runs`);
+  }
+});
+
+// F122. The transfer bullet under "What leaves your machine" said only that
+// the brief itself leaves; it did not say agy then has the repository as its
+// workspace and can read files the brief names.
+test("SECURITY.md's transfer bullet says agy can read repository files the brief names", () => {
+  const security = read("SECURITY.md");
+  const transferIndex = security.indexOf("`/agy:transfer`: the handoff brief");
+  assert.ok(transferIndex > -1, "SECURITY.md has no /agy:transfer bullet under What leaves your machine");
+  const bullet = security.slice(transferIndex, security.indexOf("\n- ", transferIndex + 1));
+  assert.match(bullet, /workspace/i);
+  assert.match(bullet, /read files the brief names|files the brief names/i);
+});
+
 // The scan covers hunk-header text and non-content lines too, and a diff of
 // unrecognized shape is refused; SECURITY.md must say so rather than claim
 // only content lines are scanned.

@@ -85,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new spawn timeout plus agy's own startup overhead.
 - `/agy:quota` reports a spawn timeout as `failure: "timeout"` instead of
   misreporting it as invalid JSON, and now states a 240000 ms Bash timeout
-  (previously 90000 ms), wide enough for its own spawn timeout.
+  (0.7.0 stated none), wide enough for its own spawn timeout.
 - `/agy:setup` extracts the numeric core (`\d+\.\d+\.\d+`) from `agy
   --version` before gating on it, instead of failing the version check
   outright and printing a literal "agy agy X.Y.Z is below the floor" if
@@ -154,10 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`http:intranet/admin`, `http:intranet:8080`), nor the single-slash and
   backslash forms (`http:/intranet`, `http:\intranet`). Those are resolved
   and judged on the answer like any other host in the query.
-- A possessive glued to a URL in a query (`see http://127.0.0.1's page`) is
-  stripped like trailing punctuation, so a blocked literal is refused as a
-  reserved address rather than as a resolver failure on `127.0.0.1's`, and a
-  public host written that way is judged on its real name instead of refused.
+- A possessive glued to a URL in a query (`see http://127.0.0.1's page`, or
+  the curly `’s` form) is stripped like trailing punctuation, so a blocked
+  literal is refused as a reserved address rather than as a resolver failure
+  on the un-stripped name, and a public host written that way is judged on
+  its real name instead of refused.
 - A slash-free number after a scheme in a query (`the port http:443 thing`)
   is still refused, since the URL parser reads it as an IPv4 address, but the
   reason now says the number was read as an address and suggests rewording.
@@ -165,8 +166,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agy call threw, and whose temp directory then could not be removed, now
   reports the cleanup note on the error it raises. Before, the error was
   rethrown first and the note was dropped.
-- `/agy:quota` states an explicit Bash timeout (90000 ms), as every other
-  command that runs Bash already did; a test now pins that for all of them.
 - The test suite removes the temp directories it creates. One `npm test` run
   left 39 `agy-*` directories behind in the system temp directory.
 - The README's `/agy:review` and `/agy:adversarial-review` sections now
@@ -204,10 +203,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refusal, no rename. `commands/image.md` now tells the model to relay the
   `warning` key, alongside the `imagePath` and `outPath` keys it already
   named.
-- A curly possessive glued to a URL in a query (`see http://127.0.0.1’s
-  page`) is now stripped the same way the ASCII `'s` form already was, so a
-  blocked literal is refused as a reserved address rather than as a resolver
-  failure on the un-stripped name.
 - The `secret-assignment` pattern now checks for its keyword with a
   lookahead and matches the name with a single run, fixing a quadratic scan
   on a line of nothing but repeated name characters (152.9 ms at 40,000

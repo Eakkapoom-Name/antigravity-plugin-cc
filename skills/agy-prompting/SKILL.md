@@ -55,10 +55,8 @@ Include the blocks the task needs; leave the rest out.
 - Fix or implementation: `task`, `done_state`, `action_safety`, and
   `verification_loop` only when tests are relevant and a test command is
   known (see the block above).
-- Review: `task`, `output_contract`, `grounding_rules`. `prompts/review.md`
-  uses these tags. `prompts/adversarial-review.md` still carries the contract
-  in prose, so read it for the substance, not as a worked example of the tags.
-  New templates use the tags directly.
+- Review: `task`, `output_contract`, `grounding_rules`. Both `prompts/review.md`
+  and `prompts/adversarial-review.md` use these tags directly.
 - Research or search (`research`, `search`): `task`, `output_contract`,
   `grounding_rules`.
 - Fetch a single URL (`fetch`): `task`, `output_contract`. It renders one page

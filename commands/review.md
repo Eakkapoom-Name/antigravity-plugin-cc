@@ -29,6 +29,7 @@ Reading the JSON the script prints:
 - `failure: "diff-shape"`: the review did not run, because git's output did not have the shape the secret scanner reads. Report the `error`, say nothing left the machine, and stop.
 - `ok: false` with an `error`: report the error and stop. If it says agy is not installed, point at `/agy:setup`.
 - `empty: true`: say there is nothing to review in that scope, quoting `scope`. If `untrackedFiles` is non-empty, list them and say a diff review does not cover untracked files.
+- `failure: "agy-error"`: agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr). Report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result.
 - Otherwise present `result` per the `agy-result-handling` skill: findings first, ordered by severity, file paths and line numbers verbatim, then the `conversation_id` on its own line.
 
 `scope` names what was actually reviewed. Report it, rather than assuming which scope the user's argument selected.

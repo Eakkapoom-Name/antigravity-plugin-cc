@@ -43,6 +43,7 @@ Reading the JSON the script prints:
 - `failure: "diff-shape"`: the review did not run, because git's output did not have the shape the secret scanner reads. Report the `error`, say nothing left the machine, and stop.
 - `ok: false` with an `error`: report it and stop.
 - `empty: true`: say there is nothing to review in that scope, quoting `scope`, and list `untrackedFiles` if any.
+- `failure: "agy-error"`: agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr). Report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result.
 - Otherwise parse the review object out of `result.response` and render: verdict line, summary, then findings ordered by severity, each as `file:line_start-line_end severity (confidence): title. body. recommendation.`, then next steps. Keep agy's wording; do not soften or editorialize.
 - If `result.response` is not valid JSON, present it verbatim and say the structured format was not followed.
 - Report `result.conversation_id` on its own line at the end, resumable via `/agy:rescue --resume`.

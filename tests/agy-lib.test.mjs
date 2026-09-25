@@ -228,7 +228,7 @@ const PINNED_DIFF_FLAGS = [
 test("scope selection maps arguments onto the right git command", () => {
   assert.deepEqual(resolveScope("staged", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "--cached"]);
   assert.deepEqual(resolveScope("", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "HEAD"]);
-  assert.deepEqual(resolveScope("some-ref", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "some-ref...HEAD"]);
+  assert.deepEqual(resolveScope("some-ref", ROOT).args, ["diff", ...PINNED_DIFF_FLAGS, "--end-of-options", "some-ref...HEAD"]);
   assert.equal(resolveScope("branch", ROOT).kind, "branch");
 });
 
@@ -360,6 +360,37 @@ function scratchClone(branchName) {
 test("defaultBranch keeps a slashed default branch name intact", () => {
   const clone = scratchClone("release/2026");
   assert.equal(defaultBranch(clone), "release/2026");
+});
+
+// A remote can name its default branch `--output=<path>` (git's ref rules
+// allow a leading `-`), and that name reached `git diff` as an option, writing
+// a file. The name is refused as a default branch, and the revision is placed
+// after `--end-of-options` in any case.
+test("defaultBranch refuses an option-shaped default branch from the remote", () => {
+  const source = fs.mkdtempSync(path.join(os.tmpdir(), "agy-clone-src-"));
+  scratchDirs.push(source);
+  spawnSync("git", ["init", "-q", "."], { cwd: source });
+  spawnSync("git", ["config", "user.email", "t@e.x"], { cwd: source });
+  spawnSync("git", ["config", "user.name", "t"], { cwd: source });
+  spawnSync("git", ["symbolic-ref", "HEAD", "refs/heads/--output=pwn"], { cwd: source });
+  fs.writeFileSync(path.join(source, "f.txt"), "x\n");
+  spawnSync("git", ["add", "-A"], { cwd: source });
+  spawnSync("git", ["commit", "-qm", "c"], { cwd: source });
+  const clone = fs.mkdtempSync(path.join(os.tmpdir(), "agy-clone-"));
+  scratchDirs.push(clone);
+  spawnSync("git", ["clone", "-q", source, clone]);
+  const head = spawnSync("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd: clone, encoding: "utf8" });
+  assert.equal(head.stdout.trim(), "refs/remotes/origin/--output=pwn", "the fixture no longer reproduces an option-shaped origin/HEAD");
+  assert.ok(!defaultBranch(clone).startsWith("-"));
+  collectDiff("branch", clone);
+  assert.ok(!fs.readdirSync(clone).some((name) => name.startsWith("pwn")), "git diff wrote a file named by the remote's branch");
+});
+
+test("a base ref that looks like an option is never read as one", () => {
+  const dir = scratchGitRepo();
+  const out = collectDiff("--output=pwn", dir);
+  assert.equal(out.ok, false);
+  assert.ok(!fs.readdirSync(dir).some((name) => name.startsWith("pwn")));
 });
 
 // F125. Only `staged`, `branch`, or a token git resolves to a real commit is

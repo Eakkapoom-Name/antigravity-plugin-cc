@@ -234,6 +234,22 @@ function writeLegacyGateFile(root) {
   );
 }
 
+// The tracked check runs git in the workspace on every Stop. A repository
+// that arrives with its own `.git/config` (a tarball, a shared folder) must
+// not get its `core.fsmonitor` command run by that check.
+test("the legacy gate check does not run the repository's fsmonitor command", () => {
+  withPluginData(() => {
+    const root = scratchGitRepo();
+    const marker = path.join(root, "fsmonitor-ran");
+    const hook = path.join(root, "fsmonitor.sh");
+    fs.writeFileSync(hook, `#!/bin/sh\ntouch "${marker}"\n`, { mode: 0o755 });
+    spawnSync("git", ["config", "core.fsmonitor", hook], { cwd: root });
+    writeLegacyGateFile(root);
+    readLegacyGate(root);
+    assert.equal(fs.existsSync(marker), false, "the legacy gate check ran core.fsmonitor");
+  });
+});
+
 // F116. A `.claude/agy.local.md` committed to the repository used to turn
 // the gate on for anyone who cloned it. Only an untracked (local-only) copy
 // is honoured now.

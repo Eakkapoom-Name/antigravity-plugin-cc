@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/agy:review branch` passes its base revision after `--end-of-options`,
+  and a remote default branch whose name starts with `-` is refused, so a
+  cloned repository whose remote names its default branch `--output=<path>`
+  can no longer make `git diff` write a file. Every companion git call, and
+  the Stop hook's legacy-gate check, also runs with `core.fsmonitor=false`,
+  so a repository's own config cannot start a command through them.
 - A companion run's spawn timeout is now derived from the `printTimeout` it
   is given (plus a fixed one-minute margin) instead of a flat default
   independent of it, so `/agy:whisper`, `/agy:search` and `/agy:image` no

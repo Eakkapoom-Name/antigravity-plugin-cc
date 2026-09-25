@@ -122,7 +122,7 @@ function legacyGateIsTracked(workspaceRoot) {
   }
   const result = runCommand(
     "git",
-    ["ls-files", "-z", "--stage", "--", `:(icase)${LEGACY_SETTINGS_DIR_INDEX_PATH}`],
+    ["-c", "core.fsmonitor=false", "ls-files", "-z", "--stage", "--", `:(icase)${LEGACY_SETTINGS_DIR_INDEX_PATH}`],
     { cwd: workspaceRoot, encoding: "utf8", env }
   );
   if (result.error) {

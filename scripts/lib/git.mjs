@@ -10,8 +10,10 @@ const MAX_DIFF_BUFFER = 64 * 1024 * 1024;
 // second lock behind `--no-color` on the diff itself. `diff.suppressBlankEmpty`
 // has no command-line flag: set, it prints a blank context line as an empty
 // line instead of a lone space, and the scanner stops counting those lines.
+// `core.fsmonitor=false` keeps a repository's own config from starting a
+// filesystem-monitor command on every call.
 function git(args, cwd) {
-  return runCommand("git", ["-c", "color.ui=never", "-c", "color.diff=never", "-c", "diff.suppressBlankEmpty=false", ...args], {
+  return runCommand("git", ["-c", "color.ui=never", "-c", "color.diff=never", "-c", "diff.suppressBlankEmpty=false", "-c", "core.fsmonitor=false", ...args], {
     cwd,
     encoding: "utf8",
     maxBuffer: MAX_DIFF_BUFFER
@@ -26,10 +28,12 @@ export function defaultBranch(cwd) {
     const ref = String(remote.stdout ?? "").trim();
     // The branch name is everything after the remote-tracking prefix, not
     // just the last path segment: a slashed name such as `release/2026`
-    // otherwise loses everything but `2026`.
+    // otherwise loses everything but `2026`. A name starting with `-` is
+    // refused: git's ref rules allow it, and a remote could set its default
+    // branch to `--output=<path>`.
     if (ref.startsWith(ORIGIN_REMOTE_PREFIX)) {
       const name = ref.slice(ORIGIN_REMOTE_PREFIX.length);
-      if (name) {
+      if (name && !name.startsWith("-")) {
         return name;
       }
     }
@@ -98,7 +102,9 @@ export function resolveScope(argument, cwd) {
   const base = scope === "branch" ? defaultBranch(cwd) : scope;
   return {
     kind: "branch",
-    args: ["diff", ...PINNED_DIFF_FLAGS, `${base}...HEAD`],
+    // `--end-of-options` so a base that starts with `-` is a revision, never
+    // a `git diff` option such as `--output=<path>`.
+    args: ["diff", ...PINNED_DIFF_FLAGS, "--end-of-options", `${base}...HEAD`],
     label: `branch against ${base}`
   };
 }

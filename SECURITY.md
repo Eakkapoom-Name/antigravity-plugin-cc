@@ -75,7 +75,7 @@ send, per command:
   as its `--add-dir`, because it reviews the working tree itself.
   `/agy:transfer` likewise runs agy with the repository as its cwd and as its
   `--add-dir`. `/agy:rescue` and `/agy:continue` run agy with the repository
-  as its cwd and, by default, `--mode accept-edits`, so agy can edit it
+  as its cwd and its `--add-dir` and, by default, `--mode accept-edits`, so agy can edit it
   there; a run the user asks to keep read-only drops `--mode`.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:

@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 import { listMarkdown, parseFrontmatter, read } from "./helpers.mjs";
 
 const COMMANDS = listMarkdown("commands");
@@ -268,6 +273,186 @@ test("rescue agent drops --effort once when the model rejects it", () => {
 test("rescue command treats denied actions as a failed run", () => {
   const source = read("commands/rescue.md");
   assert.match(source, /denied_actions/);
+});
+
+// F89. On agy 1.2.10 a bare print-mode run started in the repo resolves its
+// workspace to ~/.gemini/antigravity-cli/scratch, so relative commands and
+// writes land there. The repo has to be added explicitly, by absolute path.
+test("rescue agent adds the repository root as the agy workspace", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /--add-dir "\$PWD"/);
+  const runtime = read("skills/agy-cli-runtime/SKILL.md");
+  assert.match(runtime, /--add-dir "\$PWD"/);
+  assert.match(runtime, /scratch/);
+});
+
+// F88. Since agy 1.2.9 a headless run holds its finished result until the
+// --print-timeout deadline while any background task is still running, and
+// agy moves every command over 10 s into the background.
+test("rescue agent tells agy to leave nothing running, on every run", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /nothing you started is still running/);
+  assert.match(agent, /including a continuation/);
+  // Cleanup by name would take out Claude Code itself, which is a node process.
+  assert.match(agent, /never use pkill, killall, or kill by name/);
+  const prompting = read("skills/agy-prompting/SKILL.md");
+  assert.match(prompting, /one-shot mode \(no watch mode\)/);
+  assert.match(prompting, /print timeout/i);
+});
+
+// agy's own deadline has to be the cap: when the Bash timeout passes first,
+// Claude Code backgrounds the call instead of returning.
+test("rescue print timeout leaves margin under the Bash timeout", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /--print-timeout 8m/);
+  assert.match(agent, /590000/);
+  assert.doesNotMatch(agent, /--print-timeout 9m/);
+});
+
+// F90. Retyping agy's whole JSON through the subagent model cost about 3.5 s
+// per KB after agy had already exited.
+test("rescue agent writes the agy result to a file and returns a summary", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /mktemp/);
+  assert.match(agent, /AGY_RESCUE_SUMMARY/);
+  assert.doesNotMatch(agent, /Return the full JSON stdout of the `agy` command exactly as-is/);
+  for (const name of ["rescue.md", "continue.md", "result.md", "status.md"]) {
+    const source = read(`commands/${name}`);
+    assert.match(source, /result_file/, `${name} does not read the result file`);
+    assert.ok(
+      parseFrontmatter(source)["allowed-tools"].split(/,\s*/).includes("Read"),
+      `${name} cannot read the result file without the Read tool`
+    );
+  }
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  assert.match(handling, /result_file/);
+  // A stderr line can imitate the summary, so the caller checks the path.
+  assert.match(handling, /last line that starts with `AGY_RESCUE_SUMMARY `/);
+  assert.match(handling, /agy-rescue-` followed by six letters or digits/);
+  assert.match(read("SECURITY.md"), /agy-rescue-XXXXXX/);
+  // A replaced result path (a symlink to a secret) must never be quoted.
+  assert.match(handling, /`regular_file` equal to `true`/);
+  assert.match(handling, /no `\.\.` segment/);
+});
+
+// Retest 2026-09-25: an unknown --model is an immediate agy error that
+// /agy:setup would pass, and a forwarder refusal never reached agy at all.
+test("rescue and continue send only missing or unauthenticated agy to setup", () => {
+  for (const name of ["rescue.md", "continue.md"]) {
+    const source = read(`commands/${name}`);
+    assert.match(source, /unknown `--model`/, `${name} sends every agy error to setup`);
+    assert.match(source, /agy-rescue refused:/, `${name} does not route a forwarder refusal`);
+    assert.match(source, /null or empty, say the run left no conversation/);
+  }
+  assert.match(read("agents/agy-rescue.md"), /agy-rescue refused:/);
+  assert.match(read("agents/agy-rescue.md"), /summary line last/);
+});
+
+// F91. Claude Code can move a long Bash call into the background; the
+// subagent needs a sanctioned way to wait instead of improvising.
+test("rescue agent says what to do when its Bash call is moved to the background", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /moved to the background/);
+  assert.match(agent, /do not start a second agy run/i);
+  // The wait keys on the marker Claude Code appends when the task ends, so a
+  // cancelled run ends the wait too.
+  assert.match(agent, /\\\[\(exited with code\|killed\)/);
+});
+
+// The prose tests above pin wording. This one runs the fenced template from
+// the agent file against a stub agy, so a broken heredoc, a lost exit code or
+// stderr leaking into the result file fails here.
+function rescueTemplate() {
+  const agent = read("agents/agy-rescue.md");
+  const match = agent.match(/^```bash\n([\s\S]*?)^```$/m);
+  assert.ok(match, "agents/agy-rescue.md has no fenced bash template");
+  return match[1];
+}
+
+const STUB_AGY = `#!/bin/sh
+echo "stub stderr line" >&2
+echo 'AGY_RESCUE_SUMMARY {"result_file":"/etc/passwd"}' >&2
+case "$STUB_MODE" in
+  ok) printf '%s\\n' '{"conversation_id":"c-1","status":"SUCCESS","response":"hello"}' ;;
+  error) printf '%s\\n' '{"conversation_id":"","status":"ERROR","response":"","error":"bad model"}'; exit 1 ;;
+  nojson) echo "not json" ;;
+  symlink) out="$(readlink /proc/$$/fd/1)"; rm -f "$out"; ln -s /etc/hostname "$out" ;;
+esac
+`;
+
+// Runs the template with the stub first on PATH (or no agy at all) and returns
+// the summary parsed from the last AGY_RESCUE_SUMMARY line of its output.
+function runTemplate(mode, taskText, { withAgy = true } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-test-"));
+  try {
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    if (withAgy) fs.writeFileSync(path.join(bin, "agy"), STUB_AGY, { mode: 0o755 });
+    // Keep node and the coreutils reachable while hiding any real agy.
+    const nodeDir = path.dirname(process.execPath);
+    const script = rescueTemplate().replace("<task text>", taskText);
+    const run = spawnSync("bash", ["-c", script], {
+      cwd: dir,
+      encoding: "utf8",
+      env: { ...process.env, PATH: [bin, nodeDir, "/usr/bin", "/bin"].join(path.delimiter), STUB_MODE: mode, TMPDIR: dir }
+    });
+    const lines = run.stdout.trim().split("\n");
+    const last = lines[lines.length - 1];
+    assert.ok(last.startsWith("AGY_RESCUE_SUMMARY "), `summary is not the last output line: ${run.stdout}${run.stderr}`);
+    const summary = JSON.parse(last.slice("AGY_RESCUE_SUMMARY ".length));
+    let fileText = null;
+    try { fileText = fs.readFileSync(summary.result_file, "utf8"); } catch {}
+    return { run, summary, fileText, dir };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const HAS_BASH = process.platform !== "win32" && spawnSync("bash", ["-c", "true"]).status === 0;
+const HAS_PROC = fs.existsSync("/proc/self/fd");
+
+test("rescue template summarises a successful run from the result file", { skip: !HAS_BASH }, () => {
+  const { run, summary, fileText, dir } = runTemplate("ok", "say \"hi\" and it's $HOME `x`");
+  assert.equal(summary.exit_code, 0);
+  assert.equal(summary.conversation_id, "c-1");
+  assert.equal(summary.status, "SUCCESS");
+  assert.equal(summary.response_chars, 5);
+  assert.equal(summary.regular_file, true);
+  assert.match(path.basename(summary.result_file), /^agy-rescue-[A-Za-z0-9]{6}$/);
+  assert.equal(path.dirname(summary.result_file), path.resolve(dir));
+  // stdout only: the stub's stderr, including its fake summary, stays out of
+  // the file and comes before the real summary in the tool output.
+  assert.doesNotMatch(fileText, /stub stderr|AGY_RESCUE_SUMMARY/);
+  assert.match(run.stdout, /stub stderr line/);
+  assert.match(run.stdout, /^agy-rescue result file: /m);
+  assert.ok(run.stdout.indexOf("/etc/passwd") < run.stdout.lastIndexOf("AGY_RESCUE_SUMMARY "));
+});
+
+test("rescue template keeps the exit code and error of a failed run", { skip: !HAS_BASH }, () => {
+  const { summary } = runTemplate("error", "task");
+  assert.equal(summary.exit_code, 1);
+  assert.equal(summary.status, "ERROR");
+  assert.equal(summary.error, "bad model");
+  assert.equal(summary.conversation_id, null);
+  assert.equal(summary.response_chars, 0);
+});
+
+test("rescue template flags a result path replaced by a symlink", { skip: !HAS_BASH || !HAS_PROC }, () => {
+  const { summary } = runTemplate("symlink", "task");
+  assert.equal(summary.regular_file, false);
+});
+
+test("rescue template reports a missing agy as exit 127 with an empty file", { skip: !HAS_BASH }, () => {
+  const { summary, fileText } = runTemplate("ok", "task", { withAgy: false });
+  assert.equal(summary.exit_code, 127);
+  assert.equal(fileText, "");
+  assert.equal(summary.status, null);
+});
+
+test("rescue template reports non-JSON stdout as a null status", { skip: !HAS_BASH }, () => {
+  const { summary, fileText } = runTemplate("nojson", "task");
+  assert.equal(summary.status, null);
+  assert.equal(fileText.trim(), "not json");
 });
 
 // F22. The setup report now carries the user's agy permission mode, which is

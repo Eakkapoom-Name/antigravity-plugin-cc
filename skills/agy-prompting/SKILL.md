@@ -25,15 +25,21 @@ Include the blocks the task needs; leave the rest out.
   the named tests pass. For a review: every hunk considered. For an image: the
   file exists at the path the output contract named.
 - `<verification_loop>`: required for fixes and implementation. Run the tests
-  the change touches, report the command and its result, and do not claim a
-  pass you did not observe.
+  the change touches, in one-shot mode (no watch mode), report the command and
+  its result, and do not claim a pass you did not observe. Wait for or stop
+  anything agy moved to the background before replying: since agy 1.2.9 a
+  leftover background task holds the finished answer until the print timeout.
 - `<grounding_rules>`: required for review and research. No claim without a
   source URL or an inspected artifact. Say when sources disagree. Say when
   evidence is thin rather than filling the gap.
 - `<action_safety>`: for write-capable runs. Stay inside the named files or
   output location, make no unrelated refactors, change no dependencies unless
   asked, and stop to ask when the task turns out to need a decision the
-  prompt did not make.
+  prompt did not make. Leave no server or other process you started running;
+  stop it by its PID or job id, never by name or port (no pkill, killall,
+  `kill -1`, or `kill 0`). If the user asked for a process to stay up, start
+  it detached (nohup or setsid, output to a file) and report its PID; agy
+  waits on anything else and kills it at exit.
 
 ## Which blocks, by task
 

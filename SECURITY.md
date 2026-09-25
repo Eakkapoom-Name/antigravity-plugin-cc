@@ -6,7 +6,8 @@ Most commands here hand text to the Antigravity CLI (`agy`), which sends it
 to Google's models under your own agy account and settings. Three never call
 agy at all: `/agy:cancel`, `/agy:status`, and `/agy:result` only read Claude
 Code's own background task tracking; this plugin keeps no job store, so
-those three have no deterministic work to send anywhere. What the rest
+those three have no deterministic work to send anywhere. They may read a
+rescue result file (see below), which stays local. What the rest
 send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
@@ -17,7 +18,10 @@ send, per command:
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files.
 - `/agy:rescue`, `/agy:continue`: the task text, and whatever agy then reads
-  or runs in your repository under agy's own permission settings.
+  or runs in your repository under agy's own permission settings. agy's full
+  JSON answer is saved to `${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, created by
+  `mktemp` with mode 0600 so only you can read it. Nothing deletes these
+  files; the answer can quote code from the repository.
 - `/agy:whisper`, `/agy:search`, `/agy:research`, `/agy:image`: the prompt
   text only, from an isolated temp directory.
 - `/agy:quota`: no user text; a fixed print-mode `/usage` slash command that

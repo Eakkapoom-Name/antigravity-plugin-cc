@@ -5,6 +5,45 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- The rescue subagent writes agy's JSON to a temporary file
+  (`${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, mode 0600, never deleted) and returns
+  one `AGY_RESCUE_SUMMARY` line naming it, instead of retyping the whole result,
+  which took about 3.5 seconds per KB after agy had exited. `/agy:rescue`,
+  `/agy:continue`, `/agy:result`, and `/agy:status` read the file and now carry
+  the `Read` tool. They read it only when the path has the `mktemp` name, no
+  `..`, and is still a regular file, and they never quote a result file that
+  is not JSON.
+- Rescue task text copies the user's request unchanged. A continuation sends
+  only the follow-up, without extra test or safety blocks.
+- `/agy:rescue` and `/agy:continue` send the user to `/agy:setup` only when
+  agy is missing or not signed in. Other agy errors, such as an unknown
+  `--model`, are reported with agy's own error text. A run with no
+  `conversation_id` now says there is nothing to resume.
+- The rescue print timeout is 8m under the same 590000 ms Bash timeout, leaving
+  room for agy's startup and shutdown so the common case ends in the foreground.
+
+### Fixed
+
+- `/agy:rescue` and `/agy:continue` should no longer sit for minutes after agy
+  has finished. Since agy 1.2.9 a run that leaves a background task running
+  holds its answer until the print timeout, so every rescue task now tells agy
+  to run tests one-shot and leave nothing running before it replies, stopping
+  only what it started, by PID, and starting any process meant to stay up
+  detached. This is an instruction to the model, not a guarantee.
+- Rescue runs pass `--add-dir "$PWD"`. On agy 1.2.10 a run without it works in
+  agy's own scratch directory instead of the repository.
+- The rescue subagent now knows how to wait when Claude Code moves its Bash call
+  to the background, instead of improvising.
+- A Claude Code auto mode denial on the rescue call is returned with its
+  `Reason: [...]` part.
+- A request containing the line `AGY_RESCUE_TASK_END`, which would end the
+  subagent's shell heredoc early, is refused before agy runs, with an
+  `agy-rescue refused:` message.
+
 ## [0.7.0] - 2026-09-18
 
 ### Added

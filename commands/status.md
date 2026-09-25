@@ -1,10 +1,10 @@
 ---
 description: Show active and recent background agy delegations in this session
 argument-hint: "[agent-or-task-id]"
-allowed-tools: ListAgents, TaskOutput
+allowed-tools: ListAgents, TaskOutput, Read
 ---
 
-Report the status of background agy work launched from this session. This plugin has no broker or job files by design, so status comes from the session's own task tracking.
+Report the status of background agy work launched from this session. This plugin has no broker or job files by design, so status comes from the session's own task tracking. The only files it leaves are rescue result files in the temporary directory, which hold a finished run's agy JSON and carry no job state.
 
 Two kinds of background work exist and both belong in the report:
 
@@ -24,7 +24,7 @@ If no argument was given:
 
 If an agent or task id was given:
 
-- Report that run only, in full: status, task text, and the complete stored result if finished (present it per the `agy-result-handling` skill, including `conversation_id`).
+- Report that run only, in full: status, task text, and the complete stored result if finished (present it per the `agy-result-handling` skill, including `conversation_id`). A subagent result is an `AGY_RESCUE_SUMMARY` line; check and read the file its `result_file` names per the `agy-result-handling` skill for the full agy JSON.
 - If it is still running, say so; do not poll or wait.
 
 Never invent a status. If a run is unknown to this session, say that plainly; job state does not persist across sessions (resume agy-side work with `/agy:rescue --resume` instead).

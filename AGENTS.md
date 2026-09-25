@@ -42,3 +42,6 @@ should read and update `OPEN-WORK.md` directly using the same rules.
 - Tag `vX.Y.Z`; the GitHub release title is the tag and its body is that
   version's CHANGELOG section.
 - `npm test` runs `node --test tests/*.test.mjs` and must pass before a push.
+- `npm run test:denials` and `npm run bench:review` are live harnesses (real
+  agy runs, real quota): outside `npm test`, run by hand when a change
+  touches permission handling or the review prompts.

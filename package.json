@@ -29,6 +29,7 @@
   "scripts": {
     "test": "node --test",
     "test:denials": "node tests/live/run-denial-matrix.mjs",
+    "bench:review": "node tests/live/run-review-bench.mjs",
     "check-version": "node scripts/bump-version.mjs --check",
     "prepack": "node scripts/prepack-check.mjs"
   }

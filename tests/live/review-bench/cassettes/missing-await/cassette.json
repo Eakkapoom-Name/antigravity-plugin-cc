@@ -1,0 +1,12 @@
+{
+  "description": "handleRequest drops the await on loadUser, so res.json receives the pending Promise instead of the resolved user.",
+  "markers": [
+    "missing\\s+await",
+    "without\\s+await",
+    "not\\s+awaited",
+    "\\bunawaited\\b",
+    "(pending|unresolved)\\s+promise",
+    "floating\\s+promise",
+    "promise\\s+(object|instead|rather)"
+  ]
+}

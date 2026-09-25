@@ -1,0 +1,14 @@
+{
+  "description": "The loop bound reads i <= values.length instead of i < values.length, adding values[values.length] (undefined) into the sum.",
+  "markers": [
+    "off[- ]by[- ]one",
+    "out[- ]of[- ]bounds?",
+    "past the end",
+    "one (element|index) (past|beyond|too many)",
+    "values\\.length\\]",
+    "(adds?|reads?|includes?|sums?|yields?)\\s+(an?\\s+)?undefined",
+    "\\bNaN\\b",
+    "(one|an)\\s+(extra|additional)\\s+iteration",
+    "one\\s+too\\s+many"
+  ]
+}

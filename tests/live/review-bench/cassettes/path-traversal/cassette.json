@@ -1,0 +1,11 @@
+{
+  "description": "readNote drops path.basename on the caller-supplied filename before joining it under NOTES_DIR, so a filename such as ../../etc/passwd escapes the notes directory.",
+  "markers": [
+    "path\\s+traversal",
+    "directory\\s+traversal",
+    "\\.\\./",
+    "dot[- ]dot",
+    "outside\\s+(of\\s+)?the\\s+.*(dir|root|folder)",
+    "arbitrary\\s+file"
+  ]
+}

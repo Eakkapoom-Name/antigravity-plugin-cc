@@ -18,6 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the earlier patterns covered because the key name (`DATABASE_URL`) carries
   no secret word. A placeholder or environment reference in the password
   position is not a hit.
+- A review-quality bench: three cassette diffs, each with a known defect (an
+  off-by-one loop bound, a missing `await`, a path-traversal fixture), under
+  `tests/live/review-bench/cassettes/`. `npm run bench:review` runs
+  `/agy:review` against each with a live agy and reports HIT, MISS, or ERROR
+  on whether the response names the defect; `--only <id>` and `--adversarial`
+  narrow it to one cassette or run `/agy:adversarial-review` instead. Outside
+  `npm test`, like `test:denials`. The cassette loader and marker matcher
+  live in `scripts/lib/review-bench.mjs`; the offline checks (loads, diffs
+  cleanly, carries no secret) live in `tests/review-bench.test.mjs`.
 
 ### Changed
 

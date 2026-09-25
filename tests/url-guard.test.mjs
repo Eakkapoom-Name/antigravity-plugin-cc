@@ -73,6 +73,28 @@ test("isBlockedHostname blocks localhost and the metadata host", () => {
   assert.equal(isBlockedHostname("example.com"), false);
 });
 
+// Special-use suffixes that never name a public host: mDNS ".local" (RFC
+// 6762), ".internal" (reserved by ICANN, the metadata host's own domain),
+// ".home.arpa" (RFC 8375) and ".test" (RFC 6761). A suffix match only: a
+// public name that merely starts with one of the words is not a hit.
+test("isBlockedHostname blocks the .local, .internal, .home.arpa and .test suffixes", () => {
+  for (const host of ["printer.local", "PRINTER.LOCAL", "db.corp.internal", "router.home.arpa", "router.home.arpa.", "app.test"]) {
+    assert.equal(isBlockedHostname(host), true, host);
+  }
+  for (const host of ["local.example.com", "internal.example.com", "home.arpa.example.com", "test.example.com", "mylocal.com", "attest.io"]) {
+    assert.equal(isBlockedHostname(host), false, host);
+  }
+});
+
+test("guardFetchUrl refuses a .local host without resolving it", async () => {
+  const spy = async () => {
+    throw new Error("a special-use name must not be resolved");
+  };
+  const out = await guardFetchUrl("http://printer.local/", spy);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /host printer\.local is a local name/);
+});
+
 const resolveTo = (addresses) => async () => addresses.map((address) => ({ address, family: address.includes(":") ? 6 : 4 }));
 
 test("guardFetchUrl accepts a public https url", async () => {

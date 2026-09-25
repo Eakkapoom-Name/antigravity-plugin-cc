@@ -153,14 +153,24 @@ export function isBlockedAddress(address) {
   return false;
 }
 
+// Special-use suffixes that never name a public host and so need no
+// resolver to convict: mDNS ".local" (RFC 6762), ".internal" (reserved by
+// ICANN; the cloud metadata host lives under it), ".home.arpa" (RFC 8375)
+// and ".test" (RFC 6761). Suffix matches only.
+const BLOCKED_HOSTNAME_SUFFIXES = [".localhost", ".local", ".internal", ".home.arpa", ".test"];
+
 export function isBlockedHostname(host) {
   const name = String(host ?? "").trim().toLowerCase().replace(/\.$/, "");
-  return name === "localhost" || name.endsWith(".localhost") || name === "metadata" || name === "metadata.google.internal";
+  if (name === "localhost" || name === "metadata" || name === "metadata.google.internal") {
+    return true;
+  }
+  return BLOCKED_HOSTNAME_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
 // `options.skipSingleLabelLookup` lets a caller say "do not spend a DNS lookup
-// on a bare single-label host". search()'s query scan passes it for the
-// slash-free form in a query, where "http:scheme" in a sentence is prose far
+// on a bare single-label host". search()'s query scan passes it for a bare
+// scheme mention in a query ("http:scheme", with no slash, path, port or
+// query after the label), where a sentence naming a scheme is prose far
 // more often than a fetch target. It skips the lookup only: the scheme,
 // credentials, special-use-name and IP-literal checks below all still run
 // first, against the host the URL parser produced, so "http:localhost" and

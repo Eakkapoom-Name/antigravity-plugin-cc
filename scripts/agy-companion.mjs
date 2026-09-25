@@ -322,7 +322,10 @@ const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. 
 
 // Trailing prose punctuation that is never part of a URL's host, stripped
 // from a matched token before it reaches the guard (search()'s query scan).
-const TRAILING_QUERY_PUNCTUATION = /[).,;:!?'"\]>]+$/;
+// A possessive "'s" glued to a bare host ("http://127.0.0.1's page") is
+// prose in the same way: no DNS name holds an apostrophe, so leaving it on
+// turned an address refusal into a resolver failure on "127.0.0.1's".
+const TRAILING_QUERY_PUNCTUATION = /(?:'s)?[).,;:!?'"\]>]*$/i;
 
 // `]` is itself in TRAILING_QUERY_PUNCTUATION, so a bracketed IPv6 literal's
 // own closing bracket ("http://[2606:4700::1111]") would be stripped the
@@ -339,15 +342,37 @@ function stripTrailingQueryPunctuation(token) {
 }
 
 // Whether a matched token spelled out an authority ("http://host", or with
-// backslashes, which the WHATWG parser treats the same way). Nothing about
-// guarding a token is decided here: every token that parses to an http or
-// https URL with a host is guarded either way. This only says whether the
-// token may skip the DNS lookup for a bare single-label host, which is the
-// one shape ("read about http:scheme handling") where a sentence mentioning
-// a scheme would otherwise cost a resolver call. The slashed form is never
-// prose in that way, so it keeps its lookup.
+// backslashes, which the WHATWG parser treats the same way, and with any
+// number of them: "http:/host" and "http:\host" parse the same host as the
+// two-slash form). Nothing about guarding a token is decided here: every
+// token that parses to an http or https URL with a host is guarded either
+// way. This only says whether the token may skip the DNS lookup for a bare
+// single-label host, which is the one shape ("read about http:scheme
+// handling") where a sentence mentioning a scheme would otherwise cost a
+// resolver call. The slashed form is never prose in that way, so it keeps
+// its lookup.
 function hasAuthoritySlashes(token) {
-  return /^https?:[/\\]{2}/i.test(token);
+  return /^https?:[/\\]+/i.test(token);
+}
+
+// The other half of that test: a prose mention of a scheme is bare, "http:"
+// followed by one word and nothing else. A token that goes on to name a
+// path, a port, a query or a fragment after the label ("http:intranet/admin",
+// "http:intranet:8080") is spelled like a fetch target, so it keeps its
+// lookup too, and only DNS gets to say whether the dotless name is local.
+function isBareSchemeMention(token) {
+  return !hasAuthoritySlashes(token) && /^https?:[^/\\:?#]+$/i.test(token);
+}
+
+// A refused slash-free token whose host came from a bare decimal number
+// ("http:443"): the URL parser read the number as an IPv4 address (443 is
+// 0.0.1.187), which the refusal names, though the user never typed one.
+// The refusal stands, since "http:443" and "http:2130706433" (loopback) are
+// the same token shape, but the reason says what happened and how to get
+// past it. Returns the digits, or null when the host came from elsewhere.
+function bareNumberAfterScheme(token) {
+  const match = /^https?:(\d+)(?=[/?#:]|$)/i.exec(token);
+  return match ? match[1] : null;
 }
 
 // Cap on the distinct hosts search()'s query scan will resolve for one
@@ -448,13 +473,15 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // mentioning a scheme paying for a DNS lookup, is handled inside the
     // guard instead, after the host is known: a bare single-label host that
     // is neither an IP literal nor a special-use name skips the lookup, and
-    // only for the slash-free form.
+    // only for a bare scheme mention (isBareSchemeMention: no slash after
+    // the scheme, nothing after the label).
     //
     // `\S+` also grabs trailing prose punctuation a URL is not part of
     // ("see https://example.com, then stop" would otherwise guard the host
     // "example.com,"), so it is stripped before the token reaches the
     // guard by stripTrailingQueryPunctuation, which knows to leave a
-    // bracketed IPv6 literal's own closing bracket alone.
+    // bracketed IPv6 literal's own closing bracket alone and takes a
+    // possessive "'s" the same way.
     //
     // Every token still gets the scheme and credentials checks: a query
     // naming the same host twice, once plainly and once with credentials
@@ -508,10 +535,14 @@ export async function search(argument, run = runPrompt, available = agyAvailable
         seenHosts.add(hostKey);
       }
       const guard = await guardFetchUrl(token, cachedLookup, {
-        skipSingleLabelLookup: !hasAuthoritySlashes(token)
+        skipSingleLabelLookup: isBareSchemeMention(token)
       });
       if (!guard.ok) {
-        return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}` };
+        const number = bareNumberAfterScheme(token);
+        const hint = number === null
+          ? ""
+          : ` (the number ${number} after "${parsed.protocol}" was read as an address; if you meant a port or a count, reword the query)`;
+        return { ok: false, failure: "url-blocked", mode: "search", error: `search refused: ${guard.reason}${hint}` };
       }
     }
     prompt = renderPrompt("search", { QUERY: rest });

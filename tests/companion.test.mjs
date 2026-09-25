@@ -467,7 +467,11 @@ test("a colon-only scheme mention in a query reaches search with no dns lookup",
 // the decimal spelling of loopback are the same token shape and cannot be
 // told apart before the parse. Both are refused: the parsed host is what
 // decides, and the cost of that is this one false positive on a sentence
-// about a port number.
+// about a port number. The reason keeps the address the parser produced and
+// adds that the number was read as one, since the user never typed
+// "0.0.1.187" and would otherwise be told about an address out of nowhere.
+// The hint is for the slash-free form only: "http://443" spelled out an
+// authority, so its author meant a host, not a port.
 test("a port-like bare number in a query parses to an address and is refused", async () => {
   const calls = [];
   const out = await search("the port http:443 thing", fakeRun(calls), () => true);
@@ -475,7 +479,104 @@ test("a port-like bare number in a query parses to an address and is refused", a
   assert.equal(out.failure, "url-blocked");
   assert.equal(out.mode, "search");
   assert.match(out.error, /address 0\.0\.1\.187 is a local or reserved address/);
+  assert.match(out.error, /the number 443 after "http:" was read as an address/);
+  assert.match(out.error, /reword/);
   assert.equal(calls.length, 0);
+
+  const slashed = await search("check http://443 now", fakeRun(calls), () => true);
+  assert.equal(slashed.ok, false);
+  assert.match(slashed.error, /address 0\.0\.1\.187 is a local or reserved address/);
+  assert.doesNotMatch(slashed.error, /was read as an address/, "the hint is for the slash-free form only");
+  assert.equal(calls.length, 0);
+});
+
+// The DNS skip is for a sentence that mentions a scheme bare ("read about
+// http:scheme handling"). A dotless token that goes on to name a path, a
+// port or a query is spelled like a fetch target, not like prose, so it
+// keeps its lookup and is judged on the answer, the way the fetch path
+// always did. Before this, every slash-free dotless token skipped the
+// resolver, so "http:intranet/admin" in a query reached agy unresolved.
+test("a dotless host with a path, port or query after it in a query is still resolved", async () => {
+  for (const argument of [
+    "open http:intranet/admin for me",
+    "open http:intranet:8080 for me",
+    "open http:intranet?page=1 for me"
+  ]) {
+    const calls = [];
+    const lookedUpHosts = [];
+    const lookup = async (host) => {
+      lookedUpHosts.push(host);
+      return [{ address: "10.0.0.5", family: 4 }];
+    };
+    const out = await search(argument, fakeRun(calls), () => true, lookup);
+    assert.equal(out.ok, false, argument);
+    assert.equal(out.failure, "url-blocked", argument);
+    assert.match(out.error, /host intranet resolves to 10\.0\.0\.5/, argument);
+    assert.deepEqual(lookedUpHosts, ["intranet"], argument);
+    assert.equal(calls.length, 0, argument);
+  }
+});
+
+// "http:/host" and "http:\host" spell an authority the same way "http://host"
+// does: the WHATWG parser takes any number of leading slashes or backslashes
+// as the authority marker. They keep their lookup like the two-slash form;
+// only the form with no slash at all is a prose mention.
+test("a single-slash or backslash authority in a query is still resolved", async () => {
+  for (const argument of ["open http:/intranet for me", "open http:\\intranet for me"]) {
+    const calls = [];
+    const lookedUpHosts = [];
+    const lookup = async (host) => {
+      lookedUpHosts.push(host);
+      return [{ address: "10.0.0.5", family: 4 }];
+    };
+    const out = await search(argument, fakeRun(calls), () => true, lookup);
+    assert.equal(out.ok, false, argument);
+    assert.equal(out.failure, "url-blocked", argument);
+    assert.match(out.error, /host intranet resolves to 10\.0\.0\.5/, argument);
+    assert.deepEqual(lookedUpHosts, ["intranet"], argument);
+    assert.equal(calls.length, 0, argument);
+  }
+});
+
+// A possessive glued to a bare host ("http://127.0.0.1's page") used to
+// leave the host as "127.0.0.1's", which is not an IP literal, so the
+// refusal came from the resolver failing on that name rather than from the
+// address check, and the reason text said so. The strip takes the "'s" the
+// same way it takes a trailing comma: the literal is refused for what it is,
+// with no resolver call.
+test("a possessive after a blocked literal in a query is stripped before the address check", async () => {
+  for (const argument of [
+    "see http://127.0.0.1's page",
+    "see (http://127.0.0.1's) page",
+    "see http://127.0.0.1's, then stop"
+  ]) {
+    const calls = [];
+    const lookup = async () => {
+      throw new Error(`no DNS lookup should be needed to refuse ${argument}`);
+    };
+    const out = await search(argument, fakeRun(calls), () => true, lookup);
+    assert.equal(out.ok, false, argument);
+    assert.equal(out.failure, "url-blocked", argument);
+    assert.match(out.error, /address 127\.0\.0\.1 is a local or reserved address/, argument);
+    assert.equal(calls.length, 0, argument);
+  }
+});
+
+// The same strip on a public host: "example.com's" never resolved (no DNS
+// name holds an apostrophe), so this query used to be refused as a
+// resolver failure. It now judges example.com, the host agy would fetch.
+test("a possessive after a public host in a query is stripped before the lookup", async () => {
+  const calls = [];
+  const lookedUpHosts = [];
+  const lookup = async (host) => {
+    lookedUpHosts.push(host);
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const out = await search("see https://example.com's page", fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true);
+  assert.equal(out.mode, "search");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(lookedUpHosts, ["example.com"], "the possessive should have been stripped from the host before resolving");
 });
 
 // Each of these parses to a host the guard blocks, and none of them looks

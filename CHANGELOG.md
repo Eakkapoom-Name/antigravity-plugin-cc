@@ -89,6 +89,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AGY_ERROR:` line on stderr) is now a failure, `failure: "agy-error"`, with
   the parsed line as `agyError` and any partial response kept. Before, the
   exit code was ignored and the `AGY_ERROR` line was only part of `stderr`.
+- `/agy:search` refuses a host under `.local`, `.internal`, `.home.arpa` or
+  `.test` as a local name, before agy runs and without a resolver call, the
+  way `localhost` and the metadata host already were. Applies to a URL given
+  as the whole argument and to a URL-shaped word inside a query.
+- The query scan's DNS skip for a bare scheme mention (`http:scheme` in a
+  sentence) no longer covers a dotless host followed by a path, port or query
+  (`http:intranet/admin`, `http:intranet:8080`), nor the single-slash and
+  backslash forms (`http:/intranet`, `http:\intranet`). Those are resolved
+  and judged on the answer like any other host in the query.
+- A possessive glued to a URL in a query (`see http://127.0.0.1's page`) is
+  stripped like trailing punctuation, so a blocked literal is refused as a
+  reserved address rather than as a resolver failure on `127.0.0.1's`, and a
+  public host written that way is judged on its real name instead of refused.
+- A slash-free number after a scheme in a query (`the port http:443 thing`)
+  is still refused, since the URL parser reads it as an IPv4 address, but the
+  reason now says the number was read as an address and suggests rewording.
 
 ## [0.7.0] - 2026-09-18
 

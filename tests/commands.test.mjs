@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -437,6 +437,63 @@ test("rescue agent says what to do when its Bash call is moved to the background
   // The wait keys on the marker Claude Code appends when the task ends, so a
   // cancelled run ends the wait too.
   assert.match(agent, /\\\[\(exited with code\|killed\)/);
+});
+
+// F91, behavior rather than wording: runs the wait command from the agent file
+// against a fake background-task output file. Only the file path and the poll
+// interval are substituted, so a broken marker regex or tail call fails here.
+function rescueWaitCommand(outputFile) {
+  const match = read("agents/agy-rescue.md").match(/`(until tail [^`]*)`/);
+  assert.ok(match, "agents/agy-rescue.md has no `until tail` wait command");
+  assert.match(match[1], /sleep 5;/);
+  return match[1].replaceAll('"<output file>"', JSON.stringify(outputFile)).replace("sleep 5;", "sleep 0.1;");
+}
+
+// Starts the wait, appends `finalLine` after a delay, and reports whether the
+// wait ended before the append and what it printed.
+async function runRescueWait(initial, finalLine) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, initial);
+    const child = spawn("bash", ["-c", rescueWaitCommand(outputFile)], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    let appended = false;
+    let endedEarly = false;
+    const exited = new Promise((resolve) => child.on("exit", (code) => {
+      if (!appended) endedEarly = true;
+      resolve(code);
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    appended = true;
+    fs.appendFileSync(outputFile, finalLine + "\n");
+    const killer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    const code = await exited;
+    clearTimeout(killer);
+    return { code, stdout, endedEarly };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const SUMMARY_LINE = 'AGY_RESCUE_SUMMARY {"status":"SUCCESS","result_file":"/tmp/agy-rescue-x.json"}';
+
+test("rescue wait keeps waiting until the exit marker, then prints the summary line", async () => {
+  // An earlier marker-looking line is not the last line, so it must not end the wait.
+  const initial = ["agy output", "[exited with code 1]", SUMMARY_LINE, ""].join("\n");
+  const result = await runRescueWait(initial, "[exited with code 0]");
+  assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /^AGY_RESCUE_SUMMARY /m);
+  assert.match(result.stdout, /\[exited with code 0\]\s*$/);
+});
+
+test("rescue wait also ends on a killed marker", async () => {
+  const result = await runRescueWait(SUMMARY_LINE + "\n", "[killed]");
+  assert.equal(result.endedEarly, false, "wait ended before the killed marker was written");
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /\[killed\]\s*$/);
 });
 
 // The prose tests above pin wording. This one runs the fenced template from

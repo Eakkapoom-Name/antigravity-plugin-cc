@@ -345,8 +345,8 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
   }
 
   const { recoverFromDenial, conversationId: _ignored, continueConversation, ...rest } = options;
-  // Unmeasured: no live run has passed agy a seconds-form `--print-timeout`.
-  // `agy --help` shows a Go duration (`0s`), so "<N>s" should parse.
+  // agy takes a Go duration: `--print-timeout 30s` ran live on 1.2.14
+  // (2026-09-30, exit 0, status SUCCESS).
   const printTimeout = `${printSeconds}s`;
   const second = run(denialConstraintPrompt(first.deniedActions ?? []), {
     ...rest,

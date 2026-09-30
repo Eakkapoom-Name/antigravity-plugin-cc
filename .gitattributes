@@ -1,0 +1,3 @@
+# Check out text files with LF on every platform: tests match source text
+# line by line, and agy prompts are rendered from these files.
+* text=auto eol=lf

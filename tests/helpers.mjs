@@ -5,7 +5,9 @@ import { fileURLToPath } from "node:url";
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export function read(relativePath) {
-  return fs.readFileSync(path.join(ROOT, relativePath), "utf8");
+  // A CRLF checkout (Windows without .gitattributes applied) must not break
+  // tests that match source text line by line.
+  return fs.readFileSync(path.join(ROOT, relativePath), "utf8").replace(/\r\n/g, "\n");
 }
 
 export function readJson(relativePath) {

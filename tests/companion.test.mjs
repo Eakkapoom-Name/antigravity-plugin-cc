@@ -6,7 +6,20 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-import { extractImagePath, image, parseFlaggedArguments, quotaRunError, research, review, search, transfer, whisper } from "../scripts/agy-companion.mjs";
+import {
+  extractImagePath,
+  image,
+  main,
+  parseFlaggedArguments,
+  parseReviewArguments,
+  parseTransferArguments,
+  quotaRunError,
+  research,
+  review,
+  search,
+  transfer,
+  whisper
+} from "../scripts/agy-companion.mjs";
 import { read } from "./helpers.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
@@ -523,8 +536,10 @@ test("a blocked bracketed ipv6 literal in a query is still refused", async () =>
 
 // Deduping by host must only skip the DNS lookup, not the scheme and
 // credentials checks: a query naming the same host twice, the second time
-// with credentials, still has to refuse the second mention even though the
-// first already passed.
+// with a user name, still has to refuse the second mention even though the
+// first already passed. A user name with a password (`u:p@`) no longer
+// reaches the guard at all: the secret scan runs first and refuses it as a
+// credential-url, before any lookup.
 test("a second mention of an already-checked host still gets its credentials checked", async () => {
   const calls = [];
   let lookups = 0;
@@ -532,12 +547,20 @@ test("a second mention of an already-checked host still gets its credentials che
     lookups += 1;
     return [{ address: "93.184.216.34", family: 4 }];
   };
-  const out = await search("see https://example.com/ and https://u:p@example.com/x", fakeRun(calls), () => true, lookup);
+  const out = await search("see https://example.com/ and https://u@example.com/x", fakeRun(calls), () => true, lookup);
   assert.equal(out.ok, false);
   assert.equal(out.failure, "url-blocked");
   assert.match(out.error, /credentials/);
   assert.equal(calls.length, 0);
   assert.equal(lookups, 1, "the DNS lookup for the already-known host should still be deduped");
+
+  lookups = 0;
+  const withPassword = await search("see https://example.com/ and https://u:p@example.com/x", fakeRun(calls), () => true, lookup);
+  assert.equal(withPassword.ok, false);
+  assert.equal(withPassword.failure, "secrets");
+  assert.equal(withPassword.hits[0].kind, "credential-url");
+  assert.equal(calls.length, 0);
+  assert.equal(lookups, 0, "a secrets refusal must come before any DNS lookup");
 });
 
 // A sentence that merely mentions a scheme still reaches the search path and
@@ -1295,4 +1318,449 @@ test("quota names the failure kind even when agy wrote stderr", () => {
 test("quota.md tells the model what a timeout failure means", () => {
   const source = read("commands/quota.md");
   assert.match(source, /\(timeout\)/);
+});
+
+// F110. During an unresolved merge `git diff --cached` prints `* Unmerged
+// path <file>` and no section for that file. Only those lines used to fail as
+// a diff-shape (git config) problem, and alongside a real section the
+// conflicted file was silently left out of the review.
+function scratchMerge({ stageOther }) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-merge-"));
+  const git = (...args) =>
+    spawnSync("git", ["-c", "user.email=t@example.com", "-c", "user.name=t", ...args], { cwd: dir, encoding: "utf8" });
+  git("init", "--quiet", "-b", "main");
+  fs.writeFileSync(path.join(dir, "a.txt"), "one\n");
+  fs.writeFileSync(path.join(dir, "b.txt"), "x\n");
+  git("add", "-A");
+  git("commit", "-qm", "init");
+  git("checkout", "-q", "-b", "side");
+  fs.writeFileSync(path.join(dir, "a.txt"), "side\n");
+  git("commit", "-qam", "side");
+  git("checkout", "-q", "main");
+  fs.writeFileSync(path.join(dir, "a.txt"), "main\n");
+  git("commit", "-qam", "main");
+  git("merge", "side");
+  if (stageOther) {
+    fs.appendFileSync(path.join(dir, "b.txt"), "y\n");
+    git("add", "b.txt");
+  }
+  return dir;
+}
+
+test("a staged review during an unresolved merge names the unmerged path, not the git config", () => {
+  for (const stageOther of [false, true]) {
+    for (const adversarial of [false, true]) {
+      const calls = [];
+      const out = withWorkspace(scratchMerge({ stageOther }), () =>
+        review({ argument: "staged", adversarial, run: fakeRun(calls), available: () => true })
+      );
+      const label = `stageOther=${stageOther} adversarial=${adversarial}`;
+      assert.equal(calls.length, 0, label);
+      assert.equal(out.ok, false, label);
+      assert.equal(out.failure, "unmerged", label);
+      assert.deepEqual(out.paths, ["a.txt"], label);
+      assert.match(out.error, /unresolved merge: a\.txt is unmerged/, label);
+      assert.match(out.error, /Resolve the merge/, label);
+      assert.doesNotMatch(out.error, /git config/, label);
+    }
+  }
+});
+
+test("unmerged-path lines refuse whether alone or beside real diff sections, naming every file", () => {
+  const section = ["diff --git a/b.txt b/b.txt", "index 1111111..2222222 100644", "--- a/b.txt", "+++ b/b.txt", "@@ -1 +1,2 @@", " x", "+y", ""];
+  const cases = [
+    ["* Unmerged path a.txt", "* Unmerged path c d.txt", ""].join("\n"),
+    ["* Unmerged path a.txt", ...section, "* Unmerged path c d.txt", ""].join("\n")
+  ];
+  for (const diff of cases) {
+    const { out, calls } = reviewWith(diff);
+    assert.equal(calls.length, 0);
+    assert.equal(out.failure, "unmerged");
+    assert.deepEqual(out.paths, ["a.txt", "c d.txt"]);
+    assert.match(out.error, /a\.txt, c d\.txt are unmerged/);
+  }
+});
+
+test("a diff line that merely starts with a plus and says unmerged path is not a refusal", () => {
+  const diff = ["diff --git a/n.md b/n.md", "index 1111111..2222222 100644", "--- a/n.md", "+++ b/n.md", "@@ -1 +1,2 @@", " one", "+* Unmerged path a.txt", ""].join("\n");
+  const { out, calls } = reviewWith(diff);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(calls.length, 1);
+});
+
+// F126. whisper, search, research and image sent their argument text to agy
+// unscanned, while Claude can invoke them with a file excerpt in it.
+const GHP = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+const okRun = (calls) => (prompt, options) => {
+  calls.push({ prompt, options });
+  return { result: { conversation_id: "c", status: "SUCCESS", response: "done" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+};
+
+function assertSecretsRefusal(out, calls, command) {
+  assert.equal(calls.length, 0, `${command} ran agy on an argument carrying a credential`);
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "secrets");
+  assert.equal(out.hits[0].kind, "github-token");
+  assert.match(out.note, new RegExp(`The ${command} did not run`));
+  assert.match(out.note, /--allow-secret <regex>/);
+  assert.ok(!JSON.stringify(out).includes(GHP), "the value leaked into the report");
+}
+
+test("whisper, search, research and image refuse an argument carrying a credential before agy runs", async () => {
+  const noLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-secret-root-"));
+  try {
+    let calls = [];
+    assertSecretsRefusal(whisper(`explain this ${GHP}`, okRun(calls), () => true), calls, "whisper");
+    calls = [];
+    assertSecretsRefusal(await search(`what is ${GHP}`, okRun(calls), () => true, noLookup), calls, "search");
+    calls = [];
+    assertSecretsRefusal(await search(`https://example.com/?t=${GHP}`, okRun(calls), () => true, noLookup), calls, "search");
+    calls = [];
+    assertSecretsRefusal(research(`--out r.md history of ${GHP}`, okRun(calls), () => true, root), calls, "research");
+    assert.ok(!fs.existsSync(path.join(root, "r.md")));
+    calls = [];
+    assertSecretsRefusal(image(`draw ${GHP}`, okRun(calls), () => true, root, root), calls, "image");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("--allow-secret lets a known fixture through whisper, search, research and image", async () => {
+  const noLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-secret-root-"));
+  try {
+    let calls = [];
+    let out = whisper(`--allow-secret fixture$ explain ${GHP} fixture`, okRun(calls), () => true);
+    assert.equal(out.ok, true);
+    assert.equal(calls.length, 1);
+    assert.doesNotMatch(calls[0].prompt, /--allow-secret/);
+    calls = [];
+    out = await search(`--allow-secret nomatch --allow-secret fixture$ what is ${GHP} fixture`, okRun(calls), () => true, noLookup);
+    assert.equal(out.ok, true);
+    assert.equal(calls.length, 1);
+    calls = [];
+    out = research(`--allow-secret fixture$ history of ${GHP} fixture`, okRun(calls), () => true, root);
+    assert.equal(out.ok, true);
+    assert.equal(calls.length, 1);
+    calls = [];
+    out = image(`--allow-secret fixture$ draw ${GHP} fixture`, okRun(calls), () => true, root, root);
+    assert.equal(calls.length, 1, "the allow pattern did not admit the run");
+    assert.equal(out.failure, "no-image");
+    // A pattern that does not match the line is not an allow.
+    calls = [];
+    out = whisper(`--allow-secret nomatch explain ${GHP}`, okRun(calls), () => true);
+    assert.equal(out.failure, "secrets");
+    assert.equal(calls.length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the prompt-only command docs advertise --allow-secret and the secrets failure", () => {
+  for (const name of ["whisper", "search", "research", "image"]) {
+    const doc = read(`commands/${name}.md`);
+    assert.match(doc, /argument-hint: [^\n]*--allow-secret <regex>/, `${name}.md argument-hint omits --allow-secret`);
+    assert.match(doc, /failure: "secrets"/, `${name}.md does not explain the secrets failure`);
+  }
+});
+
+// F78. transfer took no --allow-secret, so a brief quoting a fixture could only
+// be edited, which changes the handoff the user wanted to send.
+test("transfer accepts --allow-secret for a known fixture, and a repeated --model is refused", () => {
+  const calls = [];
+  const { dir, file } = scratchBrief(`Handoff notes.\nkey = "${AWS}"  # fixture\n`);
+  try {
+    const blocked = transfer({ argument: file, run: fakeRun(calls), available: () => true });
+    assert.equal(blocked.failure, "secrets");
+    assert.match(blocked.note, /--allow-secret <regex>/);
+    assert.equal(calls.length, 0);
+    const out = transfer({ argument: `${file} --allow-secret nomatch --allow-secret fixture$`, run: fakeRun(calls), available: () => true });
+    assert.equal(out.ok, true, JSON.stringify(out));
+    assert.equal(calls.length, 1);
+    assert.ok(!fs.existsSync(file), "a successful transfer removes the brief file");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("transfer refuses a repeated --model or --effort instead of letting the last win", () => {
+  const calls = [];
+  const { dir, file } = scratchBrief("Handoff notes.\n");
+  try {
+    for (const flag of ["--model", "--effort"]) {
+      const out = transfer({ argument: `${file} ${flag} a ${flag} b`, run: fakeRun(calls), available: () => true });
+      assert.equal(out.ok, false);
+      assert.equal(out.error, `${flag} was given more than once; it takes a single value.`);
+    }
+    assert.equal(calls.length, 0);
+    assert.ok(fs.existsSync(file), "a refused transfer must leave the brief in place");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// F64 and F83. One reader behind every parser: repeatable flags, valueless
+// flags, and a quoted value holding whitespace.
+test("parseFlaggedArguments reads a declared valueless flag without eating the next word", () => {
+  const parsed = parseFlaggedArguments("--verbose hello --model m world", ["--model"], [], ["--verbose"]);
+  assert.deepEqual(parsed.flags, { verbose: true, model: "m" });
+  assert.equal(parsed.rest, "hello world");
+  // Undeclared, the same flag stays free text, and a declared one given twice is not a refusal.
+  assert.equal(parseFlaggedArguments("--verbose hello", ["--model"]).rest, "--verbose hello");
+  const twice = parseFlaggedArguments("--verbose --verbose x", [], [], ["--verbose"]);
+  assert.equal(twice.error, undefined);
+  assert.deepEqual(twice.flags, { verbose: true });
+});
+
+test("parseFlaggedArguments accepts a double or single quoted value containing whitespace", () => {
+  const dq = parseFlaggedArguments('--out "my file.md" a topic', ["--out"]);
+  assert.deepEqual(dq.flags, { out: "my file.md" });
+  assert.equal(dq.rest, "a topic");
+  const sq = parseFlaggedArguments("--out 'my  file.md' a topic", ["--out"]);
+  assert.deepEqual(sq.flags, { out: "my  file.md" });
+  // Repeatable flags take quoted values too.
+  const many = parseFlaggedArguments('--allow-secret "a b" --allow-secret c', ["--allow-secret"], ["--allow-secret"]);
+  assert.deepEqual(many.flags, { allowSecret: ["a b", "c"] });
+  // Free text keeps its quotes and its apostrophes, and an unclosed or glued quote is not a value.
+  assert.equal(parseFlaggedArguments(`what's a "quoted phrase" here`, ["--out"]).rest, `what's a "quoted phrase" here`);
+  assert.equal(parseFlaggedArguments('--out "unclosed name', ["--out"]).flags.out, '"unclosed');
+  assert.equal(parseFlaggedArguments('--out "a"b c', ["--out"]).flags.out, '"a"b');
+  // A quoted value that starts with dashes is a value, an unquoted one is the next flag.
+  assert.equal(parseFlaggedArguments('--out "--x y" z', ["--out"]).flags.out, "--x y");
+  assert.deepEqual(parseFlaggedArguments("--out --model m z", ["--out", "--model"]).flags, { model: "m" });
+});
+
+test("research writes --out to a quoted path containing a space", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-research-"));
+  const calls = [];
+  try {
+    const out = research('--out "my report.md" rust async runtimes', fakeRun(calls), () => true, root);
+    assert.equal(out.ok, true);
+    assert.equal(out.outPath, path.join(fs.realpathSync(root), "my report.md"));
+    assert.match(calls[0].prompt, /rust async runtimes/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("review and transfer read quoted values and keep their result shapes", () => {
+  assert.deepEqual(parseReviewArguments('--allow-secret "fix ture$" staged look at auth', process.cwd()), {
+    scope: "staged",
+    focus: "look at auth",
+    allowSecret: ["fix ture$"]
+  });
+  assert.deepEqual(parseTransferArguments(["/tmp/my dir/brief.md", "--model", "fast one"]), {
+    briefPath: "/tmp/my dir/brief.md",
+    model: "fast one",
+    effort: undefined
+  });
+  assert.deepEqual(parseTransferArguments("/tmp/b.md --allow-secret a --allow-secret b").allowSecret, ["a", "b"]);
+  assert.deepEqual(parseTransferArguments("/tmp/b.md --allow-secret a").allowSecret, ["a"]);
+  assert.equal(parseTransferArguments("/tmp/b.md").allowSecret, undefined);
+  assert.equal(parseTransferArguments("/tmp/b.md --model a --model b").error, "--model was given more than once; it takes a single value.");
+});
+
+// F66. Only a host the guard actually sends to the resolver counts toward the
+// cap; a bare scheme mention is never looked up.
+test("search does not count dotless scheme mentions toward the host cap", async () => {
+  const calls = [];
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const mentions = Array.from({ length: 30 }, (_, i) => `http:word${i}`).join(" ");
+  const out = await search(`compare ${mentions}`, fakeRun(calls), () => true, lookup);
+  assert.equal(out.ok, true, JSON.stringify(out));
+  assert.equal(calls.length, 1);
+  assert.equal(lookups, 0);
+});
+
+test("search still refuses 21 real hosts after dotless mentions, and still resolves at most the cap", async () => {
+  for (const exactly of [20, 21]) {
+    const calls = [];
+    let lookups = 0;
+    const lookup = async () => {
+      lookups += 1;
+      return [{ address: "93.184.216.34", family: 4 }];
+    };
+    const dotless = Array.from({ length: 25 }, (_, i) => `http:word${i}`).join(" ");
+    const real = Array.from({ length: exactly }, (_, i) => `https://host${i}.example.com/`).join(" ");
+    const out = await search(`${dotless} ${real}`, fakeRun(calls), () => true, lookup);
+    if (exactly === 20) {
+      assert.equal(out.ok, true, JSON.stringify(out));
+      assert.equal(lookups, 20);
+    } else {
+      assert.equal(out.ok, false);
+      assert.equal(out.failure, "url-blocked");
+      assert.match(out.error, /more than 20 distinct hosts/);
+      assert.equal(lookups, 20, "the 21st host must not be resolved");
+      assert.equal(calls.length, 0);
+    }
+  }
+});
+
+// F105. An --out extension that maps to no image format the copy could be gets
+// a warning too, naming what the bytes are and what the extension was.
+test("image warns when --out names an extension that is no image format", () => {
+  for (const [name, ext] of [["hero.txt", ".txt"], ["hero.gif", ".gif"], ["hero", null]]) {
+    const { brain, file } = fakeBrain();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-img-root-"));
+    try {
+      const out = image(
+        `--out ${name} a blue square`,
+        () => ({ result: { status: "SUCCESS", response: `${file}\n` }, events: [], deniedActions: [], stderr: "", ok: true, failure: null }),
+        () => true,
+        root,
+        brain
+      );
+      assert.equal(out.ok, true);
+      assert.equal(out.outPath, path.join(fs.realpathSync(root), name));
+      assert.match(out.warning, /look like png/, name);
+      assert.ok(ext ? out.warning.includes(`${ext} extension`) : /no extension/.test(out.warning), out.warning);
+    } finally {
+      fs.rmSync(brain, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+// Review finding 1. The URL guard resolves every host it checks, so a token
+// sitting in a hostname reached the resolver (and whoever answers for that
+// domain) before the secret scan refused it. The scan now runs first, in both
+// modes, and no lookup happens at all on a refusal.
+test("search refuses a credential before any dns lookup, in fetch and query mode", async () => {
+  let lookups = 0;
+  const lookup = async () => {
+    lookups += 1;
+    return [{ address: "93.184.216.34", family: 4 }];
+  };
+  const cases = [
+    [`https://example.com/?t=${GHP}`, "fetch", "github-token"],
+    [`http://${AWS}.attacker.example/`, "fetch", "aws-access-key-id"],
+    [`https://${GHP}.evil.example/`, "fetch", "github-token"],
+    [`what is ${GHP}`, "search", "github-token"],
+    [`read http://${AWS}.attacker.example/ please`, "search", "aws-access-key-id"],
+    [`compare https://example.com/ and https://${GHP}.evil.example/`, "search", "github-token"]
+  ];
+  for (const [argument, mode, kind] of cases) {
+    const calls = [];
+    const out = await search(argument, fakeRun(calls), () => true, lookup);
+    assert.equal(out.failure, "secrets", argument);
+    assert.equal(out.mode, mode, argument);
+    assert.equal(out.hits[0].kind, kind, argument);
+    assert.equal(calls.length, 0, argument);
+    assert.equal(lookups, 0, `${argument} reached the resolver before the secrets refusal`);
+  }
+});
+
+// Review finding 2. An empty quoted value made `--allow-secret` the pattern
+// "", which matches every line and switched the scan off, and put `model: ""`
+// into agy's argv. Either is now a named refusal before anything runs.
+test("an empty or blank flag value is refused by name before anything runs", async () => {
+  const noLookup = async () => [{ address: "93.184.216.34", family: 4 }];
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agy-empty-flag-"));
+  try {
+    for (const empty of ['""', "''", '" "']) {
+      const calls = [];
+      const outs = [
+        whisper(`--allow-secret ${empty} explain ${GHP}`, okRun(calls), () => true),
+        await search(`--allow-secret ${empty} what is ${GHP}`, okRun(calls), () => true, noLookup),
+        research(`--allow-secret ${empty} history of ${GHP}`, okRun(calls), () => true, root),
+        image(`--allow-secret ${empty} draw ${GHP}`, okRun(calls), () => true, root, root),
+        withWorkspace(scratchRepo(`key = "${AWS}"`), () =>
+          review({ argument: `--allow-secret ${empty}`, adversarial: false, run: okRun(calls), available: () => true })
+        ),
+        whisper(`--model ${empty} explain monads`, okRun(calls), () => true)
+      ];
+      for (const out of outs) {
+        assert.equal(out.ok, false, JSON.stringify(out));
+        assert.match(out.error, /^--(allow-secret|model) was given an empty value\.$/);
+      }
+      assert.equal(calls.length, 0, `a run was spent with the empty value ${empty}`);
+    }
+    // The same through transfer's argv form, where the shell has already
+    // removed the quotes and the entry arrives as "".
+    const calls = [];
+    const { dir, file } = scratchBrief(`Handoff notes.\nkey = "${AWS}"\n`);
+    try {
+      for (const argument of [[file, "--allow-secret", ""], [file, "--model", ""]]) {
+        const out = transfer({ argument, run: fakeRun(calls), available: () => true });
+        assert.equal(out.ok, false);
+        assert.match(out.error, /was given an empty value/);
+      }
+      assert.equal(calls.length, 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+    // Without the empty allow pattern the same argument is still blocked by the scan.
+    const calls2 = [];
+    assert.equal(whisper(`explain ${GHP}`, okRun(calls2), () => true).failure, "secrets");
+    assert.equal(calls2.length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Review finding 3. main joined transfer's argv entries with spaces and the
+// parser split them again, so a brief path or a flag value holding a space
+// was cut apart, and `--allow-secret "fix ture$"` became the broader "fix".
+test("main hands transfer its argv entries whole and the others one joined string", () => {
+  const seen = {};
+  const handlers = {
+    transfer: (argument) => ((seen.transfer = argument), { ok: true }),
+    whisper: (argument) => ((seen.whisper = argument), { ok: true })
+  };
+  const argv = ["/tmp/my dir/brief.md", "--allow-secret", "fix ture$", "--model", "fast one"];
+  main(["transfer", ...argv], handlers);
+  assert.deepEqual(seen.transfer, argv);
+  main(["whisper", "--model fast explain monads"], handlers);
+  assert.equal(seen.whisper, "--model fast explain monads");
+  assert.deepEqual(parseTransferArguments(argv), {
+    briefPath: "/tmp/my dir/brief.md",
+    model: "fast one",
+    effort: undefined,
+    allowSecret: ["fix ture$"]
+  });
+});
+
+test("transfer reads a brief path and flag values holding spaces from argv entries", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy brief "));
+  const file = path.join(dir, "my brief.md");
+  try {
+    const calls = [];
+    // A line the whole pattern admits goes through, with the model intact.
+    fs.writeFileSync(file, `Handoff notes.\nkey = "${AWS}"  # fix ture\n`);
+    const out = transfer({ argument: [file, "--allow-secret", "fix ture$", "--model", "fast one"], run: fakeRun(calls), available: () => true });
+    assert.equal(out.ok, true, JSON.stringify(out));
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.model, "fast one");
+    assert.ok(!fs.existsSync(file), "a successful transfer removes the brief file");
+    // A line only the split-off "fix" would have admitted is still refused.
+    fs.writeFileSync(file, `Handoff notes.\nkey = "${AWS}"  # fix only\n`);
+    const blocked = transfer({ argument: [file, "--allow-secret", "fix ture$"], run: fakeRun(calls), available: () => true });
+    assert.equal(blocked.failure, "secrets");
+    assert.equal(calls.length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("transfer.md single-quotes each --allow-secret value in its script call", () => {
+  const doc = read("commands/transfer.md");
+  assert.match(doc, /agy-companion\.mjs" transfer "<path to the brief file>" \[--allow-secret '<regex>'\]/);
+});
+
+// Review finding 4. The quoted-value form applied to free text too, so a word
+// opening with an apostrophe and a later one closing with one read as a single
+// quoted token, and the flags between them went to agy as prompt text.
+test("free text apostrophes never swallow the flags between them", () => {
+  const parsed = parseFlaggedArguments("songs from the '90s --model fast and rock n' roll", ["--model"]);
+  assert.equal(parsed.error, undefined);
+  assert.deepEqual(parsed.flags, { model: "fast" });
+  assert.equal(parsed.rest, "songs from the '90s and rock n' roll");
+  assert.deepEqual(parseFlaggedArguments("it's --model m", ["--model"]), { flags: { model: "m" }, rest: "it's" });
+  assert.equal(parseFlaggedArguments("--out 'my file.md' --model m topic", ["--out", "--model"]).flags.out, "my file.md");
+  assert.equal(parseFlaggedArguments('--out "my file.md" topic', ["--out"]).flags.out, "my file.md");
 });

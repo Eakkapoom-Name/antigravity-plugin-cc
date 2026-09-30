@@ -26,6 +26,7 @@ Core constraint:
 Reading the JSON the script prints:
 
 - `scopeNote`: the first word looked like a ref but git does not resolve it, so it was kept in the focus and the working tree was reviewed. Relay it to the user in one line, alongside whatever else the payload reports.
+- `failure: "unmerged"`: the review did not run, because the diff is missing at least one file: an unresolved merge leaves conflicted paths out of `git diff --cached`. Report the `error`, name each entry of `paths`, say nothing left the machine, and tell the user to resolve the merge (fix the conflict markers and stage the result) before rerunning. Do not review the rest and do not retry.
 - `failure: "diff-shape"`: the review did not run, because git's output did not have the shape the secret scanner reads. Report the `error`, say nothing left the machine, and stop.
 - `ok: false` with an `error`: report the error and stop. If it says agy is not installed, point at `/agy:setup`.
 - `empty: true`: say there is nothing to review in that scope, quoting `scope`. If `untrackedFiles` is non-empty, list them and say a diff review does not cover untracked files.

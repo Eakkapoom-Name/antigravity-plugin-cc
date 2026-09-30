@@ -146,7 +146,9 @@ working-directory change, not a sandbox: whether agy can still reach paths
 outside that directory depends on agy's own `toolPermission` setting (under
 `always-proceed` it can read a file by absolute path). If the diff trips the secret scanner, the run stops and reports
 what it found; pass `--allow-secret <regex>` (repeatable) to admit a known
-false positive.
+false positive. A staged review during an unresolved merge is refused with the
+unmerged paths named (`git diff --cached` leaves conflicted files out of the
+diff); resolve the merge and rerun.
 
 This command is read-only and will not perform any changes.
 
@@ -233,7 +235,14 @@ working-directory change rather than a sandbox: whether agy can reach paths
 outside it depends on agy's own `toolPermission` setting (`always-proceed`
 reads by absolute path), and agy's `allowNonWorkspaceAccess` setting, with an
 absolute path in the prompt text, still reaches outside it. Nothing in this command's text is checked for a URL;
-the local-network guard belongs to `/agy:search` alone.
+the local-network guard belongs to `/agy:search` alone. The prompt text does go
+through the secret scanner before it is sent: a hit stops the run, and
+`--allow-secret <regex>` (repeatable) admits a known false positive. The same
+scan and flag apply to `/agy:search`, `/agy:research` and `/agy:image`. Only
+the free text is scanned: `--model` and `--effort` values are passed to agy's
+argv as they are, unscanned, and `--out` never reaches agy at all. An empty
+flag value (`--allow-secret ""`) is refused rather than read as a pattern that
+matches everything.
 
 ### `/agy:search`
 
@@ -251,7 +260,8 @@ get through by arriving with other words around it. That check is made once, on
 the URL given; it does not follow redirects and cannot see a DNS answer that
 changes afterward (rebinding), since agy performs the actual fetch in its own
 process. It also covers this command only: `/agy:whisper`, `/agy:research` and
-`/agy:image` send their text to the same web-capable agy unchecked. The
+`/agy:image` send their text to the same web-capable agy without that check
+(they still run the secret scan described under `/agy:whisper`). The
 `agy-web` skill tells Claude Code to reach for this second, after
 its own WebSearch and WebFetch and before Tavily.
 
@@ -266,7 +276,10 @@ Fixed report shape: Summary, Key findings (each with its source), Disagreements
 and thin evidence, Caveats, Sources. `--effort` sets the depth. `--out <path>`
 writes the same markdown inside the workspace; the parent directory must exist
 and an existing file is never overwritten. agy runs isolated; the companion does
-the write.
+the write. `--out` takes a quoted path when it holds a space; use single
+quotes (`--out 'docs/my notes.md'`), since the command hands its whole
+argument to the companion inside double quotes, where a double-quoted path
+would end that string early.
 
 ### `/agy:image`
 
@@ -284,8 +297,11 @@ parent directory must exist and an existing file is never overwritten. The
 copy is a byte-for-byte copy, not a re-encode, so a `--out` name whose
 extension differs from the file agy actually produced is copied as-is under
 the name given. That happens: a run that asked for a PNG came back as a
-1024x1024 JPEG, under a name agy chose itself. agy never sees `--out`; the
-companion resolves it and does the copy.
+1024x1024 JPEG, under a name agy chose itself. The result carries a `warning`
+when the bytes do not match the extension, and also when the extension is no
+image format at all (`.txt`, `.gif`, none), naming the format the bytes are.
+agy never sees `--out`; the companion resolves it and does the copy. A path
+with a space takes single quotes, as for `/agy:research`.
 
 ### `/agy:transfer`
 
@@ -299,6 +315,12 @@ Examples:
 /agy:transfer
 /agy:transfer --model <model> include the open questions from this session
 ```
+
+The brief goes through the same secret scan as a review diff before it is sent.
+A hit stops the handoff; edit the brief, or pass `--allow-secret <regex>`
+(repeatable) for a known false positive such as a quoted test fixture. As
+with the other commands, `--model` and `--effort` values go to agy's argv
+unscanned.
 
 Afterwards, continue in a terminal with `agy --conversation <id>`, or from Claude Code with `/agy:rescue --resume`.
 

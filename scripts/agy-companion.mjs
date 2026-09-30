@@ -49,6 +49,108 @@ function workspace() {
   return resolveWorkspaceRoot(process.env.CLAUDE_PROJECT_DIR || process.cwd());
 }
 
+// The one flag reader behind every command's parser. A token is a run of
+// non-whitespace, except that the value right after a declared value flag may
+// be wrapped in matching double or single quotes and then hold whitespace
+// (`--out "my file.md"`); the quote must open at the start of the token and
+// close before whitespace or the end. Only that position is unquoted: free
+// text splits on whitespace alone, so a word that opens with an apostrophe
+// ("the '90s") and a later one that ends with one ("rock n' roll") are two
+// ordinary words, never one quoted token swallowing the flags between them.
+// `raw` is the token as typed and is what free text is rebuilt from, so a
+// quoted phrase in a prompt keeps its quotes; `text` is the unquoted form a
+// flag value uses.
+//
+// `argument` is either that one string (the `"$ARGUMENTS"` commands, which
+// arrive as a single argv entry) or an array of argv entries the shell has
+// already split and unquoted (transfer), whose entries are taken whole: a
+// brief path or a regex holding a space stays one token.
+const WORD_TOKEN = /\S+/y;
+const VALUE_TOKEN = /"([^"]*)"(?=\s|$)|'([^']*)'(?=\s|$)|\S+/y;
+const WHITESPACE = /\s*/y;
+
+function argumentTokens(argument) {
+  if (Array.isArray(argument)) {
+    const entries = argument.map((entry) => String(entry));
+    let index = 0;
+    return {
+      peek: () => (index < entries.length ? { raw: entries[index], text: entries[index] } : undefined),
+      take: () => {
+        index += 1;
+      }
+    };
+  }
+  const source = String(argument ?? "");
+  let position = 0;
+  let next = 0;
+  return {
+    // `asValue` allows the quoted form; a token that is peeked but not taken
+    // is read again by the next peek, so a `--flag` where a value was hoped
+    // for is still read as that flag.
+    peek(asValue = false) {
+      WHITESPACE.lastIndex = position;
+      WHITESPACE.exec(source);
+      const pattern = asValue ? VALUE_TOKEN : WORD_TOKEN;
+      pattern.lastIndex = WHITESPACE.lastIndex;
+      const match = pattern.exec(source);
+      if (!match) {
+        return undefined;
+      }
+      next = pattern.lastIndex;
+      return { raw: match[0], text: match[1] ?? match[2] ?? match[0] };
+    },
+    take() {
+      position = next;
+    }
+  };
+}
+
+// `names` are the flags that take a value, `repeatable` (a subset of `names`)
+// the ones that may be given more than once and then collect into an array,
+// and `booleans` the valueless ones, which never eat the next word. A repeated
+// flag that is not declared repeatable is a refusal with a named reason in
+// `error`, rather than a last-one-wins that hides the mistake; so is a value
+// that is empty or only whitespace (`--allow-secret ""`), since an empty
+// `--allow-secret` pattern matches every line and would switch the secret
+// scan off, and an empty `--model` would reach agy's argv as-is. A value flag
+// with no value at all (last token, or followed by another `--flag`) is
+// dropped. The result is `{ flags, positional }` with `positional` the
+// leftover tokens, and `error` only when the read refused.
+function readFlags(argument, names, repeatable = [], booleans = []) {
+  const tokens = argumentTokens(argument);
+  const flags = {};
+  const positional = [];
+  for (let token = tokens.peek(); token !== undefined; token = tokens.peek()) {
+    tokens.take();
+    const key = token.raw.slice(2).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
+    if (booleans.includes(token.raw)) {
+      flags[key] = true;
+      continue;
+    }
+    if (!names.includes(token.raw)) {
+      positional.push(token);
+      continue;
+    }
+    const value = tokens.peek(true);
+    if (value === undefined || value.raw.startsWith("--")) {
+      continue;
+    }
+    tokens.take();
+    if (value.text.trim() === "") {
+      return { flags, positional, error: `${token.raw} was given an empty value.` };
+    }
+    if (key in flags && !repeatable.includes(token.raw)) {
+      return {
+        flags,
+        positional,
+        error: `${token.raw} was given more than once; it takes a single value.`
+      };
+    }
+    flags[key] = key in flags ? [].concat(flags[key], value.text) : value.text;
+  }
+  return { flags, positional };
+}
+
 // Splits `[scope] [--allow-secret <regex>]... [focus words...]`. Only the
 // first non-flag token can be a scope, and only when it is `staged`,
 // `branch`, or a token git itself resolves to a real commit in `cwd` (see
@@ -57,22 +159,15 @@ function workspace() {
 // characters no ref name can hold skips git; an ordinary sentence whose
 // first word is plain letters still asks git. When such a word does not
 // resolve, `scopeNote` says so, since a mistyped ref (`mian`) would
-// otherwise pass silently as focus.
+// otherwise pass silently as focus. `error` is present only when the flag
+// read refused (an empty `--allow-secret`), and then no scope is looked up.
 export function parseReviewArguments(argument, cwd) {
-  const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
-  const allowSecret = [];
-  const words = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    if (tokens[i] === "--allow-secret") {
-      const value = tokens[i + 1];
-      if (value && !value.startsWith("--")) {
-        allowSecret.push(value);
-        i += 1;
-      }
-      continue;
-    }
-    words.push(tokens[i]);
+  const { flags, positional, error } = readFlags(argument, ["--allow-secret"], ["--allow-secret"]);
+  const allowSecret = [].concat(flags.allowSecret ?? []);
+  if (error) {
+    return { scope: "", focus: "", allowSecret, error };
   }
+  const words = positional.map((token) => token.raw);
   if (words.length === 0) {
     return { scope: "", focus: "", allowSecret };
   }
@@ -104,7 +199,10 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
   }
 
-  const { scope, focus, allowSecret, scopeNote } = parseReviewArguments(argument, cwd);
+  const { scope, focus, allowSecret, scopeNote, error } = parseReviewArguments(argument, cwd);
+  if (error) {
+    return { ok: false, error };
+  }
   // A first word that looked like a ref but was not one is kept in the focus;
   // every payload from here on says so, for the command to relay.
   const withScopeNote = (payload) => (scopeNote ? { ...payload, scopeNote } : payload);
@@ -132,18 +230,38 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
   // Blocking, not redacting: a redacted diff reviews differently, and the user
   // is one --allow-secret away when the hit is a fixture.
   const scan = scanForSecrets(collected.diff, { allow: allowSecret, diff: true });
+  // During an unresolved merge `git diff --cached` prints `* Unmerged path
+  // <file>` for each conflicted file and no diff section for it, so the file is
+  // not in the text at all. Refused ahead of the shape test below, which would
+  // otherwise send the user to their git config (only such lines, no `diff
+  // --git` header) or, alongside ordinary sections, pass silently with the
+  // conflicted file unreviewed.
+  const unmerged = [...collected.diff.matchAll(/^\* Unmerged path (.+?)\r?$/gm)].map((match) => match[1]);
+  if (unmerged.length > 0) {
+    const shown = unmerged.slice(0, 10).join(", ");
+    const more = unmerged.length > 10 ? ` and ${unmerged.length - 10} more` : "";
+    return withScopeNote({
+      ok: false,
+      failure: "unmerged",
+      scope: collected.scope.label,
+      paths: unmerged,
+      error: `unresolved merge: ${shown}${more} ${unmerged.length === 1 ? "is" : "are"} unmerged, so the diff cannot cover ${unmerged.length === 1 ? "it" : "them"}. Resolve the merge (fix the conflict markers and stage the result), then rerun.`
+    });
+  }
   // Fail closed on a diff the scanner could not read as one: every real
-  // `git diff` file section starts with a `diff --git` line, so a non-empty
-  // diff with none is some other shape (color escapes, an external driver's
-  // output) whose scan proves nothing. A section with no hunk (a binary,
-  // mode-only or rename-only change) still has that line and still passes.
+  // `git diff` file section starts with a `diff --git` line (or, for a
+  // combined diff, a `diff --cc` or `diff --combined` one), so a non-empty
+  // diff with none of them is some other shape (color escapes, an external
+  // driver's output) whose scan proves nothing. A section with no hunk (a
+  // binary, mode-only or rename-only change) still has that line and still
+  // passes.
   if (scan.diffHeaders === 0) {
     return withScopeNote({
       ok: false,
       failure: "diff-shape",
       scope: collected.scope.label,
       error:
-        "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git` header the secret scanner can read. Check your git config for diff settings that change its output format."
+        "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git`, `diff --cc` or `diff --combined` header the secret scanner can read. Check your git config for diff settings that change its output format."
     });
   }
   if (scan.hits.length > 0) {
@@ -191,26 +309,26 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
   });
 }
 
-// `transfer <brief-path> [--model <name>] [--effort <level>]`. The routing
-// flags are split out here so they reach agy as flags rather than being
-// mistaken for part of the path.
+// `transfer <brief-path> [--model <name>] [--effort <level>] [--allow-secret
+// <regex>]...`. The routing flags are split out here so they reach agy as
+// flags rather than being mistaken for part of the path. `argument` is the
+// argv array `main` hands over, each entry already split and unquoted by the
+// shell, so a path or a regex holding a space stays whole; a string is read
+// like any other command's argument. `allowSecret` is present only when the
+// flag was given, and `error` only when the read refused (a repeated
+// `--model` or `--effort`, or an empty value).
 export function parseTransferArguments(argument) {
-  const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
-  const parsed = { briefPath: "", model: undefined, effort: undefined };
-
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (token === "--model" || token === "--effort") {
-      const value = tokens[i + 1];
-      if (value && !value.startsWith("--")) {
-        parsed[token === "--model" ? "model" : "effort"] = value;
-        i += 1;
-      }
-      continue;
-    }
-    if (!parsed.briefPath) {
-      parsed.briefPath = token;
-    }
+  const { flags, positional, error } = readFlags(
+    argument,
+    ["--model", "--effort", "--allow-secret"],
+    ["--allow-secret"]
+  );
+  const parsed = { briefPath: positional[0]?.text ?? "", model: flags.model, effort: flags.effort };
+  if (flags.allowSecret !== undefined) {
+    parsed.allowSecret = [].concat(flags.allowSecret);
+  }
+  if (error) {
+    parsed.error = error;
   }
   return parsed;
 }
@@ -231,7 +349,10 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
   // The brief is written by the model, since it summarizes a conversation the
   // script cannot see. Only the path crosses the boundary, so the brief never
   // touches argv however long it is.
-  const { briefPath, model, effort } = parseTransferArguments(argument);
+  const { briefPath, model, effort, allowSecret, error } = parseTransferArguments(argument);
+  if (error) {
+    return { ok: false, error };
+  }
   if (!briefPath) {
     return { ok: false, error: "transfer needs the path to a handoff brief file." };
   }
@@ -242,13 +363,13 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
     return { ok: false, error: `Could not read the handoff brief: ${error.message}` };
   }
 
-  const scan = scanForSecrets(brief, { diff: false });
+  const scan = scanForSecrets(brief, { allow: allowSecret, diff: false });
   if (scan.hits.length > 0) {
     return {
       ok: false,
       failure: "secrets",
       hits: scan.hits,
-      note: "The handoff did not run: the brief carries what looks like a credential. Edit the brief and rerun."
+      note: "The handoff did not run: the brief carries what looks like a credential. Edit the brief and rerun, or pass --allow-secret <regex> for a known false positive."
     };
   }
 
@@ -284,7 +405,8 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
 // rule for a flag given twice: an array only for a flag the caller declared in
 // `repeatable`, and a refusal with a named reason for every other flag, rather
 // than a last-one-wins that hides the mistake. A flag with no value is dropped
-// rather than eating the next word.
+// rather than eating the next word, and a flag declared in `booleans` takes no
+// value at all (`--verbose hello` keeps `hello` as free text).
 //
 // A repeated scalar flag used to become an array, which no consumer of this
 // parser can take: `--model a --model b` put an array where `buildArgs` pushes
@@ -292,32 +414,13 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
 // ERR_INVALID_ARG_TYPE, while `--out a --out b` silently became the path
 // "a,b". `error` is present only when the parse refused, so a caller that
 // checks it sees nothing new on the ordinary path.
-export function parseFlaggedArguments(argument, names, repeatable = []) {
-  const tokens = String(argument ?? "").trim().split(/\s+/).filter(Boolean);
-  const flags = {};
-  const rest = [];
-  for (let i = 0; i < tokens.length; i += 1) {
-    const token = tokens[i];
-    if (!names.includes(token)) {
-      rest.push(token);
-      continue;
-    }
-    const value = tokens[i + 1];
-    if (value === undefined || value.startsWith("--")) {
-      continue;
-    }
-    const key = token.slice(2).replace(/-([a-z])/g, (_m, c) => c.toUpperCase());
-    if (key in flags && !repeatable.includes(token)) {
-      return {
-        flags,
-        rest: rest.join(" "),
-        error: `${token} was given more than once; it takes a single value.`
-      };
-    }
-    flags[key] = key in flags ? [].concat(flags[key], value) : value;
-    i += 1;
+export function parseFlaggedArguments(argument, names, repeatable = [], booleans = []) {
+  const { flags, positional, error } = readFlags(argument, names, repeatable, booleans);
+  const parsed = { flags, rest: positional.map((token) => token.raw).join(" ") };
+  if (error) {
+    parsed.error = error;
   }
-  return { flags, rest: rest.join(" ") };
+  return parsed;
 }
 
 // Some models refuse --effort before any model call is made; that refusal
@@ -351,6 +454,24 @@ function resultPayload(out, extra = {}) {
 }
 
 const NOT_INSTALLED = { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
+
+// The prompt-only commands send the user's argument text to agy as it stands,
+// and Claude can invoke them with a file excerpt in it, so it goes through
+// the same scan as a review diff or a transfer brief before `renderPrompt`.
+// Returns the refusal payload on a hit and null otherwise. `--allow-secret`
+// admits a known false positive exactly as it does for review.
+function secretsRefusal(command, text, flags) {
+  const scan = scanForSecrets(text, { allow: [].concat(flags.allowSecret ?? []), diff: false });
+  if (scan.hits.length === 0) {
+    return null;
+  }
+  return {
+    ok: false,
+    failure: "secrets",
+    hits: scan.hits,
+    note: `The ${command} did not run: the argument carries what looks like a credential. Redact it and rerun, or pass --allow-secret <regex> for a known false positive.`
+  };
+}
 
 // Trailing prose punctuation that is never part of a URL's host, stripped
 // from a matched token before it reaches the guard (search()'s query scan).
@@ -414,24 +535,30 @@ function bareNumberAfterScheme(token) {
 // query. Twenty is comfortably above any query that legitimately mentions a
 // handful of URLs, while still bounding a single request to a small,
 // constant number of DNS lookups no matter how many URL-shaped tokens the
-// query contains.
+// query contains. Only a host the guard actually sends to the resolver counts:
+// a bare scheme mention ("http:word") and an IP literal are never looked up,
+// so any number of them can sit in a query without using the cap up.
 const MAX_SCANNED_HOSTS = 20;
 
 // `run` is the low-level runner forwarded into `runIsolated`, the same
 // injectable third parameter `runIsolated` itself already defines (defaulting
-// to the real `runPrompt`). whisper sends no repository text, so it does not
-// scan for secrets and never touches the workspace; isolation is not
-// something a caller can opt out of by injecting a runner.
+// to the real `runPrompt`). whisper sends no repository text and never
+// touches the workspace, but its argument text is scanned for secrets first;
+// isolation is not something a caller can opt out of by injecting a runner.
 export function whisper(argument, run = runPrompt, available = agyAvailable) {
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort", "--allow-secret"], ["--allow-secret"]);
   if (error) {
     return { ok: false, error };
   }
   if (!rest) {
     return { ok: false, error: "whisper needs a prompt." };
+  }
+  const refused = secretsRefusal("whisper", rest, flags);
+  if (refused) {
+    return refused;
   }
   const prompt = renderPrompt("whisper", { PROMPT: rest });
   const out = runWithEffortFallback(
@@ -444,16 +571,19 @@ export function whisper(argument, run = runPrompt, available = agyAvailable) {
 
 // `run` is the low-level runner forwarded into `runIsolated`, the same
 // injectable third parameter `runIsolated` itself already defines (defaulting
-// to the real `runPrompt`). search sends no repository text, so it does not
-// scan for secrets and never touches the workspace; isolation is not
-// something a caller can opt out of by injecting a runner. A URL argument is
-// checked by the guard before agy ever sees it; a rejected URL returns
-// without spending a run.
+// to the real `runPrompt`). search sends no repository text and never touches
+// the workspace, but its argument text is scanned for secrets before anything
+// else looks at it: the URL guard resolves every host it checks, so a token
+// sitting in a hostname (`https://ghp_<token>.evil.example/`) would otherwise
+// reach the resolver, and whoever runs that domain's DNS, before the refusal.
+// Isolation is not something a caller can opt out of by injecting a runner. A
+// URL argument is checked by the guard before agy ever sees it; a rejected
+// URL returns without spending a run.
 export async function search(argument, run = runPrompt, available = agyAvailable, lookup) {
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model"]);
+  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--allow-secret"], ["--allow-secret"]);
   if (error) {
     return { ok: false, error };
   }
@@ -461,15 +591,21 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     return { ok: false, error: "search needs a query or a URL." };
   }
 
+  // `looksLikeUrl` is a test on the text alone, no lookup, so taking the mode
+  // from it here costs nothing and lets the refusal say which mode it was.
+  const mode = looksLikeUrl(rest) ? "fetch" : "search";
+  const refused = secretsRefusal("search", rest, flags);
+  if (refused) {
+    return { ...refused, mode };
+  }
+
   let prompt;
-  let mode;
-  if (looksLikeUrl(rest)) {
+  if (mode === "fetch") {
     const guard = await guardFetchUrl(rest, lookup);
     if (!guard.ok) {
       return { ok: false, failure: "url-blocked", mode: "fetch", error: `fetch refused: ${guard.reason}` };
     }
     prompt = renderPrompt("fetch", { URL: guard.url.href });
-    mode = "fetch";
   } else {
     // The whole argument is not a bare URL, but one word inside it can still
     // be one: the model reads that word the same way a fetch would, so a
@@ -519,28 +655,38 @@ export async function search(argument, run = runPrompt, available = agyAvailable
     // possessive "'s" the same way.
     //
     // Every token still gets the scheme and credentials checks: a query
-    // naming the same host twice, once plainly and once with credentials
-    // ("https://example.com/ and https://user:pw@example.com/x"), must
-    // refuse the second mention even though the first already passed.
+    // naming the same host twice, once plainly and once with a user name
+    // ("https://example.com/ and https://user@example.com/x"), must refuse
+    // the second mention even though the first already passed. (A user name
+    // with a password, "user:pw@", never gets this far: the secret scan
+    // above refuses it as a credential-url first.)
     // Deduping applies only to the DNS lookup itself, the one step that is
     // genuinely expensive and genuinely safe to skip once a host is known:
     // `cachedLookup` resolves a given host once per call to `search`, no
     // matter how many tokens name it, while `guardFetchUrl` still runs in
-    // full for every token. A query naming more distinct hosts than
-    // MAX_SCANNED_HOSTS is refused outright rather than resolving an
-    // unbounded list one at a time.
+    // full for every token. A query that needs more than MAX_SCANNED_HOSTS
+    // distinct hosts resolved is refused outright rather than resolving an
+    // unbounded list one at a time; the count is taken inside `cachedLookup`,
+    // so a host the guard never looks up (a dotless scheme mention, an IP
+    // literal) does not use any of it.
     const realLookup = lookup ?? dns.promises.lookup;
     const lookupCache = new Map();
+    let capExceeded = false;
     const cachedLookup = async (host, options) => {
       const key = host.toLowerCase();
       if (lookupCache.has(key)) {
         return lookupCache.get(key);
       }
+      if (lookupCache.size >= MAX_SCANNED_HOSTS) {
+        // The guard turns this throw into a plain refusal reason; the flag
+        // is what tells the loop below it was the cap.
+        capExceeded = true;
+        throw new Error(`more than ${MAX_SCANNED_HOSTS} distinct hosts to resolve`);
+      }
       const result = await realLookup(host, options);
       lookupCache.set(key, result);
       return result;
     };
-    const seenHosts = new Set();
     for (const [rawToken] of rest.matchAll(/https?:\S+/gi)) {
       const token = stripTrailingQueryPunctuation(rawToken);
       let parsed;
@@ -557,21 +703,17 @@ export async function search(argument, run = runPrompt, available = agyAvailable
       if (!parsed.hostname) {
         continue;
       }
-      const hostKey = parsed.hostname.toLowerCase();
-      if (!seenHosts.has(hostKey)) {
-        if (seenHosts.size >= MAX_SCANNED_HOSTS) {
-          return {
-            ok: false,
-            failure: "url-blocked",
-            mode: "search",
-            error: `search refused: query names more than ${MAX_SCANNED_HOSTS} distinct hosts to check`
-          };
-        }
-        seenHosts.add(hostKey);
-      }
       const guard = await guardFetchUrl(token, cachedLookup, {
         skipSingleLabelLookup: isBareSchemeMention(token)
       });
+      if (capExceeded) {
+        return {
+          ok: false,
+          failure: "url-blocked",
+          mode: "search",
+          error: `search refused: query names more than ${MAX_SCANNED_HOSTS} distinct hosts to check`
+        };
+      }
       if (!guard.ok) {
         const number = bareNumberAfterScheme(token);
         const hint = number === null
@@ -581,7 +723,6 @@ export async function search(argument, run = runPrompt, available = agyAvailable
       }
     }
     prompt = renderPrompt("search", { QUERY: rest });
-    mode = "search";
   }
 
   const out = runIsolated(prompt, { model: flags.model, printTimeout: "3m" }, run);
@@ -590,9 +731,9 @@ export async function search(argument, run = runPrompt, available = agyAvailable
 
 // `run` is the low-level runner forwarded into `runIsolated`, the same
 // injectable third parameter `runIsolated` itself already defines (defaulting
-// to the real `runPrompt`). research sends no repository text, so it does not
-// scan for secrets and never touches the workspace; isolation is not
-// something a caller can opt out of by injecting a runner. `--out` is
+// to the real `runPrompt`). research sends no repository text and never
+// touches the workspace, but its argument text is scanned for secrets first;
+// isolation is not something a caller can opt out of by injecting a runner. `--out` is
 // resolved and validated before agy ever runs, so a bad path fails without
 // spending a run; the file is written by the companion after a successful
 // run, never by agy itself, which stays isolated throughout.
@@ -600,7 +741,11 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  const { flags, rest, error } = parseFlaggedArguments(
+    argument,
+    ["--model", "--effort", "--out", "--allow-secret"],
+    ["--allow-secret"]
+  );
   if (error) {
     return { ok: false, error };
   }
@@ -616,6 +761,10 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
     target = resolved.path;
   }
 
+  const refused = secretsRefusal("research", rest, flags);
+  if (refused) {
+    return refused;
+  }
   const prompt = renderPrompt("research", { TOPIC: rest });
   const out = runWithEffortFallback(
     prompt,
@@ -693,9 +842,9 @@ export function extractImagePath(response, brainDir = DEFAULT_BRAIN_DIR) {
 
 // `run` is the low-level runner forwarded into `runIsolated`, the same
 // injectable third parameter `runIsolated` itself already defines (defaulting
-// to the real `runPrompt`). image sends no repository text, so it does not
-// scan for secrets and never touches the workspace; isolation is not
-// something a caller can opt out of by injecting a runner. `--out` is
+// to the real `runPrompt`). image sends no repository text and never touches
+// the workspace, but its argument text is scanned for secrets first;
+// isolation is not something a caller can opt out of by injecting a runner. `--out` is
 // resolved and validated before agy ever runs, so a bad path fails without
 // spending a run; the copy is made by the companion after a successful run
 // and a path that checks out under `brainDir`, never by agy itself, which
@@ -704,7 +853,11 @@ export function image(argument, run = runPrompt, available = agyAvailable, root 
   if (!available()) {
     return NOT_INSTALLED;
   }
-  const { flags, rest, error } = parseFlaggedArguments(argument, ["--model", "--effort", "--out"]);
+  const { flags, rest, error } = parseFlaggedArguments(
+    argument,
+    ["--model", "--effort", "--out", "--allow-secret"],
+    ["--allow-secret"]
+  );
   if (error) {
     return { ok: false, error };
   }
@@ -720,6 +873,10 @@ export function image(argument, run = runPrompt, available = agyAvailable, root 
     target = resolved.path;
   }
 
+  const refused = secretsRefusal("image", rest, flags);
+  if (refused) {
+    return refused;
+  }
   const prompt = renderPrompt("image", { DESCRIPTION: rest });
   const out = runWithEffortFallback(
     prompt,
@@ -812,7 +969,14 @@ function extensionMismatchWarning(targetPath) {
   const actual = sniffImageFormat(targetPath);
   const wantedExt = path.extname(targetPath).toLowerCase();
   const wanted = EXTENSION_IMAGE_FORMATS[wantedExt];
-  if (!actual || !wanted || actual === wanted) {
+  if (actual && !wanted) {
+    // F105. An extension that names no format the copy could be (`.txt`,
+    // `.gif`, none at all) is a mismatch too, only a different kind.
+    return wantedExt
+      ? `the copied image's bytes look like ${actual}, but the ${wantedExt} extension --out named is not one of png, jpg, jpeg or webp`
+      : `the copied image's bytes look like ${actual}, but the --out name has no extension (png, jpg, jpeg or webp expected)`;
+  }
+  if (!actual || actual === wanted) {
     return null;
   }
   return `the copied image's bytes look like ${actual}, not the ${wantedExt.slice(1)} extension --out named`;
@@ -882,7 +1046,11 @@ function gate(argument) {
 const SUBCOMMANDS = {
   review: (argument) => review({ argument, adversarial: false }),
   "adversarial-review": (argument) => review({ argument, adversarial: true }),
-  transfer: (argument) => transfer({ argument }),
+  // transfer alone takes the argv entries as they are: its command doc passes
+  // the brief path and each flag value as separate shell words, which a join
+  // and re-split would break apart at every space. The other commands pass
+  // `"$ARGUMENTS"`, one entry, and read it with the string tokenizer.
+  transfer: (argv) => transfer({ argument: argv }),
   quota,
   gate,
   whisper: (argument) => whisper(argument),
@@ -891,16 +1059,20 @@ const SUBCOMMANDS = {
   image: (argument) => image(argument)
 };
 
-export function main(argv) {
+const PRE_SPLIT_SUBCOMMANDS = new Set(["transfer"]);
+
+// `handlers` defaults to the real table and is injectable only so a test can
+// see what argument shape each subcommand receives without running agy.
+export function main(argv, handlers = SUBCOMMANDS) {
   const [subcommand, ...rest] = argv;
-  const handler = SUBCOMMANDS[subcommand];
+  const handler = handlers[subcommand];
   if (!handler) {
     return {
       ok: false,
-      error: `Unknown subcommand: ${subcommand ?? "<none>"}. Known: ${Object.keys(SUBCOMMANDS).join(", ")}.`
+      error: `Unknown subcommand: ${subcommand ?? "<none>"}. Known: ${Object.keys(handlers).join(", ")}.`
     };
   }
-  return handler(rest.join(" "));
+  return handler(PRE_SPLIT_SUBCOMMANDS.has(subcommand) ? rest : rest.join(" "));
 }
 
 if (

@@ -24,8 +24,11 @@ const GH_PAT = "github_pat_" + "A".repeat(22) + "_" + "b".repeat(30);
 const SLACK = "xoxb-" + "1".repeat(12) + "-" + "a".repeat(24);
 const GOOGLE = "AIza" + "S".repeat(35);
 const BEARER = "Bearer " + "t".repeat(40);
+const STRIPE = "sk_" + "live_" + "a".repeat(24);
+const JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + "." + "eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + "." + "dBjftJeZ4CVP_mB92K27uhbUJU1p1r";
 const PEM = "-----BEGIN " + "RSA PRIVATE KEY-----";
 const ASSIGN = "DATABASE_PASSWORD=" + "p".repeat(24);
+const REAL = "Zq8vK2mW" + "9xR4tY7b" + "N3cL5hJ1"; // 24 mixed characters, no placeholder shape
 const URL_PASSWORD = "hunter2" + "example" + "pw"; // short on purpose: a URL password has no length floor
 const CRED_URL = `postgres://app:${URL_PASSWORD}@db.internal:5432/app`;
 
@@ -38,6 +41,30 @@ const positives = [
   ["authorization-header", `Authorization: ${BEARER}`],
   ["private-key-block", PEM],
   ["secret-assignment", ASSIGN],
+  // F123. Shapes the scanner used to miss.
+  ["stripe-secret-key", `const key = "${STRIPE}";`],
+  ["jwt", `const jwt = "${JWT}";`],
+  ["secret-assignment", '"API_KEY": "abcdefghijklmnopqrstu"'],
+  ["secret-assignment", "password: hunter2hunter2hunter2"],
+  ["secret-assignment", 'PASSWORD="my secret pass phrase"'],
+  ["secret-assignment", "api_key: abcdefghijklmnopqrstu"],
+  // The old kind is kept for a bearer JWT: authorization-header comes first.
+  ["authorization-header", `Authorization: Bearer ${JWT}`],
+  // Every match on a line is tried, so a placeholder, env reference or code
+  // value that comes first no longer hides a real secret after it.
+  ["secret-assignment", `API_TOKEN="\${{ secrets.X }}" DB_PASSWORD=${REAL}`],
+  ["secret-assignment", `token="\${{ secrets.GH_TOKEN }}" API_KEY=${REAL}`],
+  ["secret-assignment", `password="your-password-here-please" SECRET_KEY=${REAL}`],
+  ["secret-assignment", `token=xxxxxxxxxxxxxxxxxxxxxxxx API_KEY=${REAL}`],
+  ["secret-assignment", `TOKEN="<paste your token here>" SECRET=${REAL}`],
+  ["secret-assignment", `{"password": "\${{ secrets.X }}", "api_key": "${REAL}"}`],
+  ["secret-assignment", `token = generate_token_for(user); API_KEY=${REAL}`],
+  // Quotes let an assignment sit inside a placeholder, so the search resumes
+  // inside a quoted value rather than after it.
+  ["secret-assignment", `TOKEN="<paste API_KEY=${REAL} here>"`],
+  // Only the lower-case name branch reads a call as code: an upper-case name
+  // with one still hits, as it always has (the F35 class).
+  ["secret-assignment", "API_TOKEN = generate_token_for(user)"],
   // The identifier carries none of the secret-assignment words, so only the
   // URL shape itself can catch this (F34).
   ["credential-url", `DATABASE_URL=${CRED_URL}`],
@@ -67,7 +94,30 @@ const negatives = [
   "API_KEY=<your-api-key>",
   "SECRET_TOKEN=${SECRET_TOKEN}",
   "PASSWORD=changeme",
+  // F123. Ordinary code around the widened keyword forms.
+  "const password = getPassword();",
+  "password: ${{ secrets.X }}",
+  'password: "${{ secrets.DB_PASSWORD }}"',
+  'PASSWORD="${{ secrets.DB_PASSWORD }}"',
+  "token: null",
+  'const tokenType = "some_long_string_value";',
+  "sk_live_short",
+  "eyJ.a.b is not a token, and neither is eyJhbGciOiJIUzI1NiJ9 alone",
   "TOKEN=xxxxxxxxxxxxxxxxxxxx",
+  // Under a lower-case name, an unquoted value that reads as code (a call, a
+  // subscript, a member path, a snake_case identifier) is not a secret.
+  "self.token = generate_token_for(user)",
+  "password = self.keyring.get_password(url, username)",
+  'access_token = response.json()["access_token"]',
+  "token = getAccessToken(scope);",
+  "client_secret=self.consumer.secret,",
+  "token_host: auth.example.internal",
+  "password = private_key_password",
+  "tokens = [dialect.word_fmt % i for i in words]",
+  // Prose placeholders in a quoted value.
+  'PASSWORD="your password here"',
+  'PASSWORD="change me please now"',
+  'PASSWORD="xxxxxxxx xxxxxxxx"',
   "digest: sha256:" + "0".repeat(64),
   "const SECRET_NAME = 'short';",
   "Authorization: Bearer <token>",
@@ -715,4 +765,319 @@ test("a secret concatenated onto process.env with no separator still hits", () =
 test("a quoted env lookup still produces no hit, via the length minimum rather than ENV_REFERENCE", () => {
   const varName = "FOO" + "_" + "TOKEN" + "_" + "NAME_LONG_ENOUGH";
   assert.deepEqual(scanForSecrets(`API_TOKEN=os.environ["${varName}"]`).hits, []);
+});
+
+// F123. The keyword group is matched in all upper case or all lower case, never
+// mixed, so `password:` in YAML is caught while `tokenType`/`secretName` (the
+// F35 false positives) stay quiet. The cost of the lower-case form is the same
+// F35 class as ever: a long value under a lower-case name is a hit.
+test("a lower-case keyword with a long value hits, the accepted F35-class cost", () => {
+  const { hits } = scanForSecrets("token_url: https://example.com/oauth/token");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+test("a quoted value with spaces reports its length and none of its characters", () => {
+  const { hits } = scanForSecrets('PASSWORD="my secret pass phrase"');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].sample, "(21 chars)");
+});
+
+// The new branches are all linear: a quote with no partner is one pass to the
+// end of the line, and a lower-case name is one lookahead run per word, like
+// the upper-case form in F101. Bound is generous for the Windows CI leg.
+test("the F123 shapes scan long adversarial lines in bounded time", () => {
+  const lines = [
+    'PASSWORD="' + "a ".repeat(500000),
+    'TOKEN="'.repeat(150000),
+    "TOKEN='".repeat(150000) + 'TOKEN="'.repeat(150000),
+    "a".repeat(1000000),
+    "password" + "a".repeat(1000000),
+    "secret_".repeat(150000),
+    "password".repeat(100000) + ":",
+    "eyJ-".repeat(250000),
+    "eyJa.eyJa. ".repeat(100000),
+    "eyJ" + "a".repeat(1000000),
+    "sk_live_" + "!".repeat(1000000),
+    "sk_test_".repeat(100000)
+  ];
+  const started = process.hrtime.bigint();
+  for (const line of lines) {
+    scanForSecrets(line);
+  }
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 2000, `the F123 adversarial lines took ${elapsedMs.toFixed(0)} ms`);
+});
+
+// F35. Pinned as a known limit, not a defect to fix: a string constant that
+// merely mentions a keyword in its name is indistinguishable from a secret by
+// shape. F37 and F56 below are the same kind of limit.
+test("a string constant under a keyword name hits, the accepted F35 false positive", () => {
+  const { hits } = scanForSecrets('const SESSION_TOKEN_HEADER = "X-Custom-Auth-Token-Value";');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
+});
+
+// F37. The `Authorization:` prefix is optional, so a bare `Bearer` followed by
+// 20 or more token characters hits even in prose. The word is rare outside
+// this context.
+test("a bare Bearer followed by a token-shaped run in prose hits, the accepted F37 cost", () => {
+  const { hits } = scanForSecrets("Send it as Bearer abcdefghijklmnopqrstuvwx in the header.");
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "authorization-header");
+});
+
+// F56. The other side of F55's narrowing: a real secret that is pure upper
+// case, digits and underscores right after a bare `$` has the shape of a shell
+// variable, so it passes.
+test("an upper-case secret right after a bare $ produces no hit, the accepted F56 limit", () => {
+  assert.deepEqual(scanForSecrets("TOKEN=$ABCD1234EFGH5678IJKL").hits, []);
+});
+
+// F111. Git copies a line from the file into the hunk header after its closing
+// `@@`. An allow pattern written for the content line (`^\+NAME=`) must clear
+// that copy too, or a known fixture still blocks the run.
+test("an allow pattern anchored on a diff marker also clears the hunk-header copy of the line", () => {
+  const fixture = "FIXTURE_TOKEN=" + "f".repeat(24);
+  const diff = [
+    "diff --git a/.env b/.env",
+    "index aaa..bbb 100644",
+    "--- a/.env",
+    "+++ b/.env",
+    `@@ -3,2 +3,3 @@ ${fixture}`,
+    " keep",
+    `+${fixture}`,
+    " keep2"
+  ].join("\n");
+  const sides = (allow) => scanForSecrets(diff, { diff: true, allow }).hits.map((hit) => hit.side);
+  assert.deepEqual(sides([]), ["hunk-header", "added"]);
+  assert.deepEqual(sides(["^\\+FIXTURE_TOKEN="]), []);
+  assert.deepEqual(sides(["^[-+]FIXTURE_TOKEN="]), []);
+  assert.deepEqual(sides(["FIXTURE_TOKEN="]), []);
+  // Tried bare too: a pattern with no marker clears the copy, not the `+` line.
+  assert.deepEqual(sides(["^FIXTURE_TOKEN="]), ["added"]);
+});
+
+// F112. Git quotes a path with special characters as a C-style string (octal
+// byte escapes are UTF-8) with the a/ or b/ prefix inside the quotes, and pads
+// an unquoted path holding a space with a trailing tab. A hit names the path a
+// user would type.
+function fileOfHit(oldHeader, newHeader, marker = "+") {
+  const diff = [
+    "diff --git a/x b/x",
+    "index aaa..bbb 100644",
+    oldHeader,
+    newHeader,
+    "@@ -1,1 +1,1 @@",
+    `${marker}API_TOKEN=${"q".repeat(24)}`
+  ].join("\n");
+  const { hits } = scanForSecrets(diff, { diff: true });
+  assert.equal(hits.length, 1, JSON.stringify(hits));
+  return hits[0].file;
+}
+
+test("a path with a space loses the trailing tab git pads it with", () => {
+  assert.equal(fileOfHit("--- a/my file.txt\t", "+++ b/my file.txt\t"), "my file.txt");
+});
+
+test("a quoted non-ASCII path is unquoted and its octal escapes decoded as UTF-8", () => {
+  assert.equal(
+    fileOfHit('--- "a/f\\303\\257l\\303\\251.txt"', '+++ "b/f\\303\\257l\\303\\251.txt"'),
+    "fïlé.txt"
+  );
+});
+
+test("a quoted path with a double quote or a backslash is decoded", () => {
+  assert.equal(fileOfHit('--- "a/say \\"hi\\".txt"', '+++ "b/say \\"hi\\".txt"'), 'say "hi".txt');
+  assert.equal(fileOfHit('--- "a/a\\\\b.txt"', '+++ "b/a\\\\b.txt"'), "a\\b.txt");
+});
+
+test("a removed hit in a deleted file with a quoted path is named by the decoded old path", () => {
+  assert.equal(fileOfHit('--- "a/f\\303\\257.txt"', "+++ /dev/null", "-"), "fï.txt");
+});
+
+// F114. `git diff` in an unresolved merge writes combined sections: `diff --cc`
+// (or `diff --combined` for -c), a `@@@ -a,b -c,d +e,f @@@` hunk header, and
+// one marker column per parent. This is the real output for a two-parent
+// conflict in a file with a space in its name, with secrets planted in it.
+function combinedDiff(header) {
+  return [
+    header,
+    "index 62cf973,44130da..0000000",
+    "--- a/my f.txt",
+    "+++ b/my f.txt",
+    "@@@ -1,6 -1,6 +1,10 @@@",
+    "  one",
+    "  two",
+    "++<<<<<<< HEAD",
+    ` +API_TOKEN=${"o".repeat(24)}`,
+    "++=======",
+    `+ API_TOKEN=${"t".repeat(24)}`,
+    "++>>>>>>> side",
+    `  API_KEY=${"c".repeat(24)}`,
+    "  five",
+    ` -PASSWORD=${"r".repeat(24)}`,
+    " +sixty"
+  ].join("\n");
+}
+
+for (const header of ["diff --cc my f.txt", "diff --combined my f.txt"]) {
+  test(`a ${header.split(" ")[1]} section opens a header zone and numbers hits on the new side`, () => {
+    const result = scanForSecrets(combinedDiff(header), { diff: true });
+    assert.equal(result.diffHeaders, 1);
+    assert.equal(result.hunks, 1);
+    assert.deepEqual(
+      result.hits.map(({ line, file, side }) => ({ line, file, side })),
+      [
+        { line: 4, file: "my f.txt", side: "added" },
+        { line: 6, file: "my f.txt", side: "added" },
+        { line: 8, file: "my f.txt", side: "context" },
+        { line: 10, file: "my f.txt", side: "removed" }
+      ]
+    );
+  });
+}
+
+test("a combined section followed by a regular one resets file and line tracking", () => {
+  const diff = [
+    combinedDiff("diff --cc my f.txt"),
+    "diff --git a/other.txt b/other.txt",
+    "index aaa..bbb 100644",
+    "--- a/other.txt",
+    "+++ b/other.txt",
+    "@@ -1,1 +1,2 @@",
+    " keep",
+    `+SECRET_VALUE=${"z".repeat(24)}`
+  ].join("\n");
+  const result = scanForSecrets(diff, { diff: true });
+  assert.equal(result.diffHeaders, 2);
+  assert.equal(result.hunks, 2);
+  assert.deepEqual(
+    result.hits.at(-1),
+    { line: 2, kind: "secret-assignment", sample: "(24 chars)", file: "other.txt", side: "added" }
+  );
+});
+
+// Trying every match on a line must not rescan: an unquoted value is skipped
+// whole, and a quoted one is reentered once. Chains of excluded values, and
+// code-shaped values built to make the CODE_VALUE check backtrack, stay linear.
+test("every-match iteration and the code-value check scan long adversarial lines in bounded time", () => {
+  const lines = [
+    "TOKEN=${TOKEN=".repeat(70000) + "}",
+    "TOKEN=\"<a TOKEN='<b> ".repeat(45000),
+    "token=a.b(".repeat(100000),
+    '{"password": "${{ secrets.X }}", '.repeat(30000),
+    "token=" + "a.".repeat(500000) + "!",
+    "token=[" + "a.".repeat(500000) + "!",
+    "token=" + "a_".repeat(500000) + "!",
+    "token=" + "A_".repeat(500000) + "!",
+    'PASSWORD="' + "x ".repeat(500000) + 'y"',
+    'PASSWORD="your ' + "a ".repeat(500000) + '="'
+  ];
+  const started = process.hrtime.bigint();
+  for (const line of lines) {
+    scanForSecrets(line);
+  }
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 2000, `the every-match adversarial lines took ${elapsedMs.toFixed(0)} ms`);
+});
+
+// An open `{n,}` run or an uncapped repeated group pushed one V8 backtrack
+// entry per character or per repeat, and a 16 MB line of either overflowed the
+// stack and threw instead of scanning. The per-parent header repeats are now
+// capped and every length floor is `X{n}X*`.
+test("16 MB header-zone lines and value runs scan without throwing", () => {
+  const size = 16 * 1024 * 1024;
+  const run = "a".repeat(size);
+  const headerLines = [
+    "@@@ -1" + " -1".repeat(size / 3) + " +1 @@@",
+    "index a" + ",a".repeat(size / 2) + "..b",
+    "mode 1" + ",1".repeat(size / 2) + "..1"
+  ];
+  for (const line of headerLines) {
+    const diff = ["diff --cc f", line, "@@@ -1,1 -1,1 +1,1 @@@", "  x"].join("\n");
+    assert.doesNotThrow(() => scanForSecrets(diff, { diff: true }));
+  }
+  const valueLines = [
+    "github_pat_" + run,
+    "xoxb-" + run,
+    "sk_live_" + run,
+    "Bearer " + run,
+    'TOKEN="' + run,
+    "TOKEN=" + run,
+    "token=" + run + "("
+  ];
+  for (const line of valueLines) {
+    assert.doesNotThrow(() => scanForSecrets(line));
+  }
+});
+
+// F111, the other direction. A marker-anchored allow pattern clears a trailer
+// only when the trailer is a copy of a content line some allow pattern cleared;
+// it does not clear a different line just because git copied it into a hunk
+// header with no marker.
+function trailerDiff(firstHunk, trailer) {
+  return [
+    "diff --git a/.env b/.env",
+    "index aaa..bbb 100644",
+    "--- a/.env",
+    "+++ b/.env",
+    "@@ -2,2 +2,2 @@",
+    " keep",
+    ...firstHunk,
+    `@@ -9,2 +9,2 @@ ${trailer}`,
+    "-old",
+    "+new"
+  ].join("\n");
+}
+
+test("an allow pattern for a removed key does not clear a live key copied into a hunk header", () => {
+  const revoked = "API_KEY=" + "r".repeat(24);
+  const live = `API_KEY=${REAL}`;
+  const { hits } = scanForSecrets(trailerDiff([`-${revoked}`, "+API_KEY=${API_KEY}"], live), {
+    diff: true,
+    allow: ["^-API_KEY"]
+  });
+  assert.deepEqual(hits.map((hit) => hit.side), ["hunk-header"]);
+});
+
+test("an allow pattern for an added fixture does not clear a different old value in a hunk header", () => {
+  const fixture = "FIXTURE_TOKEN=" + "f".repeat(24);
+  const old = `FIXTURE_TOKEN=${REAL}`;
+  const { hits } = scanForSecrets(trailerDiff([`+${fixture}`], old), {
+    diff: true,
+    allow: ["^\\+FIXTURE_TOKEN="]
+  });
+  assert.deepEqual(hits.map((hit) => hit.side), ["hunk-header"]);
+});
+
+test("an allow pattern for an added fixture clears its copy in a later hunk header", () => {
+  const fixture = "FIXTURE_TOKEN=" + "f".repeat(24);
+  const diff = trailerDiff([`+${fixture}`], fixture);
+  assert.deepEqual(scanForSecrets(diff, { diff: true }).hits.map((hit) => hit.side), ["added", "hunk-header"]);
+  assert.deepEqual(scanForSecrets(diff, { diff: true, allow: ["^\\+FIXTURE_TOKEN="] }).hits, []);
+});
+
+// Git copies at most 80 bytes of the line into the header, trailing
+// whitespace trimmed (checked against git 2.x output), so a longer fixture's
+// copy is its first 80 bytes.
+test("an allow pattern clears the 80-byte copy git makes of a long fixture line", () => {
+  const fixture = "FIXTURE_TOKEN_WITH_A_LONG_NAME=" + "f".repeat(100);
+  const diff = trailerDiff([`+${fixture}`], fixture.slice(0, 80));
+  assert.deepEqual(scanForSecrets(diff, { diff: true }).hits.map((hit) => hit.side), ["added", "hunk-header"]);
+  assert.deepEqual(scanForSecrets(diff, { diff: true, allow: ["^\\+FIXTURE_TOKEN"] }).hits, []);
+});
+
+// F123 narrowing, pinned as known limits. A secret shaped like code under a
+// lower-case name passes, and quoted prose under a name that merely contains
+// a keyword still hits.
+test("a dotted or snake_case value under a lower-case name produces no hit, the accepted cost of the code rule", () => {
+  assert.deepEqual(scanForSecrets("password: my.pass.word.1234").hits, []);
+  assert.deepEqual(scanForSecrets("api_key: abc_def_ghi_jkl_mno").hits, []);
+});
+
+test("quoted prose under a lower-case keyword name hits, the accepted F35-class cost", () => {
+  const { hits } = scanForSecrets('password_label: "Please enter your password"');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].kind, "secret-assignment");
 });

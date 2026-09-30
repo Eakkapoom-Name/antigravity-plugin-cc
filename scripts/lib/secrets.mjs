@@ -3,40 +3,57 @@
 // none and runs on Node 18. Only the shape of a hit is reported, never the
 // value, so the report itself is safe to paste.
 
-const PLACEHOLDER = /^(?:x{3,}|\*{3,}|changeme|change-me|<[^>]*>|\$\{[^}]*\}|your[-_a-z0-9]*|example[-_a-z0-9]*|placeholder)$/i;
+// A quoted value may hold spaces, so the word-shaped branches take them too
+// (`"your password here"`, `"change me please"`, `"xxxxxxxx xxxxxxxx"`). Each
+// is one character-class run, not a repeated group: a repeated group on a
+// 16 MB value would overflow V8's backtrack stack.
+const PLACEHOLDER =
+  /^(?:x[x ]{2,}|\*[* ]{2,}|change[- ]?me[- a-z]*|<[^>]*>|\$\{[^}]*\}|your[-_a-z0-9 ]*|example[-_a-z0-9 ]*|placeholder)$/i;
 
-// An environment-variable reference is not a secret, it is the mechanism a
-// repository uses to avoid putting one in the text at all, so it is only an
-// exclusion when it accounts for the ENTIRE captured value, not just its
-// first few characters. Every branch below is anchored at both ends: a
-// secret concatenated straight onto "process.env" with no separator, for
-// example, still ends the string with characters the dotted or bracketed
-// branches do not allow, so it still counts as a hit. The bare $NAME branch
-// is further narrowed to the conventional shell-variable shape (upper-case
-// letters, digits, underscores, starting with an upper-case letter or
-// underscore):
-// without that narrowing, anchoring alone would not help, because a real
-// secret that happens to be pure mixed-case letters and digits after a
-// leading $ is, by shape, indistinguishable from a variable name.
-//
-// A quoted lookup such as os.environ["NAME"] is excluded by accident, not by
-// this regex: the value capture in PATTERNS stops at the first quote, so what
-// reaches here is a fixed short prefix (os.environ[ is 11 characters, ENV[ is
-// 4, and so on) that never reaches the 16-character minimum the
-// secret-assignment pattern requires. This regex is never even evaluated for
-// those lines; do not read its absence of a quote-aware branch as a gap.
+// An environment-variable reference is not a secret, it is how a repository
+// keeps one out of the text, so it only excludes a hit when it is the ENTIRE
+// captured value. Every branch is anchored at both ends: a secret run straight
+// onto "process.env" still hits. The bare $NAME branch is limited to the
+// shell-variable shape (upper case, digits, underscores) because a mixed-case
+// secret after a leading $ is, by shape, a variable name (F55, F56 are the
+// accepted costs). A `${{ secrets.X }}` CI template reference is excluded for
+// the same reason; it needs its own branch because the quoted-value capture
+// keeps spaces. A quoted lookup such as os.environ["NAME"] is excluded by
+// accident: the capture stops at the first quote and never reaches the
+// 16-character floor, so this regex never sees it (pinned by a test).
 const ENV_REFERENCE =
-  /^(?:process\.env\.[A-Za-z0-9_]+|process\.env\[[A-Za-z0-9_]*\]|os\.environ\[[A-Za-z0-9_]*\]|os\.getenv\([A-Za-z0-9_]*\)|ENV\[[A-Za-z0-9_]*\]|\$[A-Z_][A-Z0-9_]*)$/;
+  /^(?:process\.env\.[A-Za-z0-9_]+|process\.env\[[A-Za-z0-9_]*\]|os\.environ\[[A-Za-z0-9_]*\]|os\.getenv\([A-Za-z0-9_]*\)|ENV\[[A-Za-z0-9_]*\]|\$[A-Z_][A-Z0-9_]*|\$\{\{[^}]*\}\})$/;
 
+// An unquoted value that reads as code rather than data: a call or subscript
+// (`generate_token_for(user)`, `response.json()[`), a dotted member path
+// (`self.token_store.value,`, `this.store.token;`), or a snake_case or
+// CONSTANT_CASE identifier (`private_key_password`, `_PASSWORD_DEFAULT`),
+// each optionally inside an opening bracket or before closing punctuation.
+// Only the lower-case name branch of secret-assignment consults it, because
+// lower-case names are what ordinary code assigns to. The cost is a secret of
+// that shape written unquoted under a lower-case name (`password:
+// my.pass.word.1234`, `api_key: abc_def_ghi_jkl_mno`), which passes. Base64
+// and hex are not dotted and rarely hold `_`, and a URL fails the leading
+// identifier run at `:`. Each branch is anchored, plain runs over disjoint
+// classes with no repeated group (the same stack reason as PLACEHOLDER), and
+// the `_` is required by a lookahead so the runs never split the value two
+// ways: linear on any length.
+const CODE_VALUE =
+  /^[([{]?[A-Za-z_$][\w$.]*[([]|^[([{]?[A-Za-z_$][\w$]*\.[\w$.]*[,;:)\]}]*$|^(?=[a-z0-9_]*_)[a-z_][a-z0-9_]*[,;:)\]}]*$|^(?=[A-Z0-9_]*_)[A-Z_][A-Z0-9_]*[,;:)\]}]*$/;
+
+// A length floor is written `X{16}X*`, never `X{16,}`: the same language, but
+// V8 pushes a backtrack entry per character of an open `{n,}` run with a large
+// `n`, and a 16 MB run of one overflowed its stack and threw (measured).
 const PATTERNS = [
   { kind: "aws-access-key-id", regex: /\bAKIA[0-9A-Z]{16}\b/ },
   {
     kind: "private-key-block",
     regex: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY-----/
   },
-  { kind: "github-token", regex: /\bgh[opusr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b/ },
-  { kind: "slack-token", regex: /\bxox[abprs]-[A-Za-z0-9-]{20,}\b/ },
+  { kind: "github-token", regex: /\bgh[opusr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{40}[A-Za-z0-9_]*\b/ },
+  { kind: "slack-token", regex: /\bxox[abprs]-[A-Za-z0-9-]{20}[A-Za-z0-9-]*\b/ },
   { kind: "google-api-key", regex: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { kind: "stripe-secret-key", regex: /\bsk_(?:live|test)_[A-Za-z0-9]{24}[A-Za-z0-9]*\b/ },
   {
     // `scheme://user:password@host`, the connection-string leak that no
     // identifier word catches (DATABASE_URL, CONNECTION_STRING). The user
@@ -50,8 +67,17 @@ const PATTERNS = [
   },
   {
     kind: "authorization-header",
-    regex: /\b(?:Authorization\s*:\s*)?Bearer\s+([A-Za-z0-9._~+\/=-]{20,})/i,
+    regex: /\b(?:Authorization\s*:\s*)?Bearer\s+([A-Za-z0-9._~+\/=-]{20}[A-Za-z0-9._~+\/=-]*)/i,
     valueGroup: 1
+  },
+  {
+    // Three base64url runs split by literal dots, so they never overlap. The
+    // lookbehind (not `\b`) keeps a start from opening inside an
+    // `eyJ-eyJ-...` run: `-` is a base64url character yet still a word
+    // boundary, so with `\b` every start would rescan the rest of the line.
+    // After authorization-header, so a bearer JWT keeps that older kind.
+    kind: "jwt",
+    regex: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/
   },
   {
     // The original leading `[A-Z0-9_]*` run was unbounded, so on a line of
@@ -70,11 +96,25 @@ const PATTERNS = [
     // text, or captured value. Measured: under 20 ms on every adversarial
     // shape tried at 1,000,000 to 2,000,000 characters (`SECRET_` repeated,
     // 1,000,000 `A`s before `SECRET=`, `TOKEN :` and `TOKEN= ` repeated).
+    //
+    // F123. The name is either all upper case or all lower case (`password:`
+    // in YAML), never mixed: mixed case would also catch `tokenType` and
+    // `secretName`, the F35 false positives, for little gain. Each case is its
+    // own lookahead-plus-run branch so both stay linear. A closing quote may
+    // sit before the separator (`"API_KEY": "..."`). The value is a quoted
+    // run (spaces allowed, `PASSWORD="my pass phrase"`) or an unquoted run;
+    // each branch starts on a different character and stops at its own
+    // delimiter, so a quote with no partner costs one pass to the end of the
+    // line, once per quote. Group 1 is the name, so `ignore` can tell the
+    // lower-case branch apart: there an unquoted CODE_VALUE is code, not a
+    // secret (`token = getAccessToken(scope);`).
     kind: "secret-assignment",
-    regex: /\b(?=[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY))[A-Z0-9_]+\s*[=:]\s*["']?([^\s"']{16,})["']?/,
-    valueGroup: 1
+    regex:
+      /\b((?=[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY))[A-Z0-9_]+|(?=[a-z0-9_]*(?:secret|token|password|api_key))[a-z0-9_]+)["']?\s*[=:]\s*(?:"([^"]{16}[^"]*)"|'([^']{16}[^']*)'|["']?([^\s"']{16}[^\s"']*))/,
+    valueGroup: [2, 3, 4],
+    ignore: (match) => match[4] !== undefined && /[a-z]/.test(match[1]) && CODE_VALUE.test(match[4])
   }
-];
+].map((pattern) => ({ ...pattern, global: new RegExp(pattern.regex.source, `${pattern.regex.flags}g`) }));
 
 export const SECRET_KINDS = PATTERNS.map((pattern) => pattern.kind);
 
@@ -184,135 +224,227 @@ function sampleOf(value, { hideValue = false } = {}) {
   return `${value.slice(0, 6)}... (${value.length} chars)`;
 }
 
+// The first value on the line that `pattern` reports, or undefined. A pattern
+// with a valueGroup can match a placeholder, an env reference or code first and
+// a real secret later on the same line (`TOKEN="${{ secrets.X }}" API_KEY=...`),
+// so every match is tried. After an unquoted value the search resumes at the
+// match's end: resuming inside it would rescan a `NAME=${NAME=${...}` chain
+// once per link, which is quadratic. After a quoted value it resumes at the
+// value's start, because quotes let an assignment sit inside a placeholder
+// (`TOKEN="<paste API_KEY=... here>"`); each quote opens at most one value, so
+// that rescan stays linear too.
+function firstValue(text, { regex, global, valueGroup, ignore }) {
+  if (!valueGroup) {
+    return text.match(regex)?.[0];
+  }
+  global.lastIndex = 0;
+  let match;
+  while ((match = global.exec(text)) !== null) {
+    // `valueGroup` is one group index, or several alternatives of which one matched.
+    const value = [].concat(valueGroup).map((group) => match[group]).find((found) => found !== undefined);
+    if (!PLACEHOLDER.test(value) && !ENV_REFERENCE.test(value) && !ignore?.(match)) {
+      return value;
+    }
+    // A quoted value (or credential-url's) has exactly one character after it.
+    const end = match.index + match[0].length;
+    global.lastIndex = match[0].endsWith(value) ? end : Math.max(match.index + 1, end - 1 - value.length);
+  }
+  return undefined;
+}
+
+const C_ESCAPES = { a: 7, b: 8, f: 12, n: 10, r: 13, t: 9, v: 11 };
+
+// Git writes a path holding a control character, `"`, `\` or (by default) a
+// non-ASCII byte as a C-style quoted string: octal escapes are raw UTF-8
+// bytes, so they are collected as bytes and decoded together.
+function unquoteGitPath(body) {
+  const parts = [];
+  for (const [, escape, literal] of body.matchAll(/\\([0-7]{3}|[\s\S])|([^\\]+)/g)) {
+    if (literal !== undefined) {
+      parts.push(Buffer.from(literal));
+    } else if (/^[0-7]{3}$/.test(escape)) {
+      parts.push(Buffer.from([parseInt(escape, 8) & 0xff]));
+    } else {
+      parts.push(escape in C_ESCAPES ? Buffer.from([C_ESCAPES[escape]]) : Buffer.from(escape));
+    }
+  }
+  return Buffer.concat(parts).toString("utf8");
+}
+
+// The path in a `---`/`+++` (or `diff --cc`) line, as a user would type it:
+// git pads an unquoted path that holds a space with a trailing tab, quotes the
+// rest as above with the `a/`/`b/` prefix inside the quotes, and names an
+// absent side `/dev/null`.
+function diffPath(raw, prefix) {
+  let value = raw.replace(/\t$/, "");
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    value = unquoteGitPath(value.slice(1, -1));
+  }
+  if (value === "/dev/null") {
+    return null;
+  }
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
+
 export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   const allowed = compileAllow(allow);
   const hits = [];
   const lines = String(text ?? "").split(/\r?\n/);
 
-  // Diff bookkeeping: which file, and which line of that file, a content
-  // line lands on. Without this a hit is reported at its offset into the raw
-  // diff text, counting `diff --git`, `index` and `@@` lines, which matches
-  // nothing a user can find in an editor. Every content line is scanned,
-  // added, removed and context alike: the whole diff leaves on stdin, and the
-  // commonest real case is the review of the commit that removes a key
-  // someone committed, whose value sits in a `-` line. An added or context
-  // hit is numbered in the new file, the one a user can open; a removed hit
-  // has no new-file line, so it is numbered in the old file from the
-  // `@@ -a,b` side and named by the `---` path (a deleted file has no `+++`
-  // path), and `side` on the hit says which numbering applies.
+  // Diff bookkeeping: which file, and which line of that file, a content line
+  // lands on, so a hit points at something a user can find in an editor and
+  // not at an offset into the raw diff. Every content line is scanned (added,
+  // removed, context): the whole diff leaves on stdin, and the commonest real
+  // case is reviewing the commit that removes a committed key, whose value
+  // sits in a `-` line. Added and context hits are numbered in the new file. A
+  // removed hit is numbered in the old file (the `@@ -a,b` side) and named by
+  // the `---` path, since a deleted file has no `+++` path; `side` says which
+  // numbering applies.
   //
-  // A `+++`/`---` line is only ever trusted as a real file header inside a
-  // "header zone": the span from a `diff --git` line up to that file's first
-  // `@@` hunk header. `diff --git` is emitted by git itself, never derived
-  // from either version of the file's content, because every genuine content
-  // line in a diff is prefixed with a single `+`, `-` or space marker
-  // character; a file line that itself reads `diff --git ...` would still
-  // render with that marker in front (`+diff --git ...`), never as the bare
-  // line git's own header uses. So this line cannot be spoofed by content,
-  // which is why it, not `---`/`+++` order, is the anchor: once a hunk has
-  // started (the zone has closed), a content line is never again mistaken
-  // for a header, however many literal `+` or `-` characters it starts with,
-  // until the next `diff --git` reopens the zone for the following file.
+  // A `---`/`+++` line is only a file header inside a "header zone": from a
+  // `diff --git` line (or a combined `diff --cc`/`diff --combined` one, from an
+  // unresolved merge) to that file's first hunk header. Git writes the `diff`
+  // line itself, and every genuine content line carries a `+`, `-` or space
+  // marker, so a file line reading `diff --git ...` renders as `+diff --git ...`
+  // and cannot open a zone. That, not `---`/`+++` order, is why it is the
+  // anchor: once a hunk starts, a line is never taken for a header again,
+  // however many `+` or `-` it begins with (`++i`, an SQL `--` comment), until
+  // the next `diff` line reopens the zone.
   //
-  // F59. Every header recognized above (`---`, `+++`, the header zone
-  // itself) only opens once a `diff --git` line has been seen; a hand-rolled
-  // diff missing that line never opens a header zone, so its `---`/`+++`
-  // lines are never read as headers and `currentFile`/`oldFile` stay null for
-  // the whole input, even though a bare `@@ -a,b +c,d @@` line outside a zone
-  // still sets line numbers (see "Past the header zone" below). A hit is
-  // still reported, just with `file: null`, since only `scanForSecrets`'s one
-  // caller in this plugin (the diff-mode review commands) is reachable today,
-  // and it always feeds real `git diff` output that carries the line. Worth
-  // revisiting only if `scanForSecrets` is ever handed some other diff
-  // source.
+  // F59. With no such line (a hand-rolled diff) no zone ever opens, `---`/`+++`
+  // are not read as headers, and `currentFile`/`oldFile` stay null; a bare `@@`
+  // line still sets line numbers, and a hit carries `file: null`. Acceptable
+  // because the only caller feeds real `git diff` output; revisit if
+  // `scanForSecrets` gets another diff source.
   //
-  // `currentFile` and `oldFile` are set from the `+++ b/<path>` and
-  // `--- a/<path>` headers seen inside the zone (both reset to null the
-  // moment the zone opens, so a multi-file diff never carries a stale name
-  // into the next file even for a hunk-less section such as a binary-file
-  // notice). `newLine` and `oldLine` come from each hunk's `@@ -a,b +c,d @@`
-  // header and are then walked forward one line at a time: an added line
-  // advances `newLine`, a removed line `oldLine`, a context line both,
-  // including a content line that happens to read `+++ ...` or `--- ...`.
-  // Past the header zone both of those are content and are scanned: a `+++`
-  // line is only a file header inside the zone, and an added line whose own
-  // text starts with `++` (a C increment, a Markdown diff snippet) renders
-  // the same way; `--` is a common line prefix too, a CLI flag or an SQL
-  // comment. The `\ No newline at end of file` marker advances neither,
-  // being a note about the line just shown rather than a line of its own.
-  // Until a hunk header has actually been seen, there is no reliable line
-  // number to report; a hit in that state falls back to the raw line offset
-  // with no file, rather than reporting a number that looks right but is not.
+  // `currentFile` and `oldFile` come from the `+++`/`---` paths and reset when
+  // a zone opens, so a hunk-less section (a binary notice) never inherits the
+  // previous file's name. `newLine` and `oldLine` start from each hunk header
+  // and advance per line: added moves the new side, removed the old, context
+  // both, even when the content itself reads `+++ ...`. The `\ No newline at
+  // end of file` marker advances neither. Before any hunk header there is no
+  // reliable number, so a hit falls back to the raw line offset with no file.
   //
-  // Nothing that leaves goes unscanned. The text after a hunk header's
-  // closing `@@` is git's funcname heuristic at work: a line copied from the
-  // file near the hunk (in a `.env`, often the very line holding the key),
-  // so it is scanned and a hit is reported with side "hunk-header", at the
-  // hunk's new-file start line (the old-file start for a deleted file). A
-  // header-zone line that is none of the lines git emits there is scanned
-  // too, side "header", at its raw offset into the diff; so is any line past
-  // the zone that carries no `+`, `-`, space or `\` marker, side
-  // "unrecognized". The `diff --git`, `---`, `+++` and hunk-header lines
-  // themselves are not scanned, nor are the other extended header lines git
-  // writes (index, mode, rename, copy, similarity, binary notice): they carry
-  // paths and hashes, not file content.
+  // A combined diff has one marker column per parent (`++`, ` +`, ` -`) and a
+  // `@@@ -a,b -c,d +e,f @@@` header. A row with a `-` in any column is not in
+  // the result: it does not advance the new side and is reported at the
+  // new-side line it precedes. Per-parent old numbering is not tracked.
   //
-  // `diffHeaders` and `hunks` count the `diff --git` and hunk-header lines
+  // Nothing that leaves goes unscanned. The text after a hunk header's closing
+  // `@@` is git's funcname heuristic copying a line from the file (in a `.env`,
+  // often the key itself): side "hunk-header". A header-zone line git does not
+  // emit there is side "header", and a line past the zone with no `+`, `-`,
+  // space or `\` marker is "unrecognized", both at their raw offset. Only the
+  // `diff` line, `---`, `+++`, hunk headers and the other extended headers
+  // (index, mode, rename, copy, similarity, binary notice) are skipped: they
+  // carry paths and hashes, not content.
+  //
+  // `diffHeaders` and `hunks` count the `diff` and hunk-header lines
   // recognized, so a caller can refuse a diff whose shape was not recognized
-  // at all (color escapes in front of every line, an external diff driver's
-  // free-form output) instead of trusting a scan that found nothing to read.
+  // at all (color escapes on every line, an external diff driver) instead of
+  // trusting a scan that found nothing to read.
+  const DIFF_HEADER = /^diff --(git|cc|combined) (.*)$/;
   const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
+  // The per-parent repeats in a combined hunk header, index line and mode line
+  // are capped: uncapped, a crafted 16 MB line of them overflowed V8's
+  // backtrack stack and threw. Git writes one entry per parent; an unresolved
+  // merge has two and an octopus merge rarely more than a handful, so 31 extra
+  // entries (32 parents) is far past any real diff. A longer line is simply not
+  // recognized as a header and falls to the safety-net scan, never skipped.
+  const COMBINED_HUNK_HEADER = /^(@@@+) -(\d+)(?:,\d+)?(?: -\d+(?:,\d+)?){0,31} \+(\d+)(?:,\d+)? \1(.*)$/;
   const GIT_HEADER_LINE =
-    /^(?:index [0-9a-f]+\.\.[0-9a-f]+(?: [0-7]+)?|(?:old|new|deleted file|new file) mode [0-7]+|similarity index \d+%|dissimilarity index \d+%|(?:rename|copy) (?:from|to) .*|Binary files .* differ|GIT binary patch)$/;
+    /^(?:index [0-9a-f]+(?:,[0-9a-f]+){0,31}\.\.[0-9a-f]+(?: [0-7]+)?|(?:old|new|deleted file|new file) mode [0-7]+|mode [0-7]+(?:,[0-7]+){1,31}\.\.[0-7]+|similarity index \d+%|dissimilarity index \d+%|(?:rename|copy) (?:from|to) .*|Binary files .* differ|GIT binary patch)$/;
   let currentFile = null;
   let oldFile = null;
   let newLine = null;
   let oldLine = null;
+  let columns = 1; // marker columns per content line: one per parent
   let inHeaderZone = false;
   let diffHeaders = 0;
   let hunks = 0;
 
+  // F111. An allow pattern is written against the raw diff line, so
+  // `^\+NAME=` clears the `+NAME=...` content line. The hunk-header copy of a
+  // line (`text`, the trimmed trailer after the closing `@@`) has no marker of
+  // its own, and a marker-anchored pattern must not clear it just by lending it
+  // one: `^-API_KEY`, written to admit a removed revoked key, would then also
+  // clear a live `API_KEY=...` git copied into a header. So a pattern clears a
+  // trailer hit only when it matches the whole `@@` line or the trailer bare
+  // (`FIXTURE_TOKEN=`, `^FIXTURE_TOKEN=`), or when the trailer is the text of a
+  // content line anywhere in this diff that an allow pattern cleared: then the
+  // copy leaks nothing the user has not already admitted. Git copies at most 80
+  // bytes of the line, trailing whitespace trimmed, so a cleared line is also
+  // remembered in that shortened form. A trailer can precede the line it was
+  // copied from, so that check runs once the whole diff is read.
+  const clearedContent = new Set();
+  const trailerHits = [];
+
+  function rememberCleared(content) {
+    clearedContent.add(content.trim());
+    if (Buffer.byteLength(content) > 80) {
+      clearedContent.add(Buffer.from(content).subarray(0, 80).toString("utf8").trim());
+    }
+  }
+
   function scanText(line, text, location) {
-    if (allowed.some((pattern) => pattern.test(line))) {
+    if (allowed.some((pattern) => pattern.test(line) || (text !== line && pattern.test(text)))) {
+      if (location.side === "added" || location.side === "removed" || location.side === "context") {
+        rememberCleared(line.slice(columns));
+      }
       return;
     }
-    for (const { kind, regex, valueGroup } of PATTERNS) {
-      const match = text.match(regex);
-      if (!match) {
+    for (const pattern of PATTERNS) {
+      const value = firstValue(text, pattern);
+      if (value === undefined) {
         continue;
       }
-      const value = valueGroup ? match[valueGroup] : match[0];
-      if (valueGroup && (PLACEHOLDER.test(value) || ENV_REFERENCE.test(value))) {
-        continue;
-      }
-      const hit = { line: location.line, kind, sample: sampleOf(value, { hideValue: Boolean(valueGroup) }) };
+      const hit = { line: location.line, kind: pattern.kind, sample: sampleOf(value, { hideValue: Boolean(pattern.valueGroup) }) };
       if (diff) {
         hit.file = location.file;
         hit.side = location.side;
       }
       hits.push(hit);
+      if (location.side === "hunk-header") {
+        trailerHits.push({ hit, text });
+      }
       return;
     }
   }
 
   // Opens a hunk and scans the text git copied in after its closing `@@`.
-  function openHunk(line, hunkHeader) {
+  function openHunk(line, { oldStart, newStart, trailer, parents }) {
     hunks += 1;
-    oldLine = Number(hunkHeader[1]) - 1;
-    newLine = Number(hunkHeader[2]) - 1;
-    const trailer = hunkHeader[3];
+    columns = parents;
+    oldLine = oldStart - 1;
+    newLine = newStart - 1;
     if (trailer.trim()) {
       // The copied text is read from the old file (git's funcname heuristic
       // walks backward through the pre-image), so it is found at or above the
       // hunk's old-file start line. A new file has no old-file line at all
       // (old start 0), so only then does the new-file start line stand in.
-      const oldStart = Number(hunkHeader[1]);
-      scanText(line, trailer, {
-        line: oldStart > 0 ? oldStart : Number(hunkHeader[2]),
+      scanText(line, trailer.trim(), {
+        line: oldStart > 0 ? oldStart : newStart,
         file: currentFile ?? oldFile,
         side: "hunk-header"
       });
     }
+  }
+
+  function parseHunkHeader(line) {
+    const plain = line.match(HUNK_HEADER);
+    if (plain) {
+      return { oldStart: Number(plain[1]), newStart: Number(plain[2]), trailer: plain[3], parents: 1 };
+    }
+    const combined = line.match(COMBINED_HUNK_HEADER);
+    if (combined) {
+      return {
+        oldStart: Number(combined[2]),
+        newStart: Number(combined[3]),
+        trailer: combined[4],
+        parents: combined[1].length - 1
+      };
+    }
+    return null;
   }
 
   lines.forEach((line, index) => {
@@ -321,10 +453,12 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
     let side = null;
 
     if (diff) {
-      if (line.startsWith("diff --git ")) {
+      const diffHeader = line.match(DIFF_HEADER);
+      if (diffHeader) {
         diffHeaders += 1;
         inHeaderZone = true;
-        currentFile = null;
+        // A combined header names its file itself (no `a/`/`b/` prefix).
+        currentFile = diffHeader[1] === "git" ? null : diffPath(diffHeader[2], "");
         oldFile = null;
         newLine = null;
         oldLine = null;
@@ -332,17 +466,17 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       }
 
       if (inHeaderZone) {
-        const oldHeader = line.match(/^--- (?:a\/)?(.*)$/);
+        const oldHeader = line.match(/^--- (.*)$/);
         if (oldHeader) {
-          oldFile = oldHeader[1] === "/dev/null" ? null : oldHeader[1];
+          oldFile = diffPath(oldHeader[1], "a/");
           return;
         }
-        const fileHeader = line.match(/^\+\+\+ (?:b\/)?(.*)$/);
+        const fileHeader = line.match(/^\+\+\+ (.*)$/);
         if (fileHeader) {
-          currentFile = fileHeader[1] === "/dev/null" ? null : fileHeader[1];
+          currentFile = diffPath(fileHeader[1], "b/");
           return;
         }
-        const hunkHeader = line.match(HUNK_HEADER);
+        const hunkHeader = parseHunkHeader(line);
         if (hunkHeader) {
           inHeaderZone = false;
           openHunk(line, hunkHeader);
@@ -359,26 +493,30 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
       }
 
       // Past the header zone: a further `@@` opens this file's next hunk.
-      const hunkHeader = line.match(HUNK_HEADER);
+      const hunkHeader = parseHunkHeader(line);
       if (hunkHeader) {
         openHunk(line, hunkHeader);
         return;
       }
 
-      // The leading marker says which file(s) the line occupies a line of.
-      // `\ No newline at end of file` neither advances a counter nor is
-      // scanned; a line with no marker at all is scanned at its raw offset.
+      // The leading marker column(s) say which file(s) the line occupies a
+      // line of. `\ No newline at end of file` neither advances a counter nor
+      // is scanned; a line with no marker at all is scanned at its raw offset.
       const tracked = newLine !== null;
-      if (line.startsWith("+")) {
-        side = "added";
-        newLine = tracked ? newLine + 1 : null;
-      } else if (line.startsWith("-")) {
-        side = "removed";
-        oldLine = tracked ? oldLine + 1 : null;
-      } else if (line.startsWith(" ")) {
-        side = "context";
-        newLine = tracked ? newLine + 1 : null;
-        oldLine = tracked ? oldLine + 1 : null;
+      const combined = columns > 1;
+      const marks = line.slice(0, columns);
+      if (marks.length === columns && /^[-+ ]+$/.test(marks)) {
+        if (marks.includes("-")) {
+          side = "removed";
+          oldLine = tracked && !combined ? oldLine + 1 : oldLine;
+        } else if (marks.includes("+")) {
+          side = "added";
+          newLine = tracked ? newLine + 1 : null;
+        } else {
+          side = "context";
+          newLine = tracked ? newLine + 1 : null;
+          oldLine = tracked ? oldLine + 1 : null;
+        }
       } else if (!line || line.startsWith("\\")) {
         return;
       } else {
@@ -386,13 +524,23 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
         return;
       }
       if (tracked) {
-        hitLine = side === "removed" ? oldLine : newLine;
-        hitFile = side === "removed" ? oldFile : currentFile;
+        if (side === "removed" && !combined) {
+          hitLine = oldLine;
+          hitFile = oldFile;
+        } else if (side === "removed") {
+          hitLine = newLine + 1;
+          hitFile = currentFile ?? oldFile;
+        } else {
+          hitLine = newLine;
+          hitFile = currentFile;
+        }
       }
     }
 
     scanText(line, line, { line: hitLine, file: hitFile, side });
   });
 
-  return diff ? { hits, diffHeaders, hunks } : { hits };
+  const copiesOfCleared = new Set(trailerHits.filter(({ text }) => clearedContent.has(text)).map(({ hit }) => hit));
+  const kept = copiesOfCleared.size ? hits.filter((hit) => !copiesOfCleared.has(hit)) : hits;
+  return diff ? { hits: kept, diffHeaders, hunks } : { hits: kept };
 }

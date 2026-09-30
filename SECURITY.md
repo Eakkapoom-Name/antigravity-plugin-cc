@@ -26,7 +26,7 @@ send, per command:
   `mktemp` with mode 0600 so only you can read it. Nothing deletes these
   files; the answer can quote code from the repository.
 - `/agy:whisper`, `/agy:search`, `/agy:research`, `/agy:image`: the prompt
-  text only, from an isolated temp directory.
+  text only, from an isolated temp directory, after the secret scan below.
 - `/agy:quota`: no user text; a fixed print-mode `/usage` slash command that
   spends no quota.
 - `/agy:setup`'s readiness check: no user text either, a version check plus
@@ -47,23 +47,55 @@ send, per command:
 
 ## Guards
 
-- A secret scan runs on every diff and transfer brief before it leaves. A
-  credential shape (AWS key id, private key block, GitHub, Slack or Google
-  tokens, bearer tokens, `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments,
+- A secret scan runs on every diff and transfer brief before it leaves, and on
+  the free-text argument of `/agy:whisper`, `/agy:search`, `/agy:research` and
+  `/agy:image` (not their flag values). A credential shape (AWS key id,
+  private key block, GitHub, Slack, Google or Stripe secret
+  (`sk_live_`/`sk_test_`) tokens, JWTs, bearer tokens,
+  `SECRET`/`TOKEN`/`PASSWORD`/`API_KEY` assignments,
   `scheme://user:password@host` URLs) blocks the run and names the line and
-  kind, never the value. The whole diff is what leaves, so the whole diff is
-  scanned: added, removed and context lines, the text git copies from the file
-  into a hunk header after its closing `@@`, and any line that is not one of
-  git's own header lines. Only the `diff --git`, `---`/`+++`, hunk-header and
+  kind, never the value. An assignment is caught with the name in all upper
+  case or all lower case (`password: ...` in YAML), a quote before the
+  separator (`"API_KEY": "..."`), and a quoted value that contains spaces;
+  mixed-case names such as `apiKey` or `tokenType` are not. Every assignment
+  on a line is checked, so a placeholder or `${{ secrets.X }}` reference
+  earlier on the line does not hide a real value after it. Under a lower-case
+  name only, an unquoted value that reads as code is skipped: a call or
+  subscript (`token = getAccessToken(scope);`), a dotted member path
+  (`self.store.token`), or a snake_case or CONSTANT_CASE identifier
+  (`password = private_key_password`). The cost is that a real secret of one
+  of those shapes, written unquoted under a lower-case name
+  (`password: my.pass.word.1234`), is not caught. Known false positives
+  remain: a long value under any keyword name that is not a secret, such as
+  `token_url: https://...`, quoted prose such as
+  `password_label: "Please enter your password"`, and a string constant or
+  call under an upper-case keyword name. The whole diff is
+  what leaves, so the whole diff is scanned: added, removed and context lines,
+  the text git copies from the file into a hunk header after its closing `@@`,
+  and any line that is not one of git's own header lines. Only the
+  `diff --git`/`diff --cc`/`diff --combined`, `---`/`+++`, hunk-header and
   extended header lines (index, mode, rename, binary notice), which carry
-  paths and hashes, are not. Every diff is collected with its format pinned
-  against your git config (`--no-color --no-ext-diff --no-textconv`, default
-  `a/`/`b/` prefixes, `--submodule=short`), and a non-empty diff whose shape
-  is not recognized (no `diff --git` header at all) is refused rather than
-  sent unscanned.
-  `--allow-secret <regex>` belongs to `/agy:review` and
-  `/agy:adversarial-review`, where it admits a known fixture. `/agy:transfer`
-  has no such flag: a blocked brief is resolved by editing the brief.
+  paths and hashes, are not.
+  Every diff is collected with its format pinned against your git config
+  (`--no-color --no-ext-diff --no-textconv`, default `a/`/`b/` prefixes,
+  `--submodule=short`), and a non-empty diff whose shape is not recognized (no
+  `diff --git` or `diff --cc`/`diff --combined` header at all) is refused
+  rather than sent unscanned. A blocked whisper, search, research or image run
+  makes no agy call at all; `/agy:search` scans only after its URL guard has
+  passed.
+  `--allow-secret <regex>` (repeatable) belongs to `/agy:review`,
+  `/agy:adversarial-review`, `/agy:transfer`, `/agy:whisper`, `/agy:search`,
+  `/agy:research` and `/agy:image`, where it admits a known fixture; the other
+  way forward is editing the diff, brief or argument to redact the credential.
+  In a diff the pattern is matched against the raw line, marker included
+  (`^\+FIXTURE_TOKEN=`). The copy of a file line that git puts in a hunk
+  header has no marker, so a pattern clears that copy only when it matches the
+  whole hunk-header line or the copied text as it stands, or when the copy is
+  the same text as a content
+  line an allow pattern cleared (or git's 80-byte cut of one). A pattern
+  written for one marker therefore never clears a different line git copied
+  into a header: `^-API_KEY`, admitting a removed revoked key, still blocks a
+  live `API_KEY=` line that appears in a hunk header.
 - `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
   `/agy:research` and `/agy:image` run agy from an isolated temp directory
   rather than the project; whether agy can still reach paths outside it

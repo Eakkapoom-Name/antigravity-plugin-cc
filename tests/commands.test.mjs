@@ -441,9 +441,30 @@ test("rescue agent says what to do when its Bash call is moved to the background
   assert.match(agent, /moved to the background/);
   assert.match(agent, /do not start a second agy run/i);
   // The wait keys on the marker Claude Code appends when the task ends, so a
-  // cancelled run ends the wait too.
-  assert.match(agent, /\\\[\(exited with code\|killed\)/);
+  // cancelled run ends the wait too. F136: the marker is matched as a whole
+  // line, and code 0 is written only as `0`.
+  assert.ok(agent.includes("grep -xE '\\[(exited with code (0|[1-9][0-9]*)|killed)\\]'"), "the wait does not match the marker as a whole line");
 });
+
+// The wait tests run the wait command under bash with `sleep` and `kill -0`.
+// On Windows that is Git Bash, whose `kill` takes Cygwin pids rather than the
+// Node pids these tests hand it, so they are skipped there (F136).
+const HAS_BASH = process.platform !== "win32" && spawnSync("bash", ["-c", "true"]).status === 0;
+// The pid namespace id of this process, as the template and the wait read it
+// (the digits of `readlink /proc/self/ns/pid`); empty without `/proc`, as on
+// macOS, where the wait uses the marker rule alone.
+const PID_NS = (() => {
+  try {
+    return /^pid:\[([0-9]+)\]$/.exec(fs.readlinkSync("/proc/self/ns/pid"))?.[1] ?? "";
+  } catch {
+    return "";
+  }
+})();
+// Claude Code's Linux sandbox runs each Bash call under `bwrap --unshare-pid`.
+// `--die-with-parent` makes killing bwrap end the sandbox too; without it a
+// held wait outlives the test as the namespace's pid 1 and keeps the run open.
+const BWRAP_ARGS = ["--die-with-parent", "--unshare-pid", "--dev-bind", "/", "/", "--proc", "/proc"];
+const HAS_BWRAP = HAS_BASH && process.platform === "linux" && spawnSync("bwrap", [...BWRAP_ARGS, "true"]).status === 0;
 
 // F91, behavior rather than wording: runs the wait command from the agent file
 // against a fake background-task output file. Only the file path and the poll
@@ -456,7 +477,9 @@ function rescueWaitCommand(outputFile) {
 }
 
 // Starts the wait, appends `finalLine` after a delay, and reports whether the
-// wait ended before the append and what it printed.
+// wait ended before the append and what it printed. An empty `finalLine`
+// appends nothing: the output already ends as the test wants, and a slow wait
+// then only takes longer instead of seeing a blank last line.
 async function runRescueWait(initial, finalLine) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
   try {
@@ -471,9 +494,11 @@ async function runRescueWait(initial, finalLine) {
       if (!appended) endedEarly = true;
       resolve(code);
     }));
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    appended = true;
-    fs.appendFileSync(outputFile, finalLine + "\n");
+    if (finalLine !== "") {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      appended = true;
+      fs.appendFileSync(outputFile, finalLine + "\n");
+    }
     const killer = setTimeout(() => child.kill("SIGKILL"), 10000);
     const code = await exited;
     clearTimeout(killer);
@@ -487,10 +512,23 @@ const SUMMARY_LINE = 'AGY_RESCUE_SUMMARY {"status":"SUCCESS","result_file":"/tmp
 // F133. The template prints the token early and its end line last; the wait
 // ends on the exit marker only when the output holds this run's end line.
 const TOKEN = "0123456789abcdef0123456789abcdef";
-const TOKEN_LINE = `agy-rescue end token: ${TOKEN}`;
+// F136. The token line also carries the template shell's pid and, where
+// `/proc` shows it, its pid namespace id; `tokenLineFor` writes this process's
+// namespace unless told otherwise ("" leaves the ` ns` part off). Most tests
+// use a live pid (this process), so only the marker-and-end-line rules are in
+// play.
+const tokenLineFor = (pid, ns = PID_NS) => `agy-rescue end token: ${TOKEN} pid ${pid}${ns ? ` ns ${ns}` : ""}`;
+const TOKEN_LINE = tokenLineFor(process.pid);
+// The format before the pid: the wait treats it as "no pid to check".
+const OLD_TOKEN_LINE = `agy-rescue end token: ${TOKEN}`;
+// A pid that belonged to a child that has exited and been reaped.
+function deadPid() {
+  return spawnSync("true").pid;
+}
 const END_LINE = `AGY_RESCUE_END ${TOKEN}`;
 
-test("rescue wait keeps waiting until the exit marker, then prints the summary line", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait keeps waiting until the exit marker, then prints the summary line", { skip: !HAS_BASH }, async () => {
   // An earlier marker-looking line is not the last line, so it must not end the wait.
   const initial = [TOKEN_LINE, "agy output", "[exited with code 1]", SUMMARY_LINE, END_LINE, ""].join("\n");
   const result = await runRescueWait(initial, "[exited with code 0]");
@@ -502,8 +540,9 @@ test("rescue wait keeps waiting until the exit marker, then prints the summary l
 
 // A killed shell never reaches the template's last line, so a killed run has
 // the token line but no end line. The marker must still end the wait.
-test("rescue wait also ends on a killed marker without the end line", async () => {
-  const result = await runRescueWait([TOKEN_LINE, "agy output", ""].join("\n"), "[killed]");
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait also ends on a killed marker without the end line", { skip: !HAS_BASH }, async () => {
+  const result = await runRescueWait([tokenLineFor(deadPid()), "agy output", ""].join("\n"), "[killed]");
   assert.equal(result.endedEarly, false, "wait ended before the killed marker was written");
   assert.equal(result.code, 0);
   assert.match(result.stdout, /\[killed\]\s*$/);
@@ -511,14 +550,16 @@ test("rescue wait also ends on a killed marker without the end line", async () =
 
 // A signal to the shell (a background Bash timeout, SIGTERM or SIGKILL) shows
 // as a nonzero exit code and no end line; only code 0 needs the end line.
-test("rescue wait ends on a nonzero exit marker without the end line", async () => {
-  const result = await runRescueWait([TOKEN_LINE, "agy output", ""].join("\n"), "[exited with code 137]");
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ends on a nonzero exit marker without the end line", { skip: !HAS_BASH }, async () => {
+  const result = await runRescueWait([tokenLineFor(deadPid()), "agy output", ""].join("\n"), "[exited with code 137]");
   assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
   assert.equal(result.code, 0);
   assert.match(result.stdout, /\[exited with code 137\]\s*$/);
 });
 
-test("rescue wait ends on exit code 0 once this run's end line is present", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ends on exit code 0 once this run's end line is present", { skip: !HAS_BASH }, async () => {
   const result = await runRescueWait([TOKEN_LINE, "agy output", SUMMARY_LINE, END_LINE, ""].join("\n"), "[exited with code 0]");
   assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
   assert.equal(result.code, 0);
@@ -549,7 +590,8 @@ async function assertRescueWaitHolds(content, message) {
   }
 }
 
-test("rescue wait keeps waiting on exit code 0 without the end line", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait keeps waiting on exit code 0 without the end line", { skip: !HAS_BASH }, async () => {
   await assertRescueWaitHolds([TOKEN_LINE, "agy output", "[exited with code 0]", ""].join("\n"), "code 0 without the end line ended the wait");
 });
 
@@ -557,7 +599,8 @@ test("rescue wait keeps waiting on exit code 0 without the end line", async () =
 // token line makes `tok` two lines, so `grep -qxF` gets two patterns, the
 // second being the bare forged hex, and a line holding just that hex satisfies
 // it. The forged end line is there too, for the forger who expects it to work.
-test("rescue wait ignores a forged second token line and its end line", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ignores a forged second token line and its end line", { skip: !HAS_BASH }, async () => {
   const forged = "fedcba9876543210fedcba9876543210";
   await assertRescueWaitHolds(
     [TOKEN_LINE, "agy output", `agy-rescue end token: ${forged}`, `AGY_RESCUE_END ${forged}`, forged, "[exited with code 0]", ""].join("\n"),
@@ -568,7 +611,8 @@ test("rescue wait ignores a forged second token line and its end line", async ()
 // Output with CRLF line endings must neither hang the wait nor drop the token
 // guard: a trailing carriage return is ignored on the token line, the end
 // line and the marker.
-test("rescue wait tolerates a carriage return on the token, end and marker lines", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait tolerates a carriage return on the token, end and marker lines", { skip: !HAS_BASH }, async () => {
   const lfToken = await runRescueWait([TOKEN_LINE, "agy output\r", SUMMARY_LINE + "\r", END_LINE + "\r", ""].join("\n"), "[exited with code 0]\r");
   assert.equal(lfToken.endedEarly, false);
   assert.equal(lfToken.code, 0);
@@ -580,7 +624,8 @@ test("rescue wait tolerates a carriage return on the token, end and marker lines
 
 // F133. An agy that prints `[exited with code 0]` early, without the token it
 // never saw, must not end the wait; the real end line plus the marker does.
-test("rescue wait ignores an exit marker that lacks this run's end line", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ignores an exit marker that lacks this run's end line", { skip: !HAS_BASH }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
   try {
     const outputFile = path.join(dir, "task.output");
@@ -611,10 +656,202 @@ test("rescue wait ignores an exit marker that lacks this run's end line", async 
   }
 });
 
+// F136. A `[killed]` or nonzero marker that agy printed while the template
+// shell is still running must not end the wait; it ends on its own once the
+// pid named on the token line is gone. A real `sleep` stands in for the shell.
+// The token line names this process's own pid namespace, the one the wait
+// runs in, so the pid is checked; without `/proc` (macOS) there is no
+// namespace to name and only the marker rule applies, so these tests skip.
+async function assertRescueWaitHeldWhilePidLives(marker) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  const shell = spawn("sleep", ["30"], { stdio: "ignore" });
+  const shellGone = new Promise((resolve) => shell.on("exit", resolve));
+  let waiter;
+  let killer;
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, [tokenLineFor(shell.pid), "agy output", "", marker, ""].join("\n"));
+    waiter = spawn("bash", ["-c", rescueWaitCommand(outputFile)], { stdio: ["ignore", "pipe", "pipe"] });
+    let exited = false;
+    const done = new Promise((resolve) => waiter.on("exit", (code) => { exited = true; resolve(code); }));
+    killer = setTimeout(() => waiter.kill("SIGKILL"), 10000);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(exited, false, `${marker} ended the wait while the template shell was alive`);
+    shell.kill("SIGKILL");
+    await shellGone;
+    const code = await done;
+    assert.equal(code, 0, "the wait did not end after the template shell died");
+    assert.equal(waiter.signalCode, null, "the wait had to be killed after the template shell died");
+  } finally {
+    clearTimeout(killer);
+    if (waiter) waiter.kill("SIGKILL");
+    shell.kill("SIGKILL");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// F136 discriminator: fails against the wait before F136 (HEAD 23392c7).
+test("rescue wait keeps waiting on a killed marker while the template shell is alive", { skip: !HAS_BASH || !PID_NS }, async () => {
+  await assertRescueWaitHeldWhilePidLives("[killed]");
+});
+
+// F136 discriminator: fails against the wait before F136 (HEAD 23392c7).
+test("rescue wait keeps waiting on a nonzero exit marker while the template shell is alive", { skip: !HAS_BASH || !PID_NS }, async () => {
+  await assertRescueWaitHeldWhilePidLives("[exited with code 1]");
+});
+
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ends on a killed marker when the token line's pid is already dead", { skip: !HAS_BASH }, async () => {
+  // The marker is already there and nothing is appended, so this only checks
+  // that the wait ends by itself (the 10 s killer would make the code null).
+  const result = await runRescueWait([tokenLineFor(deadPid()), "agy output", "", "[killed]", ""].join("\n"), "");
+  assert.equal(result.code, 0, "the wait did not end on the marker already present");
+  assert.match(result.stdout, /\[killed\]\s*$/);
+});
+
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ends on this run's end line even while the template shell is alive", { skip: !HAS_BASH }, async () => {
+  const shell = spawn("sleep", ["30"], { stdio: "ignore" });
+  try {
+    const result = await runRescueWait([tokenLineFor(shell.pid), "agy output", SUMMARY_LINE, END_LINE, ""].join("\n"), "[exited with code 0]");
+    assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /AGY_RESCUE_END 0123456789abcdef0123456789abcdef\n\[exited with code 0\]\s*$/);
+  } finally {
+    shell.kill("SIGKILL");
+  }
+});
+
+// A token line from before the pid existed has nothing to check, so the
+// marker alone ends the wait, the F133 behavior.
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait falls back to the marker alone for a token line without a pid", { skip: !HAS_BASH }, async () => {
+  const result = await runRescueWait([OLD_TOKEN_LINE, "agy output", ""].join("\n"), "[killed]");
+  assert.equal(result.endedEarly, false);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /\[killed\]\s*$/);
+});
+
+// Only the first token line supplies the pid: a forged second line naming a
+// dead pid must not let a forged marker end the wait while the real shell runs.
+// F136 discriminator: fails against the wait before F136 (HEAD 23392c7).
+test("rescue wait takes the pid from the first token line only", { skip: !HAS_BASH || !PID_NS }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  const shell = spawn("sleep", ["30"], { stdio: "ignore" });
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, [tokenLineFor(shell.pid), "agy output", tokenLineFor(deadPid()), "[killed]", ""].join("\n"));
+    const waiter = spawn("bash", ["-c", rescueWaitCommand(outputFile)], { stdio: ["ignore", "pipe", "pipe"] });
+    let exited = false;
+    waiter.on("exit", () => { exited = true; });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const heldOpen = !exited;
+    waiter.kill("SIGKILL");
+    assert.ok(heldOpen, "a forged second token line with a dead pid ended the wait");
+  } finally {
+    shell.kill("SIGKILL");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// F136, pid namespaces. A pid is only checked when the token line names the
+// wait's own pid namespace. A foreign namespace, or none, means `kill -0`
+// could hit an unrelated process with the same small pid, so the marker alone
+// ends the wait. Both tests name a live pid (this process) on purpose.
+// F136 discriminator (namespace): fails against a wait that runs `kill -0`
+// without comparing namespaces.
+test("rescue wait ends on a killed marker when the token line names another pid namespace", { skip: !HAS_BASH }, async () => {
+  const foreign = PID_NS === "1" ? "2" : "1";
+  const result = await runRescueWait([tokenLineFor(process.pid, foreign), "agy output", ""].join("\n"), "[killed]");
+  assert.equal(result.endedEarly, false, "wait ended before the killed marker was written");
+  assert.equal(result.code, 0, "a live pid from another namespace held the wait");
+  assert.match(result.stdout, /\[killed\]\s*$/);
+});
+
+// F136 discriminator (namespace): fails against a wait that checks a pid
+// whose token line names no namespace.
+test("rescue wait ends on a killed marker when the token line names no pid namespace", { skip: !HAS_BASH }, async () => {
+  const result = await runRescueWait([tokenLineFor(process.pid, ""), "agy output", ""].join("\n"), "[killed]");
+  assert.equal(result.endedEarly, false, "wait ended before the killed marker was written");
+  assert.equal(result.code, 0, "a live pid with no namespace held the wait");
+  assert.match(result.stdout, /\[killed\]\s*$/);
+});
+
+// The end-to-end case behind the namespace rule. Claude Code's Linux sandbox
+// runs each Bash call under `bwrap --unshare-pid`, where the shell is pid 2.
+// The template's own first lines run in one sandbox and print `pid 2`; the
+// wait runs in another, where it is itself pid 2, so a bare `kill -0 2`
+// succeeds on the waiter and would hold the wait for a shell that is gone.
+// Skipped where bwrap is missing or cannot make a pid namespace.
+// F136 discriminator (namespace): fails against a wait that runs `kill -0`
+// without comparing namespaces.
+test("rescue wait ends on a killed marker when sandboxed pids collide", { skip: !HAS_BWRAP }, async () => {
+  const head = rescueTemplate().match(/^nonce=[\s\S]*?^\[ -z "\$nonce" \] \|\| echo "agy-rescue end token: .*$/m);
+  assert.ok(head, "the template has no token line");
+  const template = spawnSync("bwrap", [...BWRAP_ARGS, "bash", "-c", head[0]], { encoding: "utf8" });
+  assert.equal(template.status, 0, template.stderr);
+  const tokenLine = template.stdout.trim().split("\n").pop();
+  const pid = /^agy-rescue end token: [0-9a-f]{32} pid ([1-9][0-9]*)/.exec(tokenLine)?.[1];
+  assert.ok(pid, `no token line with a pid: ${template.stdout}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  let waiter;
+  let killer;
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, [tokenLine, "agy output", "", "[killed]", ""].join("\n"));
+    // Exit 3 when the pids do not collide, so the test cannot pass vacuously.
+    waiter = spawn("bwrap", [...BWRAP_ARGS, "bash", "-c", `[ "$$" = ${pid} ] || exit 3; ${rescueWaitCommand(outputFile)}`], { stdio: ["ignore", "pipe", "pipe"] });
+    const done = new Promise((resolve) => waiter.on("exit", (code, signal) => resolve({ code, signal })));
+    killer = setTimeout(() => waiter.kill("SIGKILL"), 10000);
+    const { code, signal } = await done;
+    assert.notEqual(code, 3, `the sandboxed waiter's pid is not ${pid}, so there was no collision to test`);
+    assert.equal(signal, null, "the colliding pid held the wait for a killed run");
+    assert.equal(code, 0);
+  } finally {
+    clearTimeout(killer);
+    if (waiter) waiter.kill("SIGKILL");
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A token line whose pid is 0 (`kill -0 0` tests the caller's own process
+// group and always succeeds) or whose namespace part is malformed does not
+// match the token pattern, so it counts as no token line and the marker alone
+// ends the wait.
+// F136 discriminator (malformed pid): fails against a pid pattern that
+// accepts 0.
+test("rescue wait treats a token line with pid 0 or a malformed namespace as no token line", { skip: !HAS_BASH }, async () => {
+  for (const line of [tokenLineFor(0, ""), tokenLineFor(0), `${tokenLineFor(process.pid, "")} ns `, `${tokenLineFor(process.pid, "")} ns abc`]) {
+    const result = await runRescueWait([line, "agy output", ""].join("\n"), "[killed]");
+    assert.equal(result.endedEarly, false, `${line}: wait ended before the killed marker was written`);
+    assert.equal(result.code, 0, `${line}: the wait did not end on the marker`);
+  }
+});
+
+// Only an exact marker counts: the whole last line, and code 0 written only as
+// `0`. Each shape holds the wait both with no token line and with a dead pid,
+// the two cases where a real marker would end it at once.
+// F136 discriminator: fails against the wait before F136 (HEAD 23392c7).
+test("rescue wait does not count a line that only starts like a marker", { skip: !HAS_BASH }, async () => {
+  const shapes = ["[killed] by agy", "[exited with code 00]", "[exited with code 0x]", "[exited with code 07]", "[killed]x"];
+  await Promise.all(shapes.flatMap((shape) => [
+    assertRescueWaitHolds(["agy output", "", shape, ""].join("\n"), `${shape} ended the wait with no token line`),
+    assertRescueWaitHolds([tokenLineFor(deadPid()), "agy output", "", shape, ""].join("\n"), `${shape} ended the wait with a dead pid`)
+  ]));
+});
+
 // A run that never printed the token line never reached agy, so the marker
 // alone ends the wait instead of holding it to the 600 s timeout.
-test("rescue wait falls back to the exit marker alone when no token line exists", async () => {
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait falls back to the exit marker alone when no token line exists", { skip: !HAS_BASH }, async () => {
   const result = await runRescueWait("agy-rescue refused: something\n", "[exited with code 1]");
+  assert.equal(result.endedEarly, false);
+  assert.equal(result.code, 0);
+});
+
+// Regression guard: behavior from before F136 that must still hold.
+test("rescue wait ends on exit code 0 alone when no token line exists", { skip: !HAS_BASH }, async () => {
+  const result = await runRescueWait("agy-rescue refused: something\n", "[exited with code 0]");
   assert.equal(result.endedEarly, false);
   assert.equal(result.code, 0);
 });
@@ -683,8 +920,10 @@ function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, in
     const elapsedMs = Date.now() - startedAt;
     const lines = run.stdout.trim().split("\n");
     // F133: the end line is the very last line, the summary the one before it.
-    const token = lines.find((line) => line.startsWith("agy-rescue end token: "))?.slice("agy-rescue end token: ".length);
-    assert.match(token ?? "", /^[0-9a-f]{32}$/, `no token line: ${run.stdout}${run.stderr}`);
+    const tokenLine = lines.find((line) => line.startsWith("agy-rescue end token: "));
+    const tokenMatch = /^agy-rescue end token: ([0-9a-f]{32}) pid ([1-9][0-9]*)(?: ns ([0-9]+))?$/.exec(tokenLine ?? "");
+    assert.ok(tokenMatch, `no token line: ${run.stdout}${run.stderr}`);
+    const token = tokenMatch[1];
     assert.equal(lines[lines.length - 1], `AGY_RESCUE_END ${token}`, `end line is not the last output line: ${run.stdout}${run.stderr}`);
     const last = lines[lines.length - 2];
     assert.ok(last.startsWith("AGY_RESCUE_SUMMARY "), `summary is not the line before the end line: ${run.stdout}${run.stderr}`);
@@ -709,6 +948,9 @@ function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, in
       responseMode,
       elapsedMs,
       token,
+      tokenPid: Number(tokenMatch[2]),
+      tokenNs: tokenMatch[3] ?? "",
+      shellPid: run.pid,
       leftovers: fs.readdirSync(dir).sort(),
       inspected: inspect ? inspect(dir) : undefined
     };
@@ -717,7 +959,6 @@ function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, in
   }
 }
 
-const HAS_BASH = process.platform !== "win32" && spawnSync("bash", ["-c", "true"]).status === 0;
 const HAS_PROC = fs.existsSync("/proc/self/fd");
 
 test("rescue template summarises a successful run from the result file", { skip: !HAS_BASH }, () => {
@@ -768,8 +1009,22 @@ test("rescue template prints a fresh token early and its end line last", { skip:
   assert.match(first.token, /^[0-9a-f]{32}$/);
   assert.notEqual(first.token, second.token);
   const lines = first.run.stdout.trim().split("\n");
-  assert.ok(lines.indexOf(`agy-rescue end token: ${first.token}`) < lines.indexOf(`agy-rescue result file: ${first.summary.result_file}`));
+  assert.ok(lines.indexOf(`agy-rescue end token: ${first.token} pid ${first.tokenPid}${first.tokenNs ? ` ns ${first.tokenNs}` : ""}`) < lines.indexOf(`agy-rescue result file: ${first.summary.result_file}`));
   assert.ok(!first.fileText.includes(first.token), "the token reached agy's result file");
+});
+
+// F136. The token line names the template shell's own pid and pid namespace,
+// which the wait checks with `kill -0` (in its own namespace only) before it
+// trusts a `[killed]` or nonzero marker. Without `/proc` there is no ` ns`
+// part. The shell runs in this process's namespace, so the ids agree.
+// F136 discriminator: fails against the template before F136 (HEAD 23392c7).
+test("rescue template prints its own shell's pid and pid namespace on the token line", { skip: !HAS_BASH }, () => {
+  const { run, tokenPid, tokenNs, shellPid } = runTemplate("ok", "task");
+  const tokenLines = run.stdout.split("\n").filter((line) => line.startsWith("agy-rescue end token:"));
+  assert.equal(tokenLines.length, 1);
+  assert.match(tokenLines[0], /^agy-rescue end token: [0-9a-f]{32} pid [1-9][0-9]*( ns [0-9]+)?$/);
+  assert.equal(tokenPid, shellPid, "the printed pid is not the template shell's");
+  assert.equal(tokenNs, PID_NS, "the printed pid namespace is not the template shell's");
 });
 
 // Runs the template with extra stub commands first on PATH (`stubs` maps a
@@ -805,7 +1060,7 @@ function runTemplateWithStubs(stubs) {
 test("rescue template keeps a crashed summary step's exit status and still prints the end line", { skip: !HAS_BASH }, () => {
   const { run, lines } = runTemplateWithStubs({ node: "#!/bin/sh\nexit 139\n" });
   assert.equal(run.status, 139, `exit status was not kept: ${run.stdout}${run.stderr}`);
-  const token = lines.find((line) => line.startsWith("agy-rescue end token: "))?.slice("agy-rescue end token: ".length);
+  const token = /^agy-rescue end token: ([0-9a-f]{32}) pid [1-9][0-9]*(?: ns [0-9]+)?$/.exec(lines.find((line) => line.startsWith("agy-rescue end token: ")) ?? "")?.[1];
   assert.match(token ?? "", /^[0-9a-f]{32}$/);
   assert.equal(lines[lines.length - 1], `AGY_RESCUE_END ${token}`);
   // The stub agy prints one fake summary on stderr; the real one never came.

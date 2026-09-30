@@ -198,7 +198,7 @@ Examples:
 ```bash
 /agy:rescue investigate why the tests started failing
 /agy:rescue fix the failing test with the smallest safe patch
-/agy:rescue --resume apply the top fix from the last run
+/agy:rescue --resume also add a regression test for that fix
 /agy:rescue --background investigate the regression
 /agy:rescue --effort high dig into the race condition in the job queue
 ```
@@ -209,11 +209,13 @@ Examples:
 - `--background` and `--wait` are a request: Claude Code 2.1.284 and 2.1.285 run the rescue subagent in the background whichever you pass, and its `Agent` tool offers no foreground or background parameter. Where the host lets the command choose, it asks for the mode you gave (foreground when you gave neither); where it does not, the result arrives through the completion notification, and the command says so
 - some models reject `--effort` outright (agy 1.2.4 refuses it for `claude-opus-4-6-thinking` before running anything); the rescue agent then reruns once without the flag and says so. See [Effort levels](#effort-levels) for which models take which level
 - write-capable runs use `--mode accept-edits` on the agy side; review and diagnosis runs stay read-only
-- follow-up rescue requests can continue the latest agy conversation
+- follow-up rescue requests can continue the latest agy conversation, but only one that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`: `--resume` reopens it write-capable (`--mode accept-edits`) with your repository added, so it must not be pointed at a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`. When the most recent agy conversation in this session came from one of those, there is no safe continue path: rerun that command, or start fresh without `--resume`
 
 ### `/agy:continue`
 
 Sends a follow-up into an existing agy conversation instead of starting a new one. With no id, continues the most recent conversation from this session. Same `--background`/`--wait`, `--model`, `--effort` flags as `/agy:rescue`.
+
+Only use it on conversations that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`. It resumes write-capable (`--mode accept-edits`) with your repository added, so it must not be used on a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`, which ran isolated and read-only over untrusted web or diff content. Rerun those commands with the refined request instead.
 
 Examples:
 
@@ -230,8 +232,12 @@ Examples:
 ```
 
 One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
-with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
-runs from an isolated temp directory, not your project. That is a
+with a `conversation_id`, but there is no safe continue path for it:
+`/agy:continue` resumes through the rescue subagent in `--mode accept-edits`
+with your repository added, which would make a conversation that holds web
+content write-capable there. Rerun `/agy:whisper` with the refined request
+(the same goes for `/agy:search`, `/agy:research`, `/agy:image`, `/agy:review`
+and `/agy:adversarial-review`). agy runs from an isolated temp directory, not your project. That is a
 working-directory change rather than a sandbox: whether agy can reach paths
 outside it depends on agy's own `toolPermission` setting (`always-proceed`
 reads by absolute path) and, with an absolute path in the prompt text, may
@@ -346,7 +352,7 @@ Use it to:
 
 ### `/agy:result`
 
-Shows the stored final output of a finished background run, subagent delegation or companion review alike, including the `conversation_id` so you can reopen that run with `/agy:continue` or `agy --conversation <id>`.
+Shows the stored final output of a finished background run, subagent delegation or companion review alike, including the `conversation_id` so you can reopen a rescue run with `/agy:continue` or any run with `agy --conversation <id>` in a terminal. A review's conversation is read-only and isolated, and there is no safe continue path for it: `/agy:continue` would resume it write-capable in your repository, so rerun the review instead.
 
 Examples:
 
@@ -378,7 +384,7 @@ Examples:
 
 ### Effort levels
 
-`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.2.14 (`agy models`, 2026-09-30) every Gemini id carries its effort level in the id itself: `gemini-3.8-flash-high`, `-medium` and `-low` (the same for `gemini-3.7-flash` and `gemini-3.6-flash`), and `gemini-3.1-pro-high` and `-low` only. The Claude and GPT-OSS ids (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`) carry none. Only one refusal was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before running anything. The rest is read off `agy models`, not run, and whether a suffixed Gemini id accepts `--effort` on top is unmeasured, so pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so.
+`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.2.14 (`agy models`, 2026-09-30) every Gemini id carries its effort level in the id itself: `gemini-3.8-flash-high`, `-medium` and `-low` (the same for `gemini-3.7-flash` and `gemini-3.6-flash`), and `gemini-3.1-pro-high` and `-low` only. The Claude and GPT-OSS ids (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`) carry none. Only one refusal was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before running anything. The rest is read off `agy models`, not run, and whether a suffixed Gemini id accepts `--effort` on top is unmeasured, so pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so. The companion commands (`/agy:whisper`, `/agy:research`, `/agy:image`, `/agy:transfer`) skip that rerun when too little of the run's time budget is left, and report it as `effortRetry.skipped`.
 
 ## Typical Flows
 

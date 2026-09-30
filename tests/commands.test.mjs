@@ -449,10 +449,10 @@ test("rescue agent says what to do when its Bash call is moved to the background
 // against a fake background-task output file. Only the file path and the poll
 // interval are substituted, so a broken marker regex or tail call fails here.
 function rescueWaitCommand(outputFile) {
-  const match = read("agents/agy-rescue.md").match(/`(until tail [^`]*)`/);
-  assert.ok(match, "agents/agy-rescue.md has no `until tail` wait command");
+  const match = read("agents/agy-rescue.md").match(/`(f="<output file>"; until [^`]*)`/);
+  assert.ok(match, "agents/agy-rescue.md has no `until` wait command");
   assert.match(match[1], /sleep 5;/);
-  return match[1].replaceAll('"<output file>"', JSON.stringify(outputFile)).replace("sleep 5;", "sleep 0.1;");
+  return match[1].replace('"<output file>"', JSON.stringify(outputFile)).replace("sleep 5;", "sleep 0.1;");
 }
 
 // Starts the wait, appends `finalLine` after a delay, and reports whether the
@@ -484,10 +484,15 @@ async function runRescueWait(initial, finalLine) {
 }
 
 const SUMMARY_LINE = 'AGY_RESCUE_SUMMARY {"status":"SUCCESS","result_file":"/tmp/agy-rescue-x.json"}';
+// F133. The template prints the token early and its end line last; the wait
+// ends on the exit marker only when the output holds this run's end line.
+const TOKEN = "0123456789abcdef0123456789abcdef";
+const TOKEN_LINE = `agy-rescue end token: ${TOKEN}`;
+const END_LINE = `AGY_RESCUE_END ${TOKEN}`;
 
 test("rescue wait keeps waiting until the exit marker, then prints the summary line", async () => {
   // An earlier marker-looking line is not the last line, so it must not end the wait.
-  const initial = ["agy output", "[exited with code 1]", SUMMARY_LINE, ""].join("\n");
+  const initial = [TOKEN_LINE, "agy output", "[exited with code 1]", SUMMARY_LINE, END_LINE, ""].join("\n");
   const result = await runRescueWait(initial, "[exited with code 0]");
   assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
   assert.equal(result.code, 0);
@@ -495,11 +500,123 @@ test("rescue wait keeps waiting until the exit marker, then prints the summary l
   assert.match(result.stdout, /\[exited with code 0\]\s*$/);
 });
 
-test("rescue wait also ends on a killed marker", async () => {
-  const result = await runRescueWait(SUMMARY_LINE + "\n", "[killed]");
+// A killed shell never reaches the template's last line, so a killed run has
+// the token line but no end line. The marker must still end the wait.
+test("rescue wait also ends on a killed marker without the end line", async () => {
+  const result = await runRescueWait([TOKEN_LINE, "agy output", ""].join("\n"), "[killed]");
   assert.equal(result.endedEarly, false, "wait ended before the killed marker was written");
   assert.equal(result.code, 0);
   assert.match(result.stdout, /\[killed\]\s*$/);
+});
+
+// A signal to the shell (a background Bash timeout, SIGTERM or SIGKILL) shows
+// as a nonzero exit code and no end line; only code 0 needs the end line.
+test("rescue wait ends on a nonzero exit marker without the end line", async () => {
+  const result = await runRescueWait([TOKEN_LINE, "agy output", ""].join("\n"), "[exited with code 137]");
+  assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /\[exited with code 137\]\s*$/);
+});
+
+test("rescue wait ends on exit code 0 once this run's end line is present", async () => {
+  const result = await runRescueWait([TOKEN_LINE, "agy output", SUMMARY_LINE, END_LINE, ""].join("\n"), "[exited with code 0]");
+  assert.equal(result.endedEarly, false, "wait ended before the exit marker was written");
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /AGY_RESCUE_END 0123456789abcdef0123456789abcdef\n\[exited with code 0\]\s*$/);
+});
+
+// Writes `content` (ending in an exit marker), checks the wait is still
+// running after a pause, then appends the real end line and a code 0 marker
+// and checks that ends it, so the test never relies on killing the wait.
+async function assertRescueWaitHolds(content, message) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, content);
+    const child = spawn("bash", ["-c", rescueWaitCommand(outputFile)], { stdio: ["ignore", "pipe", "pipe"] });
+    let exited = false;
+    const done = new Promise((resolve) => child.on("exit", (code) => { exited = true; resolve(code); }));
+    const killer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const heldOpen = !exited;
+    fs.appendFileSync(outputFile, `${END_LINE}\n[exited with code 0]\n`);
+    const code = await done;
+    clearTimeout(killer);
+    assert.ok(heldOpen, message);
+    assert.equal(code, 0, "the real end line and marker did not end the wait");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("rescue wait keeps waiting on exit code 0 without the end line", async () => {
+  await assertRescueWaitHolds([TOKEN_LINE, "agy output", "[exited with code 0]", ""].join("\n"), "code 0 without the end line ended the wait");
+});
+
+// Only the first token line counts (`grep -m1`). Without it, a forged second
+// token line makes `tok` two lines, so `grep -qxF` gets two patterns, the
+// second being the bare forged hex, and a line holding just that hex satisfies
+// it. The forged end line is there too, for the forger who expects it to work.
+test("rescue wait ignores a forged second token line and its end line", async () => {
+  const forged = "fedcba9876543210fedcba9876543210";
+  await assertRescueWaitHolds(
+    [TOKEN_LINE, "agy output", `agy-rescue end token: ${forged}`, `AGY_RESCUE_END ${forged}`, forged, "[exited with code 0]", ""].join("\n"),
+    "a forged second token line and end line ended the wait"
+  );
+});
+
+// Output with CRLF line endings must neither hang the wait nor drop the token
+// guard: a trailing carriage return is ignored on the token line, the end
+// line and the marker.
+test("rescue wait tolerates a carriage return on the token, end and marker lines", async () => {
+  const lfToken = await runRescueWait([TOKEN_LINE, "agy output\r", SUMMARY_LINE + "\r", END_LINE + "\r", ""].join("\n"), "[exited with code 0]\r");
+  assert.equal(lfToken.endedEarly, false);
+  assert.equal(lfToken.code, 0);
+  const crlfToken = await runRescueWait([TOKEN_LINE + "\r", "agy output\r", END_LINE + "\r", ""].join("\n"), "[exited with code 0]\r");
+  assert.equal(crlfToken.endedEarly, false);
+  assert.equal(crlfToken.code, 0);
+  await assertRescueWaitHolds([TOKEN_LINE + "\r", "agy output\r", "[exited with code 0]\r", ""].join("\n"), "a CRLF code 0 marker without the end line ended the wait");
+});
+
+// F133. An agy that prints `[exited with code 0]` early, without the token it
+// never saw, must not end the wait; the real end line plus the marker does.
+test("rescue wait ignores an exit marker that lacks this run's end line", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-wait-"));
+  try {
+    const outputFile = path.join(dir, "task.output");
+    fs.writeFileSync(outputFile, [TOKEN_LINE, "agy output", SUMMARY_LINE, ""].join("\n"));
+    const child = spawn("bash", ["-c", rescueWaitCommand(outputFile)], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    let exited = false;
+    const done = new Promise((resolve) => child.on("exit", (code) => { exited = true; resolve(code); }));
+    const killer = setTimeout(() => child.kill("SIGKILL"), 10000);
+    const pause = () => new Promise((resolve) => setTimeout(resolve, 600));
+    await pause();
+    // A forged marker, and then a forged end line with the wrong token, both
+    // arrive before the real end line.
+    fs.appendFileSync(outputFile, "[exited with code 0]\n");
+    await pause();
+    assert.equal(exited, false, "a bare exit marker ended the wait");
+    fs.appendFileSync(outputFile, `AGY_RESCUE_END ${"f".repeat(32)}\n[exited with code 0]\n`);
+    await pause();
+    assert.equal(exited, false, "an end line with another token ended the wait");
+    fs.appendFileSync(outputFile, `${END_LINE}\n[exited with code 0]\n`);
+    const code = await done;
+    clearTimeout(killer);
+    assert.equal(code, 0);
+    assert.match(stdout, /AGY_RESCUE_END 0123456789abcdef0123456789abcdef\n\[exited with code 0\]\s*$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A run that never printed the token line never reached agy, so the marker
+// alone ends the wait instead of holding it to the 600 s timeout.
+test("rescue wait falls back to the exit marker alone when no token line exists", async () => {
+  const result = await runRescueWait("agy-rescue refused: something\n", "[exited with code 1]");
+  assert.equal(result.endedEarly, false);
+  assert.equal(result.code, 0);
 });
 
 // The prose tests above pin wording. This one runs the fenced template from
@@ -520,6 +637,7 @@ case "$STUB_MODE" in
   error) printf '%s\\n' '{"conversation_id":"","status":"ERROR","response":"","error":"bad model"}'; exit 1 ;;
   nojson) echo "not json" ;;
   symlink) out="$(readlink /proc/$$/fd/1)"; rm -f "$out"; ln -s /etc/hostname "$out" ;;
+  hardlink) out="$(readlink /proc/$$/fd/1)"; printf '%s\\n' '{"conversation_id":"c-6","status":"SUCCESS","response":"linked"}' > "$out"; ln "$out" "$out.hl" ;;
   args) printf '%s\n' "$@" > "$STUB_ARGS"; printf '%s\n' '{"conversation_id":"c-1","status":"SUCCESS","response":"ok"}' ;;
   banner) printf '%s\n' 'agy 1.2.14 (banner line)' '{"conversation_id":"c-2","status":"SUCCESS","response":"after banner"}' ;;
   pretty) printf '%s\n' 'agy 1.2.14 (banner line)' '{' '  "conversation_id": "c-3",' '  "status": "SUCCESS",' '  "response": "line one\\nline two"' '}' ;;
@@ -564,8 +682,12 @@ function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, in
     });
     const elapsedMs = Date.now() - startedAt;
     const lines = run.stdout.trim().split("\n");
-    const last = lines[lines.length - 1];
-    assert.ok(last.startsWith("AGY_RESCUE_SUMMARY "), `summary is not the last output line: ${run.stdout}${run.stderr}`);
+    // F133: the end line is the very last line, the summary the one before it.
+    const token = lines.find((line) => line.startsWith("agy-rescue end token: "))?.slice("agy-rescue end token: ".length);
+    assert.match(token ?? "", /^[0-9a-f]{32}$/, `no token line: ${run.stdout}${run.stderr}`);
+    assert.equal(lines[lines.length - 1], `AGY_RESCUE_END ${token}`, `end line is not the last output line: ${run.stdout}${run.stderr}`);
+    const last = lines[lines.length - 2];
+    assert.ok(last.startsWith("AGY_RESCUE_SUMMARY "), `summary is not the line before the end line: ${run.stdout}${run.stderr}`);
     const summary = JSON.parse(last.slice("AGY_RESCUE_SUMMARY ".length));
     let fileText = null;
     try { fileText = fs.readFileSync(summary.result_file, "utf8"); } catch {}
@@ -586,6 +708,7 @@ function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, in
       responseText,
       responseMode,
       elapsedMs,
+      token,
       leftovers: fs.readdirSync(dir).sort(),
       inspected: inspect ? inspect(dir) : undefined
     };
@@ -626,6 +749,86 @@ test("rescue template keeps the exit code and error of a failed run", { skip: !H
 test("rescue template flags a result path replaced by a symlink", { skip: !HAS_BASH || !HAS_PROC }, () => {
   const { summary } = runTemplate("symlink", "task");
   assert.equal(summary.regular_file, false);
+});
+
+// F133. A second hard link to the result file is a swap `lstat().isFile()`
+// alone does not see; it is refused the way a non-regular file is.
+test("rescue template flags a result file that has a second hard link", { skip: !HAS_BASH || !HAS_PROC }, () => {
+  const { summary, leftovers } = runTemplate("hardlink", "task");
+  assert.ok(leftovers.some((name) => name.endsWith(".hl")), "the stub did not make the link");
+  assert.equal(summary.regular_file, false);
+  assert.equal(summary.response_file, null);
+  assert.equal(summary.status, "SUCCESS", "the summary still reads the file, only the caller refuses it");
+});
+
+// F133. The end line carries a token the shell draws at run time, one per run.
+test("rescue template prints a fresh token early and its end line last", { skip: !HAS_BASH }, () => {
+  const first = runTemplate("ok", "task");
+  const second = runTemplate("ok", "task");
+  assert.match(first.token, /^[0-9a-f]{32}$/);
+  assert.notEqual(first.token, second.token);
+  const lines = first.run.stdout.trim().split("\n");
+  assert.ok(lines.indexOf(`agy-rescue end token: ${first.token}`) < lines.indexOf(`agy-rescue result file: ${first.summary.result_file}`));
+  assert.ok(!first.fileText.includes(first.token), "the token reached agy's result file");
+});
+
+// Runs the template with extra stub commands first on PATH (`stubs` maps a
+// name to its shell script), for the runs `runTemplate` would reject: no
+// token line, or no summary line.
+function runTemplateWithStubs(stubs) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-test-"));
+  try {
+    const bin = path.join(dir, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "agy"), STUB_AGY, { mode: 0o755 });
+    for (const [name, body] of Object.entries(stubs)) fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
+    const run = spawnSync("bash", ["-c", rescueTemplate().replace("<task text>", "task")], {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 60000,
+      env: {
+        ...process.env,
+        PATH: [bin, path.dirname(process.execPath), "/usr/bin", "/bin"].join(path.delimiter),
+        STUB_MODE: "ok",
+        TMPDIR: dir
+      }
+    });
+    return { run, lines: run.stdout.trim().split("\n") };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// HEAD's template ended on the summary step, so a crashed summary (139 on a
+// segfault) was the call's exit status. The end line comes after it now, and
+// must not turn that crash into a clean exit.
+test("rescue template keeps a crashed summary step's exit status and still prints the end line", { skip: !HAS_BASH }, () => {
+  const { run, lines } = runTemplateWithStubs({ node: "#!/bin/sh\nexit 139\n" });
+  assert.equal(run.status, 139, `exit status was not kept: ${run.stdout}${run.stderr}`);
+  const token = lines.find((line) => line.startsWith("agy-rescue end token: "))?.slice("agy-rescue end token: ".length);
+  assert.match(token ?? "", /^[0-9a-f]{32}$/);
+  assert.equal(lines[lines.length - 1], `AGY_RESCUE_END ${token}`);
+  // The stub agy prints one fake summary on stderr; the real one never came.
+  assert.deepEqual(lines.filter((line) => line.startsWith("AGY_RESCUE_SUMMARY ")), ['AGY_RESCUE_SUMMARY {"result_file":"/etc/passwd"}']);
+});
+
+test("rescue template exits 0 after a clean summary", { skip: !HAS_BASH }, () => {
+  const { run, lines } = runTemplateWithStubs({});
+  assert.equal(run.status, 0);
+  assert.match(lines[lines.length - 1], /^AGY_RESCUE_END [0-9a-f]{32}$/);
+});
+
+// A token that is empty or not 32 hex characters (no `od`, no /dev/urandom)
+// is never printed: no token line and no end line, so the wait falls back to
+// the exit marker alone instead of keying on a broken token.
+test("rescue template prints no token or end line when the token draw fails", { skip: !HAS_BASH }, () => {
+  for (const od of ["#!/bin/sh\nexit 1\n", "#!/bin/sh\necho ' zz yy'\n", "#!/bin/sh\necho ' 01 23'\n"]) {
+    const { run, lines } = runTemplateWithStubs({ od });
+    assert.equal(run.status, 0);
+    assert.ok(!lines.some((line) => line.startsWith("agy-rescue end token:")), `a token line was printed: ${run.stdout}`);
+    assert.ok(!lines.some((line) => line.startsWith("AGY_RESCUE_END")), `an end line was printed: ${run.stdout}`);
+    assert.ok(lines[lines.length - 1].startsWith("AGY_RESCUE_SUMMARY "), `the summary is not the last line: ${run.stdout}`);
+  }
 });
 
 test("rescue template reports a missing agy as exit 127 with an empty file", { skip: !HAS_BASH }, () => {
@@ -1087,6 +1290,99 @@ test("result handling offers /agy:continue only for write-capable conversations"
   const cap = handling.split("\n").find((line) => line.startsWith("One resume is the cap"));
   assert.match(cap, /came from `\/agy:transfer` \(or `\/agy:rescue` or `\/agy:continue`\), run `\/agy:continue <conversation_id>`/);
   assert.match(cap, /do not: `\/agy:continue` would resume that conversation write-capable/);
+});
+
+// F131. The isolated read-only commands hold untrusted web or diff content, and
+// /agy:continue resumes through the rescue subagent with --mode accept-edits and
+// the repository added. No passage that covers those commands may offer it as
+// the follow-up: each line that names it must say there is no safe path.
+test("no command, skill or README passage offers /agy:continue for the isolated read-only commands", () => {
+  const isolated = ["search", "research", "whisper", "image", "review", "adversarial-review"];
+  const readme = read("README.md");
+  const section = (name) => {
+    const start = readme.indexOf(`### \`/agy:${name}\`\n`);
+    assert.ok(start >= 0, `README has no ${name} section`);
+    const end = readme.indexOf("\n### ", start + 1);
+    return readme.slice(start, end < 0 ? undefined : end);
+  };
+  const passages = [
+    ...isolated.map((name) => [`commands/${name}.md`, read(`commands/${name}.md`)]),
+    ["skills/agy-web/SKILL.md", read("skills/agy-web/SKILL.md")],
+    ...[...isolated, "result"].map((name) => [`README.md ${name} section`, section(name)])
+  ];
+  for (const [label, text] of passages) {
+    assert.doesNotMatch(text, /resumable via `\/agy:continue`/, `${label} offers /agy:continue as the follow-up`);
+    assert.doesNotMatch(text, /follow-up goes through `\/agy:continue/, `${label} offers /agy:continue as the follow-up`);
+    assert.doesNotMatch(text, /`\/agy:continue <id> <follow-up>` picks it up/, `${label} offers /agy:continue as the follow-up`);
+    assert.doesNotMatch(text, /resumable via `\/agy:rescue --resume`/, `${label} offers /agy:rescue --resume as the follow-up`);
+    // Each paragraph or list item that names a continue route says there is no safe path.
+    for (const paragraph of text.split(/\n\s*\n|\n(?=\s*- )/).filter((p) => p.includes("/agy:continue") || p.includes("--resume"))) {
+      assert.match(paragraph.replace(/\s+/g, " "), /no safe continue path/, `${label} names a continue route without saying there is no safe path: ${paragraph}`);
+    }
+  }
+  // F131, the --resume half: /agy:rescue --resume maps to -c or --conversation and
+  // resumes just as write-capable, so the places that offered it for any run now
+  // limit it to rescue, continue and transfer conversations.
+  assert.match(read("commands/adversarial-review.md"), /there is no safe continue path for it: `\/agy:rescue --resume` and `\/agy:continue` resume/);
+  const handlingResume = read("skills/agy-result-handling/SKILL.md").split("\n").find((line) => line.startsWith("- Always report the `conversation_id`"));
+  assert.match(handlingResume, /resumable via `\/agy:rescue --resume` only when it came from `\/agy:rescue`, `\/agy:continue` or `\/agy:transfer`/);
+  assert.match(handlingResume, /`\/agy:review`, `\/agy:adversarial-review`, `\/agy:search`, `\/agy:research`, `\/agy:whisper` and `\/agy:image` say there is no safe continue path/);
+  const resultResume = read("commands/result.md").split("\n").find((line) => line.includes("--resume"));
+  assert.match(resultResume, /resumable via `\/agy:rescue --resume` only for a subagent run/);
+  assert.match(resultResume, /For a companion review say there is no safe continue path/);
+  const statusResume = read("commands/status.md").split("\n").find((line) => line.includes("--resume"));
+  assert.match(statusResume, /from `\/agy:rescue`, `\/agy:continue` or `\/agy:transfer` with `\/agy:rescue --resume`/);
+  assert.match(statusResume, /no safe continue path/);
+  // The README example no longer resumes "the last run", which may be a review or search.
+  assert.doesNotMatch(readme, /\/agy:rescue --resume apply the top fix from the last run/);
+  assert.match(section("rescue").replace(/\s+/g, " "), /there is no safe continue path: rerun that command, or start fresh without `--resume`/);
+  // The three that used to offer it now say to rerun with the refined request.
+  for (const name of ["search", "research", "whisper"]) {
+    const source = read(`commands/${name}.md`);
+    assert.match(source, /there is no safe continue path for it/, name);
+    assert.match(source, new RegExp(`rerun \`/agy:${name}\` with the refined request`), name);
+  }
+  assert.match(read("skills/agy-web/SKILL.md").replace(/\s+/g, " "), /There is no safe continue path for a follow-up/);
+  assert.match(section("whisper").replace(/\s+/g, " "), /there is no safe continue path for it/);
+  // /agy:continue itself refuses to be pointed at an isolated conversation.
+  const guard = /must not be (?:pointed at|used on) a conversation from `\/agy:search`, `\/agy:research`, `\/agy:whisper`, `\/agy:image`, `\/agy:review` or `\/agy:adversarial-review`/;
+  assert.match(read("commands/continue.md"), guard);
+  assert.match(section("continue").replace(/\s+/g, " "), guard);
+  // /agy:rescue --resume and the subagent's own -c carry the same guard: an
+  // explicit id from an isolated command, or a bare --resume while the most
+  // recent conversation in this session came from one, is refused.
+  const rescueGuard = read("commands/rescue.md").split("\n").find((line) => line.startsWith("- `--resume`"));
+  assert.match(rescueGuard, guard);
+  assert.match(rescueGuard, /If `--resume` comes with a conversation id from one of those, or comes without an id \(or the request is such a continuation\) while the most recent agy conversation in this session came from one of those, do not invoke the subagent; say there is no safe continue path/);
+  assert.match(rescueGuard, /or to start fresh without `--resume`/);
+  const agentGuard = read("agents/agy-rescue.md").split("\n").find((line) => line.startsWith("- A continuation ("));
+  assert.match(agentGuard, /including one added by the rule above/);
+  assert.match(agentGuard, guard);
+  assert.match(agentGuard, /\(the id given, or, with no id, the most recent agy conversation in this session\), do not run anything: return `agy-rescue refused: [^`]*no safe continue path[^`]*`/);
+  // Rescue, continue and transfer keep the /agy:continue advice.
+  assert.match(read("commands/continue.md"), /so the user can keep the thread going with another `\/agy:continue`/);
+  assert.match(read("commands/rescue.md"), /`\/agy:continue <conversation_id> Yes, proceed\.`/);
+  assert.match(read("README.md"), /from Claude Code \(`\/agy:continue`\)/);
+});
+
+// F134. The companion's effort rerun shares the first attempt's time budget and
+// is skipped when too little is left, so no doc may promise it unconditionally,
+// and transfer no longer has a rerun of its own.
+test("the effort rerun docs name the insufficient-time skip", () => {
+  for (const name of ["whisper", "research", "image", "transfer"]) {
+    const source = read(`commands/${name}.md`).replace(/\s+/g, " ");
+    assert.match(
+      source,
+      /the script reruns once without `--effort` when the model refuses it(?: \(`effortDropped`\))?, unless too little of the run's time budget is left, reported as `effortRetry\.skipped`/,
+      `${name}.md promises the effort rerun unconditionally`
+    );
+  }
+  const runtime = read("skills/agy-cli-runtime/SKILL.md");
+  assert.doesNotMatch(runtime, /for transfer, its own rerun/);
+  assert.match(runtime, /all of which run through `runWithEffortFallback`\) and reports `effortDropped: true`, unless too little of the run's time budget is left/);
+  assert.match(runtime, /`effortRetry\.skipped: "insufficient-time"` with `effortDropped: false`/);
+  assert.match(read("README.md").replace(/\s+/g, " "), /skip that rerun when too little of the run's time budget is left, and report it as `effortRetry\.skipped`/);
+  assert.match(read("skills/agy-result-handling/SKILL.md"), /`effortRetry\.skipped: "insufficient-time"`/);
 });
 
 // `recovered` is only `second.ok`; a timed-out or errored resume is not a

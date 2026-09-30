@@ -80,34 +80,22 @@ const PATTERNS = [
     regex: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/
   },
   {
-    // The original leading `[A-Z0-9_]*` run was unbounded, so on a line of
-    // repeated name characters (a crafted diff, not a real identifier) the
-    // whole line is one `\b`-delimited word, and that run backtracked through
-    // every split point within it looking for a keyword match, each retry
-    // then also paying for the trailing run's own backtrack to the end of
-    // the line: that pairing is what went quadratic (152.9 ms at 40k
-    // characters, 10.0 ms at 10k, measured). The keyword check is now a
-    // lookahead, and a single `[A-Z0-9_]+` run then consumes the whole name
-    // (keyword included); any backtrack into that run fails in one step,
-    // because the next character is another name character rather than
-    // whitespace, `=` or `:`, so the scan is linear. Detection is unchanged,
-    // with no length cap on either side of the keyword: fuzzed against the old
-    // pattern on 400,000 lines with zero disagreement on match index, match
-    // text, or captured value. Measured: under 20 ms on every adversarial
-    // shape tried at 1,000,000 to 2,000,000 characters (`SECRET_` repeated,
-    // 1,000,000 `A`s before `SECRET=`, `TOKEN :` and `TOKEN= ` repeated).
+    // The name is one `[A-Z0-9_]+` run behind a keyword lookahead. A leading
+    // `[A-Z0-9_]*` run before the keyword backtracked through every split point
+    // of a long word and went quadratic (152.9 ms at 40k characters, measured);
+    // a backtrack into the single run now fails in one step, because the next
+    // character is another name character, so the scan is linear. Detection is
+    // unchanged (fuzzed against the old pattern on 400,000 lines, no
+    // disagreement), with no length cap.
     //
-    // F123. The name is either all upper case or all lower case (`password:`
-    // in YAML), never mixed: mixed case would also catch `tokenType` and
-    // `secretName`, the F35 false positives, for little gain. Each case is its
-    // own lookahead-plus-run branch so both stay linear. A closing quote may
-    // sit before the separator (`"API_KEY": "..."`). The value is a quoted
-    // run (spaces allowed, `PASSWORD="my pass phrase"`) or an unquoted run;
-    // each branch starts on a different character and stops at its own
-    // delimiter, so a quote with no partner costs one pass to the end of the
-    // line, once per quote. Group 1 is the name, so `ignore` can tell the
-    // lower-case branch apart: there an unquoted CODE_VALUE is code, not a
-    // secret (`token = getAccessToken(scope);`).
+    // F123. The name is all upper case or all lower case (`password:` in YAML),
+    // never mixed: mixed case would catch `tokenType` and `secretName` (F35).
+    // Each case is its own branch so both stay linear. A closing quote may sit
+    // before the separator (`"API_KEY": "..."`). The value is a quoted run
+    // (spaces allowed) or an unquoted run, each stopping at its own delimiter.
+    // Group 1 is the name, so `ignore` can tell the lower-case branch apart:
+    // there an unquoted CODE_VALUE is code, not a secret
+    // (`token = getAccessToken(scope);`).
     kind: "secret-assignment",
     regex:
       /\b((?=[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|API_KEY))[A-Z0-9_]+|(?=[a-z0-9_]*(?:secret|token|password|api_key))[a-z0-9_]+)["']?\s*[=:]\s*(?:"([^"]{16}[^"]*)"|'([^']{16}[^']*)'|["']?([^\s"']{16}[^\s"']*))/,
@@ -291,58 +279,45 @@ export function scanForSecrets(text, { allow = [], diff = false } = {}) {
   const hits = [];
   const lines = String(text ?? "").split(/\r?\n/);
 
-  // Diff bookkeeping: which file, and which line of that file, a content line
-  // lands on, so a hit points at something a user can find in an editor and
-  // not at an offset into the raw diff. Every content line is scanned (added,
-  // removed, context): the whole diff leaves on stdin, and the commonest real
-  // case is reviewing the commit that removes a committed key, whose value
-  // sits in a `-` line. Added and context hits are numbered in the new file. A
-  // removed hit is numbered in the old file (the `@@ -a,b` side) and named by
-  // the `---` path, since a deleted file has no `+++` path; `side` says which
-  // numbering applies.
+  // Diff bookkeeping: the file and line a content line lands on, so a hit
+  // points at something findable in an editor. Every content line is scanned
+  // (added, removed, context): the commonest real case is reviewing the commit
+  // that removes a committed key, whose value sits in a `-` line. Added and
+  // context hits use new-file numbers; a removed hit uses old-file numbers and
+  // the `---` path (a deleted file has no `+++`); `side` says which.
   //
-  // A `---`/`+++` line is only a file header inside a "header zone": from a
-  // `diff --git` line (or a combined `diff --cc`/`diff --combined` one, from an
-  // unresolved merge) to that file's first hunk header. Git writes the `diff`
-  // line itself, and every genuine content line carries a `+`, `-` or space
-  // marker, so a file line reading `diff --git ...` renders as `+diff --git ...`
-  // and cannot open a zone. That, not `---`/`+++` order, is why it is the
-  // anchor: once a hunk starts, a line is never taken for a header again,
-  // however many `+` or `-` it begins with (`++i`, an SQL `--` comment), until
-  // the next `diff` line reopens the zone.
+  // `---`/`+++` are file headers only inside a "header zone": from a `diff
+  // --git` (or `diff --cc`/`--combined`) line to that file's first hunk
+  // header. Git writes the `diff` line and a content line always carries a
+  // marker, so a file line reading `diff --git` renders as `+diff --git` and
+  // cannot open a zone. Once a hunk starts no line is a header again (`++i`,
+  // an SQL `--` comment), whatever its first characters.
   //
-  // F59. With no such line (a hand-rolled diff) no zone ever opens, `---`/`+++`
-  // are not read as headers, and `currentFile`/`oldFile` stay null; a bare `@@`
-  // line still sets line numbers, and a hit carries `file: null`. Acceptable
-  // because the only caller feeds real `git diff` output; revisit if
-  // `scanForSecrets` gets another diff source.
+  // F59. With no `diff` line (a hand-rolled diff) no zone opens and file stays
+  // null; a bare `@@` still sets numbers. Fine while the only caller feeds real
+  // `git diff` output.
   //
-  // `currentFile` and `oldFile` come from the `+++`/`---` paths and reset when
-  // a zone opens, so a hunk-less section (a binary notice) never inherits the
-  // previous file's name. `newLine` and `oldLine` start from each hunk header
-  // and advance per line: added moves the new side, removed the old, context
-  // both, even when the content itself reads `+++ ...`. The `\ No newline at
-  // end of file` marker advances neither. Before any hunk header there is no
-  // reliable number, so a hit falls back to the raw line offset with no file.
+  // File names reset when a zone opens, so a hunk-less section (binary notice)
+  // never inherits the previous name. Counters restart at each hunk header:
+  // added moves the new side, removed the old, context both, whatever the
+  // content reads; `\ No newline at end of file` moves neither. Before any
+  // hunk header a hit falls back to the raw line offset, no file.
   //
-  // A combined diff has one marker column per parent (`++`, ` +`, ` -`) and a
-  // `@@@ -a,b -c,d +e,f @@@` header. A row with a `-` in any column is not in
-  // the result: it does not advance the new side and is reported at the
-  // new-side line it precedes. Per-parent old numbering is not tracked.
+  // A combined diff has one marker column per parent and a `@@@ ... @@@`
+  // header. A row with `-` in any column is not in the result: it does not
+  // advance the new side and is reported at the new-side line it precedes.
   //
-  // Nothing that leaves goes unscanned. The text after a hunk header's closing
-  // `@@` is git's funcname heuristic copying a line from the file (in a `.env`,
-  // often the key itself): side "hunk-header". A header-zone line git does not
-  // emit there is side "header", and a line past the zone with no `+`, `-`,
-  // space or `\` marker is "unrecognized", both at their raw offset. Only the
-  // `diff` line, `---`, `+++`, hunk headers and the other extended headers
-  // (index, mode, rename, copy, similarity, binary notice) are skipped: they
-  // carry paths and hashes, not content.
+  // Nothing that leaves goes unscanned. Text after a hunk header's closing `@@`
+  // is git's funcname copy of a file line (often a `.env` key): side
+  // "hunk-header". A header-zone line git does not emit is "header"; a line
+  // past the zone with no `+`, `-`, space or `\` marker is "unrecognized". Both
+  // are reported at the raw offset. Only the `diff` line, `---`, `+++`, hunk
+  // headers and other extended headers (index, mode, rename, copy, similarity,
+  // dissimilarity, binary notice) are skipped: they carry paths and hashes.
   //
-  // `diffHeaders` and `hunks` count the `diff` and hunk-header lines
-  // recognized, so a caller can refuse a diff whose shape was not recognized
-  // at all (color escapes on every line, an external diff driver) instead of
-  // trusting a scan that found nothing to read.
+  // `diffHeaders` and `hunks` count the recognized header lines, so a caller
+  // can refuse a diff whose shape was not recognized (color escapes, an
+  // external diff driver) rather than trust an empty scan.
   const DIFF_HEADER = /^diff --(git|cc|combined) (.*)$/;
   const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
   // The per-parent repeats in a combined hunk header, index line and mode line

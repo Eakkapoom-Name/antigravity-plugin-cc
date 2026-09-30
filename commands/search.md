@@ -14,7 +14,7 @@ One argument, two modes: a single `http://` or `https://` URL fetches that page 
 
 If the JSON has `failure: "agy-error"`, agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr): report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result.
 
-Present `result.response` as-is, keeping the `Sources:` or `Links:` list intact; those URLs are the evidence. Report `result.conversation_id` on its own line as resumable via `/agy:continue`.
+Present `result.response` as-is, keeping the `Sources:` or `Links:` list intact; those URLs are the evidence. Report `result.conversation_id` on its own line, and say there is no safe continue path for it: `/agy:continue` resumes through the rescue subagent in `--mode accept-edits` with the repository added, so it would make this conversation, which holds untrusted page content, write-capable in the repository. For a follow-up, tell the user to rerun `/agy:search` with the refined request.
 
 If the JSON has `failure: "secrets"`, the run did not start and there is no `error` field to report: the query or URL text carries what looks like a credential. List each `hits[]` entry as `<line> <kind> (<sample>)`, since the argument is scanned as plain text and a hit has no file. Say nothing left the machine, and give both ways forward: redact the credential from the argument and rerun, or `--allow-secret <regex>` for a known false positive. Do not retry on your own.
 

@@ -21,10 +21,12 @@ import { fileURLToPath } from "node:url";
 import {
   agyAvailable,
   effortRejected,
+  remainingRunBudget,
   runIsolated,
   runPrompt,
   runPromptWithDenialRecovery,
-  runSlashCommand
+  runSlashCommand,
+  sharedBudgetMs
 } from "./lib/agy.mjs";
 import { collectDiff, refResolves, untrackedFiles } from "./lib/git.mjs";
 import { reconfirmContainment, resolveOutputPath } from "./lib/output-path.mjs";
@@ -339,8 +341,8 @@ export function parseTransferArguments(argument) {
 // `addDir` stay on the repository, since a transfer is a real handoff into
 // the workspace, not a read-only look at a diff. `available` is separately
 // injectable so the secrets-block path can be tested without a real agy on
-// PATH.
-export function transfer({ argument, run = runPrompt, available = agyAvailable } = {}) {
+// PATH. `now` is the injectable clock the effort rerun measures its budget with.
+export function transfer({ argument, run = runPrompt, available = agyAvailable, now } = {}) {
   const cwd = workspace();
   if (!available()) {
     return { ok: false, error: "agy is not installed or not on PATH. Run /agy:setup." };
@@ -374,15 +376,16 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
   }
 
   const prompt = renderPrompt("transfer", { BRIEF: brief });
-  let out = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model, effort }, run);
   // Some models refuse --effort before any model call is made, so the flag is
-  // dropped and the run repeated once. That rejection spends no quota, so this
-  // is the one retry the runtime contract allows.
-  let effortDropped = false;
-  if (effort && effortRejected(out.result)) {
-    effortDropped = true;
-    out = runPromptWithDenialRecovery(prompt, { cwd, addDir: [cwd], model }, run);
-  }
+  // dropped and the run repeated once (F134: inside the first run's budget).
+  // That rejection spends no quota, so this is the one retry the runtime
+  // contract allows.
+  const { run: out, effortDropped, effortRetry } = runWithEffortFallback(
+    prompt,
+    { cwd, addDir: [cwd], model, effort },
+    (p, options) => runPromptWithDenialRecovery(p, options, run, now),
+    now
+  );
   try {
     fs.rmSync(briefPath, { force: true });
   } catch {
@@ -395,6 +398,7 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable }
     deniedActions: out.deniedActions,
     recovery: out.recovery,
     effortDropped,
+    effortRetry,
     stderr: out.stderr,
     failure: out.failure,
     agyError: out.agyError
@@ -427,15 +431,32 @@ export function parseFlaggedArguments(argument, names, repeatable = [], booleans
 // spends no quota, so the run repeats once without the flag. `run` is called
 // directly here, so the caller decides what `run` does, including whether it
 // wraps `runIsolated` around a lower-level runner.
-export function runWithEffortFallback(prompt, options, run) {
-  let out = run(prompt, options);
-  let effortDropped = false;
-  if (options.effort && effortRejected(out.result)) {
-    effortDropped = true;
-    const { effort: _effort, ...rest } = options;
-    out = run(prompt, rest);
+//
+// The rerun shares the first attempt's time budget rather than starting a fresh
+// one (F134), the way the denial resume does (F104): it gets what the first
+// attempt left, print timeout and spawn timeout both, through the same helpers.
+// When that is under the minimum the rerun is skipped, `effortDropped` stays
+// false, the rejected first attempt is the result, and `effortRetry` reports
+// `{ attempted: false, skipped: "insufficient-time", remainingMs }`. `now` is
+// the injectable clock (monotonic milliseconds).
+export function runWithEffortFallback(prompt, options, run, now = () => performance.now()) {
+  const budgetMs = sharedBudgetMs(options);
+  const startedAt = now();
+  const out = run(prompt, options);
+  if (!(options.effort && effortRejected(out.result))) {
+    return { run: out, effortDropped: false };
   }
-  return { run: out, effortDropped };
+  const left = remainingRunBudget(budgetMs, now() - startedAt);
+  if (left.skipped) {
+    return {
+      run: out,
+      effortDropped: false,
+      effortRetry: { attempted: false, skipped: "insufficient-time", remainingMs: left.remainingMs }
+    };
+  }
+  const { effort: _effort, ...rest } = options;
+  const rerun = run(prompt, { ...rest, printTimeout: left.printTimeout, timeoutMs: left.timeoutMs });
+  return { run: rerun, effortDropped: true };
 }
 
 function resultPayload(out, extra = {}) {
@@ -445,6 +466,7 @@ function resultPayload(out, extra = {}) {
     deniedActions: out.run.deniedActions,
     recovery: out.run.recovery,
     effortDropped: out.effortDropped,
+    effortRetry: out.effortRetry,
     stderr: out.run.stderr,
     failure: out.run.failure,
     agyError: out.run.agyError,
@@ -545,7 +567,8 @@ const MAX_SCANNED_HOSTS = 20;
 // to the real `runPrompt`). whisper sends no repository text and never
 // touches the workspace, but its argument text is scanned for secrets first;
 // isolation is not something a caller can opt out of by injecting a runner.
-export function whisper(argument, run = runPrompt, available = agyAvailable) {
+// `now` is the injectable clock the effort rerun measures its budget with.
+export function whisper(argument, run = runPrompt, available = agyAvailable, now = () => performance.now()) {
   if (!available()) {
     return NOT_INSTALLED;
   }
@@ -564,7 +587,8 @@ export function whisper(argument, run = runPrompt, available = agyAvailable) {
   const out = runWithEffortFallback(
     prompt,
     { model: flags.model, effort: flags.effort, printTimeout: "3m" },
-    (p, options) => runIsolated(p, options, run)
+    (p, options) => runIsolated(p, options, run, now),
+    now
   );
   return resultPayload(out);
 }
@@ -736,8 +760,9 @@ export async function search(argument, run = runPrompt, available = agyAvailable
 // isolation is not something a caller can opt out of by injecting a runner. `--out` is
 // resolved and validated before agy ever runs, so a bad path fails without
 // spending a run; the file is written by the companion after a successful
-// run, never by agy itself, which stays isolated throughout.
-export function research(argument, run = runPrompt, available = agyAvailable, root = workspace()) {
+// run, never by agy itself, which stays isolated throughout. `now` is the
+// injectable clock the effort rerun measures its budget with.
+export function research(argument, run = runPrompt, available = agyAvailable, root = workspace(), now = () => performance.now()) {
   if (!available()) {
     return NOT_INSTALLED;
   }
@@ -769,7 +794,8 @@ export function research(argument, run = runPrompt, available = agyAvailable, ro
   const out = runWithEffortFallback(
     prompt,
     { model: flags.model, effort: flags.effort, printTimeout: "8m" },
-    (p, options) => runIsolated(p, options, run)
+    (p, options) => runIsolated(p, options, run, now),
+    now
   );
   const payload = resultPayload(out);
   if (payload.ok && target) {
@@ -848,8 +874,9 @@ export function extractImagePath(response, brainDir = DEFAULT_BRAIN_DIR) {
 // resolved and validated before agy ever runs, so a bad path fails without
 // spending a run; the copy is made by the companion after a successful run
 // and a path that checks out under `brainDir`, never by agy itself, which
-// stays isolated throughout.
-export function image(argument, run = runPrompt, available = agyAvailable, root = workspace(), brainDir = DEFAULT_BRAIN_DIR) {
+// stays isolated throughout. `now` is the injectable clock the effort rerun
+// measures its budget with.
+export function image(argument, run = runPrompt, available = agyAvailable, root = workspace(), brainDir = DEFAULT_BRAIN_DIR, now = () => performance.now()) {
   if (!available()) {
     return NOT_INSTALLED;
   }
@@ -881,7 +908,8 @@ export function image(argument, run = runPrompt, available = agyAvailable, root 
   const out = runWithEffortFallback(
     prompt,
     { model: flags.model, effort: flags.effort, printTimeout: "5m" },
-    (p, options) => runIsolated(p, options, run)
+    (p, options) => runIsolated(p, options, run, now),
+    now
   );
   const payload = resultPayload(out);
   if (!payload.ok) {

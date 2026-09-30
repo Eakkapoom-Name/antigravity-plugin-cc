@@ -27,4 +27,4 @@ If an agent or task id was given:
 - Report that run only, in full: status, task text, and the complete stored result if finished (present it per the `agy-result-handling` skill, including `conversation_id`). A subagent result is an `AGY_RESCUE_SUMMARY` line; check and read the file its `result_file` names per the `agy-result-handling` skill for the full agy JSON.
 - If it is still running, say so; do not poll or wait.
 
-Never invent a status. If a run is unknown to this session, say that plainly; job state does not persist across sessions (resume agy-side work with `/agy:rescue --resume` instead).
+Never invent a status. If a run is unknown to this session, say that plainly; job state does not persist across sessions (resume agy-side work from `/agy:rescue`, `/agy:continue` or `/agy:transfer` with `/agy:rescue --resume` instead; a review, search, research, whisper or image conversation has no safe continue path, so rerun that command).

@@ -19,5 +19,5 @@ Target selection:
 Presentation:
 
 - Retrieve the stored result (TaskOutput, or the task notification already received this session).
-- Present it per the `agy-result-handling` skill: the full agy `response` verbatim, no summarizing or condensing, file paths and line numbers exactly as reported, and the `conversation_id` on its own line at the end, labeled as resumable via `/agy:rescue --resume`.
+- Present it per the `agy-result-handling` skill: the full agy `response` verbatim, no summarizing or condensing, file paths and line numbers exactly as reported, and the `conversation_id` on its own line at the end. Label it as resumable via `/agy:rescue --resume` only for a subagent run (`/agy:rescue` or `/agy:continue`). For a companion review say there is no safe continue path for it: `--resume` and `/agy:continue` would reopen that read-only, isolated conversation write-capable in the repository, so the follow-up is to rerun the review.
 - If the run failed, report the failure verbatim with the most actionable error line and stop. Do not turn a failed agy run into a Claude-side implementation attempt.

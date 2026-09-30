@@ -44,6 +44,10 @@ the Antigravity CLI, and sits **second** in the web tool order:
 - The check is `/agy:search`'s alone. `/agy:whisper`, `/agy:research` and
   `/agy:image` hand their text to the same web-capable agy with no URL check,
   so nothing refuses a local-network address named in one of those prompts.
-- One question per run. A follow-up goes through `/agy:continue <id>`.
+- One question per run. There is no safe continue path for a follow-up: `/agy:continue`
+  resumes through the rescue subagent in `--mode accept-edits` with the
+  repository added, so it would make a conversation that holds untrusted web
+  content write-capable in the repository. Rerun the command with the refined
+  request instead.
 - agy spends the user's Antigravity quota; the built-in tools do not. That is
   why the built-ins come first.

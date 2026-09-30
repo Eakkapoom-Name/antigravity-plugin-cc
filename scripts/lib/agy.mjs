@@ -297,6 +297,28 @@ export function denialConstraintPrompt(actions) {
 // recovery is skipped and reported as skipped (F104).
 export const MIN_RECOVERY_PRINT_TIMEOUT_MS = 30 * 1000;
 
+// The time budget a caller's runs share: an explicit `timeoutMs`, else the spawn
+// timeout a single run with this print timeout gets.
+export function sharedBudgetMs(options = {}) {
+  return options.timeoutMs ?? spawnTimeoutMs(options.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
+}
+
+// What a second run may use once `elapsedMs` of `budgetMs` is spent: the print
+// timeout and spawn timeout to give it, or `skipped: true` when the print time
+// left is under MIN_RECOVERY_PRINT_TIMEOUT_MS. Shared by the denial resume and
+// the effort-rejection rerun (F104, F134).
+export function remainingRunBudget(budgetMs, elapsedMs) {
+  const remainingMs = budgetMs - elapsedMs;
+  const printSeconds = Math.floor((remainingMs - SPAWN_TIMEOUT_MARGIN_MS) / 1000);
+  if (printSeconds * 1000 < MIN_RECOVERY_PRINT_TIMEOUT_MS) {
+    return { skipped: true, remainingMs: Math.max(0, Math.round(remainingMs)) };
+  }
+  // agy takes a Go duration: `--print-timeout 30s` ran live on 1.2.14
+  // (2026-09-30, exit 0, status SUCCESS).
+  const printTimeout = `${printSeconds}s`;
+  return { skipped: false, remainingMs, printTimeout, timeoutMs: spawnTimeoutMs(printTimeout) };
+}
+
 // One resume, never two. A resumed turn that is denied again is reported as the
 // denial it is, because the second refusal means the constraint did not help and
 // a third turn would spend quota to learn nothing.
@@ -313,7 +335,7 @@ export const MIN_RECOVERY_PRINT_TIMEOUT_MS = 30 * 1000;
 // without spawning agy or waiting; callers pass nothing and get the real
 // `runPrompt` and a monotonic clock in milliseconds.
 export function runPromptWithDenialRecovery(prompt, options = {}, run = runPrompt, now = () => performance.now()) {
-  const budgetMs = options.timeoutMs ?? spawnTimeoutMs(options.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
+  const budgetMs = sharedBudgetMs(options);
   const startedAt = now();
   const first = run(prompt, options);
   const elapsedMs = now() - startedAt;
@@ -327,16 +349,15 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
     return first;
   }
 
-  const remainingMs = budgetMs - elapsedMs;
-  const printSeconds = Math.floor((remainingMs - SPAWN_TIMEOUT_MARGIN_MS) / 1000);
-  if (printSeconds * 1000 < MIN_RECOVERY_PRINT_TIMEOUT_MS) {
+  const left = remainingRunBudget(budgetMs, elapsedMs);
+  if (left.skipped) {
     return {
       ...first,
       recovery: {
         attempted: false,
         recovered: false,
         skipped: "insufficient-time",
-        remainingMs: Math.max(0, Math.round(remainingMs)),
+        remainingMs: left.remainingMs,
         conversationId,
         deniedActions: first.deniedActions ?? [],
         firstResult: first.result
@@ -345,14 +366,11 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
   }
 
   const { recoverFromDenial, conversationId: _ignored, continueConversation, ...rest } = options;
-  // agy takes a Go duration: `--print-timeout 30s` ran live on 1.2.14
-  // (2026-09-30, exit 0, status SUCCESS).
-  const printTimeout = `${printSeconds}s`;
   const second = run(denialConstraintPrompt(first.deniedActions ?? []), {
     ...rest,
     conversationId,
-    printTimeout,
-    timeoutMs: spawnTimeoutMs(printTimeout)
+    printTimeout: left.printTimeout,
+    timeoutMs: left.timeoutMs
   });
 
   return {

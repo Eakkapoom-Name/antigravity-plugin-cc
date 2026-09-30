@@ -16,10 +16,12 @@ import {
   quotaRunError,
   research,
   review,
+  runWithEffortFallback,
   search,
   transfer,
   whisper
 } from "../scripts/agy-companion.mjs";
+import { printTimeoutMs, spawnTimeoutMs } from "../scripts/lib/agy.mjs";
 import { read } from "./helpers.mjs";
 
 const AWS = "AKIA" + "IOSFODNN7EXAMPLE";
@@ -1764,3 +1766,141 @@ test("free text apostrophes never swallow the flags between them", () => {
   assert.equal(parseFlaggedArguments("--out 'my file.md' --model m topic", ["--out", "--model"]).flags.out, "my file.md");
   assert.equal(parseFlaggedArguments('--out "my file.md" topic', ["--out"]).flags.out, "my file.md");
 });
+
+// F134. The rerun after a rejected --effort shares the first attempt's budget,
+// the way the denial resume does (F104). `clock` is a fake monotonic clock a
+// stub runner advances by however long each attempt "took".
+const EFFORT_REJECTED = {
+  result: { status: "ERROR", error: '--effort is not supported for model "x"' },
+  events: [],
+  deniedActions: [],
+  stderr: "",
+  ok: false,
+  failure: "failed"
+};
+const EFFORT_OK = { result: { status: "SUCCESS", response: "hi" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+
+function effortClock(elapsedByCall) {
+  const clock = { t: 5000 };
+  const calls = [];
+  const run = (prompt, options) => {
+    calls.push(options);
+    clock.t += elapsedByCall[calls.length - 1] ?? 0;
+    return options.effort ? EFFORT_REJECTED : EFFORT_OK;
+  };
+  return { calls, run, now: () => clock.t };
+}
+
+test("the effort rerun gets only the time the rejected attempt left", () => {
+  const { calls, run, now } = effortClock([50 * 1000, 0]);
+  const out = runWithEffortFallback("p", { effort: "high", printTimeout: "3m" }, run, now);
+  assert.equal(calls.length, 2);
+  assert.equal(out.effortDropped, true);
+  assert.equal(out.effortRetry, undefined);
+  assert.equal(calls[1].effort, undefined);
+  // 240 s budget - 50 s spent = 190 s left; the print timeout keeps the margin.
+  assert.equal(calls[1].printTimeout, "130s");
+  assert.equal(calls[1].timeoutMs, spawnTimeoutMs("130s"));
+});
+
+test("first attempt time plus the effort rerun's spawn timeout never exceeds one run's budget", () => {
+  for (const print of ["3m", "5m", "8m"]) {
+    const budget = spawnTimeoutMs(print);
+    for (const elapsedMs of [0, 1, 999, 5 * 1000, 61 * 1000, 90 * 1000, 119 * 1000, 150 * 1000, budget - 91 * 1000, budget]) {
+      const { calls, run, now } = effortClock([elapsedMs, 0]);
+      runWithEffortFallback("p", { effort: "low", printTimeout: print }, run, now);
+      if (calls.length === 2) {
+        assert.ok(
+          elapsedMs + calls[1].timeoutMs <= budget,
+          `${print}: ${elapsedMs} ms + ${calls[1].timeoutMs} ms exceeds ${budget} ms`
+        );
+        assert.ok(printTimeoutMs(calls[1].printTimeout) <= printTimeoutMs(print));
+      }
+    }
+  }
+});
+
+test("an explicit timeoutMs is the budget the effort rerun shares", () => {
+  const { calls, run, now } = effortClock([100 * 1000, 0]);
+  runWithEffortFallback("p", { effort: "low", printTimeout: "3m", timeoutMs: 300 * 1000 }, run, now);
+  // 300 s - 100 s = 200 s left, minus the 60 s margin.
+  assert.equal(calls[1].printTimeout, "140s");
+  assert.equal(calls[1].timeoutMs, spawnTimeoutMs("140s"));
+});
+
+test("the effort rerun is skipped and reported when too little of the budget is left", () => {
+  // 240 s budget, 155 s spent: 85 s left, only 25 s of print time after the margin.
+  const { calls, run, now } = effortClock([155 * 1000, 0]);
+  const out = runWithEffortFallback("p", { effort: "low", printTimeout: "3m" }, run, now);
+  assert.equal(calls.length, 1);
+  assert.equal(out.effortDropped, false);
+  assert.deepEqual(out.effortRetry, { attempted: false, skipped: "insufficient-time", remainingMs: 85 * 1000 });
+  assert.equal(out.run.ok, false, "the rejected first attempt is the result");
+});
+
+test("the effort rerun starts at exactly the minimum print time", () => {
+  // 240 s budget, 150 s spent: 90 s left, exactly 30 s of print time.
+  const { calls, run, now } = effortClock([150 * 1000, 0]);
+  runWithEffortFallback("p", { effort: "low", printTimeout: "3m" }, run, now);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].printTimeout, "30s");
+});
+
+test("no effort rejection means no rerun and no effortRetry field", () => {
+  const { calls, run, now } = effortClock([10 * 1000]);
+  const out = runWithEffortFallback("p", { printTimeout: "3m" }, run, now);
+  assert.equal(calls.length, 1);
+  assert.equal(out.effortDropped, false);
+  assert.equal(out.effortRetry, undefined);
+});
+
+test("transfer's effort rerun shares the first attempt's budget too", () => {
+  const { dir, file } = scratchBrief("Handoff notes.\n");
+  try {
+    const { calls, run, now } = effortClock([70 * 1000, 0]);
+    const out = transfer({ argument: `${file} --effort high`, run, available: () => true, now });
+    assert.equal(calls.length, 2);
+    assert.equal(out.effortDropped, true);
+    assert.equal(calls[1].effort, undefined);
+    // 540 s default budget - 70 s = 470 s left, minus the 60 s margin.
+    assert.equal(calls[1].printTimeout, "410s");
+    assert.equal(calls[1].timeoutMs, spawnTimeoutMs("410s"));
+    assert.ok(70 * 1000 + calls[1].timeoutMs <= spawnTimeoutMs("8m"));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("transfer reports a skipped effort rerun", () => {
+  const { dir, file } = scratchBrief("Handoff notes.\n");
+  try {
+    const { calls, run, now } = effortClock([500 * 1000, 0]);
+    const out = transfer({ argument: `${file} --effort high`, run, available: () => true, now });
+    assert.equal(calls.length, 1);
+    assert.equal(out.effortDropped, false);
+    assert.equal(out.effortRetry.skipped, "insufficient-time");
+    assert.equal(out.ok, false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// F134. whisper, research and image reach the same skip through their own
+// print timeouts; each takes the fake clock as its last parameter. The first
+// attempt spends all but 85 s of one run's budget, which leaves 25 s of print
+// time after the margin, under the 30 s minimum.
+for (const [name, printTimeout, invoke] of [
+  ["whisper", "3m", (run, now) => whisper("--effort high hi", run, () => true, now)],
+  ["research", "8m", (run, now) => research("--effort high a topic", run, () => true, undefined, now)],
+  ["image", "5m", (run, now) => image("--effort high a blue square", run, () => true, undefined, undefined, now)]
+]) {
+  test(`${name} reports a skipped effort rerun in its payload`, () => {
+    const { calls, run, now } = effortClock([spawnTimeoutMs(printTimeout) - 85 * 1000, 0]);
+    const out = invoke(run, now);
+    assert.equal(calls.length, 1, "the rerun was started");
+    assert.equal(calls[0].printTimeout, printTimeout);
+    assert.equal(out.effortDropped, false);
+    assert.deepEqual(out.effortRetry, { attempted: false, skipped: "insufficient-time", remainingMs: 85 * 1000 });
+    assert.equal(out.ok, false);
+  });
+}

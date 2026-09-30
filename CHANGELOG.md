@@ -5,7 +5,7 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.1] - 2026-10-01
 
 ### Added
 
@@ -27,6 +27,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npm test`, like `test:denials`. The cassette loader and marker matcher
   live in `scripts/lib/review-bench.mjs`; the offline checks (loads, diffs
   cleanly, carries no secret) live in `tests/review-bench.test.mjs`.
+
+- `/agy:whisper`, `/agy:search`, `/agy:research` and `/agy:image` run the
+  secret scan on their free-text argument before anything is sent, and refuse
+  with `failure: "secrets"` and no agy run on a hit. `/agy:search` scans before
+  any DNS lookup, so a token placed in a hostname never reaches a resolver.
+  Flag values are not scanned; `--model` and `--effort` go to agy's argv as
+  given.
+- `--allow-secret <regex>` (repeatable) on `/agy:transfer`, `/agy:whisper`,
+  `/agy:search`, `/agy:research` and `/agy:image`, as on the review commands.
+  An empty flag value is refused rather than read as a pattern that clears
+  every hit.
+- The secret scan catches Stripe secret keys (`sk_live_`, `sk_test_`), JWTs, a
+  JSON-quoted key (`"API_KEY": "..."`), an all-lower-case key name
+  (`password: ...` in YAML or INI) and a quoted value containing spaces. An
+  unquoted lower-case value that reads as code (a call, a subscript, a dotted
+  name or a bare identifier) does not count, so ordinary assignments such as
+  `token = get_token(scope)` stay quiet; `--allow-secret` covers the rest.
+- Flags accept a single- or double-quoted value containing spaces
+  (`--out 'docs/my notes.md'`; single quotes survive the command's
+  `"$ARGUMENTS"` wrapping) and declared boolean flags.
+- The rescue template writes agy's response text to `<result_file>.md` (mode
+  0600) and names it as `response_file` in the summary line, so a very large
+  answer can be read in pages. The summary also carries `parsed_from` and
+  `parse_error`.
+- The rescue template deletes this user's own rescue result files older than
+  10080 minutes (7 days) in the same temporary directory before each run.
+  Symlinks, directories, other users' files and other names are left alone.
+- `skills/agy-cli-runtime` lists which effort levels each model id accepts,
+  from `agy models` on agy 1.2.14.
 
 ### Changed
 
@@ -73,6 +102,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `package.json`'s `engines.node` floor is now `>=18.8`, the version that
   added `node:test`'s `after()` hook, which the test suite's cleanup already
   relies on.
+
+- A denial-recovery resume now shares the first run's time budget instead of
+  starting a fresh one, so two runs never exceed the Bash timeout the command
+  states. When less than 30 s of print time is left the resume is skipped and
+  reported as `recovery.skipped: "insufficient-time"`. The rerun after a
+  rejected `--effort` shares the budget the same way and reports
+  `effortRetry.skipped`.
+- `/agy:setup` probes run with the workspace root as their working directory
+  and `--add-dir`, like every other agy run here. A workspace root that does
+  not exist or cannot be entered is reported as a `spawn-error` naming it,
+  not as a sign-in problem, and an unwritable root skips the read probe
+  instead of planting it in a temporary directory. Version checks accept a
+  `v` prefix, a suffix such as `-beta`, and three or more numeric parts.
+- The rescue template parses agy's output strictly: it accepts only a JSON
+  object carrying both `status` and `conversation_id`, and fails closed when
+  it finds more than one, so a stray JSON line agy printed from repository
+  content can no longer stand in for the real result.
+- `/agy:search`'s host cap counts only hosts it actually resolves, so dotless
+  `http:word` mentions in prose no longer refuse a query.
+- `--wait` and `--background` on `/agy:rescue` and `/agy:continue` are
+  documented as requests Claude Code may not honor: its Agent tool decides
+  whether a subagent runs in the background.
+- The README and `SECURITY.md` no longer describe what agy's
+  `allowNonWorkspaceAccess` setting does; its effect is unmeasured.
+- The three flag parsers share one tokenizer, and a repeated scalar flag is
+  refused everywhere, `/agy:transfer` included.
 
 ### Fixed
 
@@ -267,6 +322,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page. "You cannot open files or run commands" (a claim, false
   under `always-proceed` or a `command(*)` allow rule) is now "do not open
   files or run commands" (an instruction).
+
+- A staged review during an unresolved merge is refused with
+  `failure: "unmerged"` naming the conflicted paths, including when other
+  files are staged cleanly, instead of a misleading git config error or a
+  review that silently skipped the conflicted file.
+- The secret scan checks every assignment on a line, so a placeholder or
+  environment reference before a real key no longer hides it.
+- An allow pattern clears a hunk-header copy of a line only when it matches
+  that copy on its own or already cleared the same text on a content line of
+  the diff, so a pattern aimed at removed lines can no longer admit a live key
+  git copied into a hunk header.
+- Secret hits name the file by its real path: git's quoting, octal escapes,
+  `a/`/`b/` prefix and trailing tab are removed. A `diff --cc` or
+  `diff --combined` section (an unresolved merge) gets correct file and line
+  attribution.
+- Very long crafted lines (16 MB) no longer overflow the regular-expression
+  engine in several secret patterns.
+- An `Authorization: Bearer` header carrying a JWT is reported as
+  `authorization-header` again.
+- `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:review`,
+  `/agy:adversarial-review` and `/agy:image` no longer offer `/agy:continue`
+  or `/agy:rescue --resume`, which resume through the write-capable rescue
+  path with the repository added. `/agy:continue` and `/agy:rescue` refuse a
+  conversation from those commands; the way forward is to rerun the command.
+- The rescue background wait can no longer be ended early by agy printing an
+  exit marker: an `[exited with code 0]` marker needs this run's end line,
+  and a `[killed]` or nonzero marker ends it only once the template shell is
+  gone (checked when the waiting call shares its pid namespace; otherwise the
+  marker alone, as before). Markers must match the whole line. The Bash exit
+  code again reflects a crashed summary step, and a result file with a second
+  hard link is refused.
+- `/agy:image` warns when `--out` has an extension no image format uses, or
+  none at all.
+- The README's whisper example names a model id agy actually lists.
 
 ## [0.7.0] - 2026-09-18
 

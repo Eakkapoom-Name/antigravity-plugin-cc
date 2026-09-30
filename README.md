@@ -191,7 +191,7 @@ Use it when you want agy to:
 - continue a previous agy task
 - take an independent second pass on a problem
 
-It supports `--background`, `--wait`, `--resume`, and `--fresh`, plus `--model <name>` and `--effort <low|medium|high>` passed through to agy.
+It supports `--background`, `--wait`, `--resume`, and `--fresh`, plus `--model <name>` and `--effort <low|medium|high>` passed through to agy. `--background` and `--wait` ask Claude Code for an execution mode and are not passed to agy; Claude Code may not honor them (see the notes below). Not every model accepts every `--effort` level (see [Effort levels](#effort-levels)).
 
 Examples:
 
@@ -206,7 +206,8 @@ Examples:
 **Notes:**
 
 - if you do not pass `--model` or `--effort`, agy chooses its own defaults
-- some models reject `--effort` outright (agy 1.2.4 refuses it for `claude-opus-4-6-thinking` before running anything); the rescue agent then reruns once without the flag and says so
+- `--background` and `--wait` are a request: Claude Code 2.1.284 and 2.1.285 run the rescue subagent in the background whichever you pass, and its `Agent` tool offers no foreground or background parameter. Where the host lets the command choose, it asks for the mode you gave (foreground when you gave neither); where it does not, the result arrives through the completion notification, and the command says so
+- some models reject `--effort` outright (agy 1.2.4 refuses it for `claude-opus-4-6-thinking` before running anything); the rescue agent then reruns once without the flag and says so. See [Effort levels](#effort-levels) for which models take which level
 - write-capable runs use `--mode accept-edits` on the agy side; review and diagnosis runs stay read-only
 - follow-up rescue requests can continue the latest agy conversation
 
@@ -225,7 +226,7 @@ Examples:
 
 ```text
 /agy:whisper what does SIGPIPE mean for a Node child process
-/agy:whisper --model gemini-3.5-pro --effort high explain CRDT merge semantics
+/agy:whisper --model gemini-3.8-flash-high explain CRDT merge semantics
 ```
 
 One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
@@ -233,9 +234,11 @@ with a `conversation_id`, so `/agy:continue <id> <follow-up>` picks it up. agy
 runs from an isolated temp directory, not your project. That is a
 working-directory change rather than a sandbox: whether agy can reach paths
 outside it depends on agy's own `toolPermission` setting (`always-proceed`
-reads by absolute path), and agy's `allowNonWorkspaceAccess` setting, with an
-absolute path in the prompt text, still reaches outside it. Nothing in this command's text is checked for a URL;
-the local-network guard belongs to `/agy:search` alone. The prompt text does go
+reads by absolute path) and, with an absolute path in the prompt text, may
+still reach outside it. agy 1.2.14 also has an `allowNonWorkspaceAccess`
+setting, but its effect is unmeasured here, so nothing above relies on it.
+Nothing in this command's text is checked for a URL; the local-network guard
+belongs to `/agy:search` alone. The prompt text does go
 through the secret scanner before it is sent: a hit stops the run, and
 `--allow-secret <regex>` (repeatable) admits a known false positive. The same
 scan and flag apply to `/agy:search`, `/agy:research` and `/agy:image`. Only
@@ -373,6 +376,10 @@ Examples:
 /agy:quota
 ```
 
+### Effort levels
+
+`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.2.14 (`agy models`, 2026-09-30) every Gemini id carries its effort level in the id itself: `gemini-3.8-flash-high`, `-medium` and `-low` (the same for `gemini-3.7-flash` and `gemini-3.6-flash`), and `gemini-3.1-pro-high` and `-low` only. The Claude and GPT-OSS ids (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`) carry none. Only one refusal was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before running anything. The rest is read off `agy models`, not run, and whether a suffixed Gemini id accepts `--effort` on top is unmeasured, so pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so.
+
 ## Typical Flows
 
 ### Review Before Shipping
@@ -487,8 +494,11 @@ does.
 
 When a delegation is refused anyway, the plugin resumes that conversation once,
 stating the constraint, rather than throwing the turn away. The result carries a
-`recovery` object naming what was denied on the first turn. The stop-review gate
-does not resume: a review that lost its file reads has nothing to say.
+`recovery` object naming what was denied on the first turn. The two turns share
+the time one run is allowed, so the resume only gets what the first turn left,
+and it is skipped (`recovery.skipped: "insufficient-time"`) when that is under
+30 seconds of print time. The stop-review gate does not resume: a review that
+lost its file reads has nothing to say.
 
 On top of the mode, `permissions.allow` rules grant individual tools. Headless
 runs auto-deny anything not covered, file reads (`read_file(*)`, which also

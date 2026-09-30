@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 
 import {
   MIN_AGY_VERSION,
@@ -21,7 +22,7 @@ import {
   readAgySettings,
   resolveToolPermission
 } from "../scripts/agy-setup.mjs";
-import { read } from "./helpers.mjs";
+import { read, ROOT } from "./helpers.mjs";
 
 // F69. Every temp directory made here is removed once the file's tests are
 // done, the way companion.test.mjs and output-path.test.mjs already clean up.
@@ -503,6 +504,48 @@ test("meetsMinimumVersion is false for anything it cannot parse", () => {
   assert.equal(meetsMinimumVersion(null), false);
 });
 
+// F74. The gates and compareVersions read a version through the same numeric
+// core, so a prefixed or suffixed print gets one answer from all of them.
+test("meetsMinimumVersion and compareVersions agree on prefixed and suffixed versions", () => {
+  for (const [raw, meets] of [
+    ["1.2.4-beta", true],
+    ["v1.2.4", true],
+    ["1.2.4", true],
+    ["v1.2.3", false],
+    ["1.2.3-beta", false],
+    ["agy 1.3.0", true],
+    ["garbage", false]
+  ]) {
+    assert.equal(meetsMinimumVersion(raw), meets, `meetsMinimumVersion(${JSON.stringify(raw)})`);
+  }
+  assert.equal(compareVersions("1.2.4-beta", "1.2.4"), 0);
+  assert.equal(compareVersions("v1.2.4", "1.2.4"), 0);
+  assert.equal(compareVersions("v1.2.4", "1.2.4-beta"), 0);
+  assert.equal(compareVersions("v1.2.5", "1.2.4-beta"), 1);
+  assert.equal(compareVersions("1.2.3-beta", "v1.2.4"), -1);
+  // No numeric core reads as the lowest version, and the gates refuse it.
+  assert.equal(compareVersions("garbage", "1.2.4"), -1);
+  assert.equal(meetsMinimumVersion("garbage"), false);
+  assert.equal(newerThanVerified("v99.0.0"), true);
+  assert.equal(newerThanVerified("99.0.0-beta"), true);
+  assert.equal(newerThanVerified("garbage"), false);
+});
+
+// A four-part version compares on all four parts. Reading only the first three
+// made 1.2.11.1 equal to 1.2.11, so a build past the verified version raised no
+// drift warning.
+test("compareVersions and the gates read every part of a four-part version", () => {
+  assert.equal(compareVersions("1.2.11.1", "1.2.11"), 1);
+  assert.equal(compareVersions("1.2.11", "1.2.11.1"), -1);
+  assert.equal(compareVersions("1.2.11.0", "1.2.11"), 0);
+  assert.equal(compareVersions("v1.2.11.2-beta", "1.2.11.1"), 1);
+  assert.equal(compareVersions("1.2.10.9", "1.2.11"), -1);
+  assert.equal(newerThanVerified("1.2.11.1", "1.2.11"), true);
+  assert.equal(newerThanVerified("1.2.11.0", "1.2.11"), false);
+  assert.equal(meetsMinimumVersion("1.2.3.9", "1.2.4"), false);
+  assert.equal(meetsMinimumVersion("1.2.4.1", "1.2.4"), true);
+});
+
 // The below-floor branch cannot be exercised on this machine, whose agy is
 // above the floor, so the report assembly takes its inputs from `buildReport`
 // and the probes are injected here. What is pinned: an agy under the floor
@@ -590,6 +633,9 @@ test("extractVersionNumber pulls the numeric core out of a prefixed, suffixed, o
   assert.equal(extractVersionNumber("agy 1.3.0"), "1.3.0");
   assert.equal(extractVersionNumber("v1.2.4"), "1.2.4");
   assert.equal(extractVersionNumber("1.2.4-beta"), "1.2.4");
+  // Every part of a longer version is kept, not the first three.
+  assert.equal(extractVersionNumber("1.2.11.1"), "1.2.11.1");
+  assert.equal(extractVersionNumber("agy v1.2.11.1-rc2"), "1.2.11.1");
   assert.equal(extractVersionNumber("unknown"), null);
   assert.equal(extractVersionNumber(""), null);
   assert.equal(extractVersionNumber(null), null);
@@ -664,4 +710,152 @@ test("the floor still wins over the drift warning", () => {
   });
   assert.equal(report.nextSteps.length, 1);
   assert.match(report.nextSteps[0], /below the 1\.2\.4/);
+});
+
+// F121. Every probe passes `--add-dir <workspace root>` and runs with the
+// workspace root as its cwd, the way every other agy run in the plugin does.
+// The setup script is run end to end against a stub agy that logs the argv and
+// the cwd it was started with; nothing here reaches the real agy.
+test("each setup probe passes --add-dir and runs in the workspace root", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agy-setup-probe-")));
+  scratchDirs.push(scratch);
+  const workspace = path.join(scratch, "repo");
+  const subdir = path.join(workspace, "src", "deep");
+  fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+  fs.mkdirSync(subdir, { recursive: true });
+  const bin = path.join(scratch, "bin");
+  fs.mkdirSync(bin);
+  const log = path.join(scratch, "calls.log");
+  fs.writeFileSync(
+    path.join(bin, "agy"),
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "${MIN_AGY_VERSION}"; exit 0; fi
+printf '%s\t%s\n' "$PWD" "$*" >> "${log}"
+echo '{"conversation_id":"c","status":"SUCCESS","response":"OK /tmp","duration_seconds":1,"num_turns":1}'
+`,
+    { mode: 0o755 }
+  );
+
+  const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", "agy-setup.mjs")], {
+    cwd: subdir,
+    encoding: "utf8",
+    env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, HOME: scratch, CLAUDE_PROJECT_DIR: "" }
+  });
+  assert.equal(run.status, 0, run.stderr);
+
+  const calls = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => {
+    const [cwd, argv] = line.split("\t");
+    return { cwd, argv };
+  });
+  // The auth probe, the command probe and the read probe.
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.equal(call.cwd, workspace, `a probe ran in ${call.cwd}, not the workspace root`);
+    assert.ok(call.argv.includes(`--add-dir ${workspace} `), `a probe's argv has no --add-dir ${workspace}: ${call.argv}`);
+    assert.equal(call.argv.split("--add-dir").length, 2, "a probe passed --add-dir more than once");
+  }
+});
+
+// The setup script run end to end against a stub agy that logs the cwd and argv
+// of every probe. Returns the parsed report and the logged probe calls.
+function runSetupWithStub({ projectDir, cwd, prepare } = {}) {
+  const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agy-setup-run-")));
+  scratchDirs.push(scratch);
+  const bin = path.join(scratch, "bin");
+  fs.mkdirSync(bin);
+  const log = path.join(scratch, "calls.log");
+  fs.writeFileSync(
+    path.join(bin, "agy"),
+    `#!/bin/sh
+if [ "$1" = "--version" ]; then echo "${MIN_AGY_VERSION}"; exit 0; fi
+printf '%s\t%s\n' "$PWD" "$*" >> "${log}"
+echo '{"conversation_id":"c","status":"SUCCESS","response":"OK /tmp","duration_seconds":1,"num_turns":1}'
+`,
+    { mode: 0o755 }
+  );
+  const context = { scratch };
+  const restore = prepare ? prepare(context) : null;
+  try {
+    const run = spawnSync(process.execPath, [path.join(ROOT, "scripts", "agy-setup.mjs")], {
+      cwd: cwd ?? scratch,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        HOME: scratch,
+        CLAUDE_PROJECT_DIR: typeof projectDir === "function" ? projectDir(context) : projectDir ?? ""
+      }
+    });
+    let calls = [];
+    try {
+      calls = fs.readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => {
+        const [probeCwd, argv] = line.split("\t");
+        return { cwd: probeCwd, argv };
+      });
+    } catch {}
+    return { run, report: JSON.parse(run.stdout), calls, scratch };
+  } finally {
+    restore?.();
+  }
+}
+
+// A CLAUDE_PROJECT_DIR that does not exist, or cannot be entered, makes the
+// probe's spawn fail before agy starts. That used to read as a non-zero exit
+// and send the user to sign in again.
+test("a workspace root agy cannot start in is reported as a spawn error, not a sign-in problem", { skip: process.platform === "win32" }, () => {
+  const missing = runSetupWithStub({ projectDir: ({ scratch }) => path.join(scratch, "does-not-exist") });
+  assert.equal(missing.report.ready, false);
+  assert.equal(missing.report.auth.failureKind, "spawn-error");
+  assert.match(missing.report.auth.detail, /does-not-exist: spawn-error \(ENOENT\)/);
+  assert.equal(missing.calls.length, 0, "a probe reached the stub agy");
+  assert.equal(missing.report.nextSteps.length, 1);
+  assert.match(missing.report.nextSteps[0], /could not be started in the workspace root .*does-not-exist/);
+  assert.match(missing.report.nextSteps[0], /CLAUDE_PROJECT_DIR/);
+  assert.match(missing.report.nextSteps[0], /not a sign-in problem/);
+  assert.doesNotMatch(missing.report.nextSteps[0], /once interactively|failed without naming a cause/);
+});
+
+test("a workspace root that cannot be entered is reported as a spawn error", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  let locked;
+  const result = runSetupWithStub({
+    projectDir: ({ scratch }) => path.join(scratch, "locked"),
+    prepare: ({ scratch }) => {
+      locked = path.join(scratch, "locked");
+      fs.mkdirSync(locked);
+      fs.chmodSync(locked, 0o600);
+      return () => fs.chmodSync(locked, 0o700);
+    }
+  });
+  assert.equal(result.report.auth.failureKind, "spawn-error");
+  assert.match(result.report.auth.detail, /spawn-error \(EACCES\)/);
+  assert.equal(result.calls.length, 0);
+});
+
+// With a workspace root it cannot write to, setup used to plant the read
+// probe's marker under /tmp, outside the one directory the probe adds with
+// --add-dir, so a pass there said nothing about repository reads. The read
+// probe is now skipped and says so; the command probe still runs and decides.
+test("an unwritable workspace root skips the read probe instead of probing a temp file", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  let workspace;
+  const result = runSetupWithStub({
+    projectDir: ({ scratch }) => path.join(scratch, "repo"),
+    prepare: ({ scratch }) => {
+      workspace = path.join(scratch, "repo");
+      fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+      fs.chmodSync(workspace, 0o555);
+      return () => fs.chmodSync(workspace, 0o755);
+    }
+  });
+  assert.equal(result.run.status, 0, result.run.stderr);
+  const { toolPermissions } = result.report;
+  assert.equal(toolPermissions.read.skipped, "workspace-not-writable");
+  assert.equal(toolPermissions.read.available, true);
+  assert.match(toolPermissions.read.detail, /read probe skipped: no marker file could be written in the workspace root .*repo \(EACCES\)/);
+  assert.equal(toolPermissions.available, toolPermissions.command.available);
+  // The auth probe and the command probe only, both in the workspace root.
+  assert.equal(result.calls.length, 2);
+  for (const call of result.calls) {
+    assert.equal(call.cwd, workspace);
+    assert.doesNotMatch(call.argv, /probe\.txt|file viewing tool/);
+  }
 });

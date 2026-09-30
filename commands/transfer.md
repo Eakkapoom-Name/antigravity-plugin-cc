@@ -25,7 +25,7 @@ $ARGUMENTS
 node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" transfer "<path to the brief file>" [--allow-secret '<regex>']... [--model <model>] [--effort <low|medium|high>]
 ```
 
-Pass `--model`, `--effort` or `--allow-secret <regex>` through only if the user supplied them; strip them from the text you fold into the brief so they are not mistaken for context. A flag given twice is refused, except `--allow-secret`, which may repeat. Single-quote each `--allow-secret` value as shown, so the shell hands the regex over untouched instead of reading its `(`, `|`, `$` or `\` itself; a regex that itself holds a `'` goes in as `'\''` inside those quotes. Each path and value arrives as its own word and is taken whole, spaces included. An empty value is refused.
+Pass `--model`, `--effort` or `--allow-secret <regex>` through only if the user supplied them; strip them from the text you fold into the brief so they are not mistaken for context. A flag given twice is refused, except `--allow-secret`, which may repeat. Single-quote each `--allow-secret` value as shown, so the shell hands the regex over untouched instead of reading its `(`, `|`, `$` or `\` itself; a regex that itself holds a `'` goes in as `'\''` inside those quotes. Each path and value arrives as its own word and is taken whole, spaces included. An empty value is refused. `low|medium|high` is the hint, not a promise: not every model accepts every level, and the script reruns once without `--effort` when the model refuses it (`effortDropped`).
 
 Set the Bash tool timeout to 590000 ms. The script reads the brief, sends it to agy on stdin, and deletes the file afterwards, so the brief never passes through a command line whatever its length.
 

@@ -290,14 +290,33 @@ export function denialConstraintPrompt(actions) {
   ].join(" ");
 }
 
+// The shortest print timeout a recovery run is worth starting with. The resumed
+// turn has to reload the conversation and write a final answer without the
+// refused tool, and a run given less than half a minute would mostly end in
+// agy's own timeout report while still spending a model call. Below this the
+// recovery is skipped and reported as skipped (F104).
+export const MIN_RECOVERY_PRINT_TIMEOUT_MS = 30 * 1000;
+
 // One resume, never two. A resumed turn that is denied again is reported as the
 // denial it is, because the second refusal means the constraint did not help and
 // a third turn would spend quota to learn nothing.
 //
-// The runner is injectable so the recovery logic can be tested without spawning
-// agy; callers pass nothing and get the real `runPrompt`.
-export function runPromptWithDenialRecovery(prompt, options = {}, run = runPrompt) {
+// Both turns share one time budget, the spawn timeout a single run gets. The
+// command docs size their Bash timeouts for one run plus margin, so a resume
+// that carried the full timeout again could outlive the Bash call (F104). The
+// resume is given what the first run left over, print timeout and spawn timeout
+// both, and is skipped when that leaves less than MIN_RECOVERY_PRINT_TIMEOUT_MS
+// of print time: the first result comes back with `recovery.attempted: false`
+// and `recovery.skipped: "insufficient-time"`.
+//
+// The runner and the clock are injectable so the recovery logic can be tested
+// without spawning agy or waiting; callers pass nothing and get the real
+// `runPrompt` and a monotonic clock in milliseconds.
+export function runPromptWithDenialRecovery(prompt, options = {}, run = runPrompt, now = () => performance.now()) {
+  const budgetMs = options.timeoutMs ?? spawnTimeoutMs(options.printTimeout ?? DEFAULT_PRINT_TIMEOUT);
+  const startedAt = now();
   const first = run(prompt, options);
+  const elapsedMs = now() - startedAt;
 
   if (options.recoverFromDenial === false || first.failure !== "denied") {
     return first;
@@ -308,10 +327,32 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
     return first;
   }
 
+  const remainingMs = budgetMs - elapsedMs;
+  const printSeconds = Math.floor((remainingMs - SPAWN_TIMEOUT_MARGIN_MS) / 1000);
+  if (printSeconds * 1000 < MIN_RECOVERY_PRINT_TIMEOUT_MS) {
+    return {
+      ...first,
+      recovery: {
+        attempted: false,
+        recovered: false,
+        skipped: "insufficient-time",
+        remainingMs: Math.max(0, Math.round(remainingMs)),
+        conversationId,
+        deniedActions: first.deniedActions ?? [],
+        firstResult: first.result
+      }
+    };
+  }
+
   const { recoverFromDenial, conversationId: _ignored, continueConversation, ...rest } = options;
+  // Unmeasured: no live run has passed agy a seconds-form `--print-timeout`.
+  // `agy --help` shows a Go duration (`0s`), so "<N>s" should parse.
+  const printTimeout = `${printSeconds}s`;
   const second = run(denialConstraintPrompt(first.deniedActions ?? []), {
     ...rest,
-    conversationId
+    conversationId,
+    printTimeout,
+    timeoutMs: spawnTimeoutMs(printTimeout)
   });
 
   return {
@@ -332,7 +373,7 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
 // repository cannot write into it, whatever the model decides. The price is
 // that the reviewer cannot open files around a hunk: the prompt is the whole
 // evidence. The stop gate, rescue and transfer never come through here.
-export function runIsolated(prompt, options = {}, run = runPrompt) {
+export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let tmp;
   try {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agy-isolated-"));
@@ -351,7 +392,7 @@ export function runIsolated(prompt, options = {}, run = runPrompt) {
   let out;
   let thrown;
   try {
-    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp] }, run);
+    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp] }, run, now);
   } catch (error) {
     thrown = error;
   }

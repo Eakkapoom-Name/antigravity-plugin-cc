@@ -16,6 +16,7 @@ import {
   effortRejected,
   interpretPromptRun,
   interpretSlashCommandRun,
+  MIN_RECOVERY_PRINT_TIMEOUT_MS,
   normalizeStreamOutput,
   parseAgyError,
   printTimeoutMs,
@@ -745,6 +746,109 @@ test("the caller can turn recovery off and get the first result back", () => {
   );
   assert.equal(calls.length, 1);
   assert.equal(out.recovery, undefined);
+});
+
+// F104. Both turns of a denial recovery share the one budget a single run gets,
+// so the Bash timeouts the command docs state (sized for one run plus margin)
+// hold. `clock` is a fake monotonic clock a stub runner advances by however long
+// the run "took".
+function budgetedRun(elapsedByCall, replies) {
+  const clock = { t: 1000 };
+  const calls = [];
+  const run = (prompt, options) => {
+    calls.push({ prompt, options });
+    clock.t += elapsedByCall[calls.length - 1] ?? 0;
+    return replies[calls.length - 1];
+  };
+  return { calls, run, now: () => clock.t };
+}
+
+test("the resume gets only the time the first run left, so both runs fit one budget", () => {
+  // Default budget: an 8 minute print timeout, a 9 minute spawn timeout.
+  const { calls, run, now } = budgetedRun([200 * 1000, 0], [denied("c1"), succeeded("c1")]);
+  const out = runPromptWithDenialRecovery("task", {}, run, now);
+
+  assert.equal(calls.length, 2);
+  const budget = DEFAULT_SPAWN_TIMEOUT_MS;
+  // 540 s budget - 200 s spent = 340 s left; the print timeout keeps the
+  // spawn-timeout margin below that.
+  assert.equal(calls[1].options.printTimeout, "280s");
+  assert.equal(calls[1].options.timeoutMs, spawnTimeoutMs("280s"));
+  assert.ok(calls[1].options.timeoutMs <= budget - 200 * 1000, "the resume outlives what was left");
+  assert.equal(out.recovery.attempted, true);
+  assert.equal(out.recovery.skipped, undefined);
+});
+
+test("first run time plus the resume's spawn timeout never exceeds one run's budget", () => {
+  for (const print of ["3m", "5m", "8m"]) {
+    const budget = spawnTimeoutMs(print);
+    for (const elapsedMs of [0, 1, 999, 30 * 1000, 61 * 1000, 90 * 1000, 119 * 1000, 150 * 1000, 300 * 1000, budget - 91 * 1000, budget]) {
+      const { calls, run, now } = budgetedRun([elapsedMs, 0], [denied("c1"), succeeded("c1")]);
+      runPromptWithDenialRecovery("task", { printTimeout: print }, run, now);
+      if (calls.length === 2) {
+        assert.ok(
+          elapsedMs + calls[1].options.timeoutMs <= budget,
+          `${print}: ${elapsedMs} ms + ${calls[1].options.timeoutMs} ms exceeds ${budget} ms`
+        );
+        assert.ok(printTimeoutMs(calls[1].options.printTimeout) >= MIN_RECOVERY_PRINT_TIMEOUT_MS);
+        assert.ok(printTimeoutMs(calls[1].options.printTimeout) <= printTimeoutMs(print));
+      }
+    }
+  }
+});
+
+test("the resume is skipped and reported when too little of the budget is left", () => {
+  // 540 s budget, 460 s spent: 80 s left, 20 s of print time after the margin,
+  // below the 30 s minimum.
+  const { calls, run, now } = budgetedRun([460 * 1000], [denied("c2", ["command"])]);
+  const out = runPromptWithDenialRecovery("task", {}, run, now);
+
+  assert.equal(calls.length, 1, "a second run was started with no time left for it");
+  assert.equal(out.failure, "denied");
+  assert.equal(out.ok, false);
+  assert.deepEqual(out.deniedActions, ["command"]);
+  assert.equal(out.recovery.attempted, false);
+  assert.equal(out.recovery.recovered, false);
+  assert.equal(out.recovery.skipped, "insufficient-time");
+  assert.equal(out.recovery.remainingMs, 80 * 1000);
+  assert.equal(out.recovery.conversationId, "c2");
+  assert.deepEqual(out.recovery.deniedActions, ["command"]);
+  assert.equal(out.recovery.firstResult.conversation_id, "c2");
+});
+
+test("the resume starts at exactly the minimum print time and not a second below", () => {
+  const margin = SPAWN_TIMEOUT_MARGIN_MS;
+  const budget = DEFAULT_SPAWN_TIMEOUT_MS;
+  const atMinimum = budgetedRun([budget - margin - MIN_RECOVERY_PRINT_TIMEOUT_MS], [denied("c3"), succeeded("c3")]);
+  runPromptWithDenialRecovery("task", {}, atMinimum.run, atMinimum.now);
+  assert.equal(atMinimum.calls.length, 2);
+  assert.equal(atMinimum.calls[1].options.printTimeout, "30s");
+
+  const below = budgetedRun([budget - margin - MIN_RECOVERY_PRINT_TIMEOUT_MS + 1000], [denied("c3"), succeeded("c3")]);
+  const out = runPromptWithDenialRecovery("task", {}, below.run, below.now);
+  assert.equal(below.calls.length, 1);
+  assert.equal(out.recovery.skipped, "insufficient-time");
+});
+
+test("an explicit timeoutMs is the budget the resume shares", () => {
+  const { calls, run, now } = budgetedRun([100 * 1000, 0], [denied("c4"), succeeded("c4")]);
+  runPromptWithDenialRecovery("task", { printTimeout: "3m", timeoutMs: 300 * 1000 }, run, now);
+  assert.equal(calls[1].options.printTimeout, "140s");
+  assert.ok(100 * 1000 + calls[1].options.timeoutMs <= 300 * 1000);
+});
+
+test("a runIsolated review shares one budget between its two runs too", () => {
+  const { calls, run, now } = budgetedRun([200 * 1000, 0], [denied("c5"), succeeded("c5")]);
+  const out = runIsolated("diff", {}, run, now);
+  assert.equal(calls.length, 2);
+  assert.equal(out.recovery.attempted, true);
+  assert.ok(200 * 1000 + calls[1].options.timeoutMs <= DEFAULT_SPAWN_TIMEOUT_MS);
+  assert.equal(calls[1].options.cwd, calls[0].options.cwd);
+
+  const late = budgetedRun([470 * 1000], [denied("c6")]);
+  const skipped = runIsolated("diff", {}, late.run, late.now);
+  assert.equal(late.calls.length, 1);
+  assert.equal(skipped.recovery.skipped, "insufficient-time");
 });
 
 // Read-only commands hand agy a temp directory as its whole workspace. F30

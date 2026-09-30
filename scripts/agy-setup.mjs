@@ -51,8 +51,24 @@ export const MIN_AGY_VERSION = "1.2.4";
 // refuses, and a newer agy usually still works.
 export const VERIFIED_AGY_VERSION = "1.2.11";
 
+// F74. compareVersions and the two gates below read a version the same way: the
+// numeric core extractVersionNumber pulls out ("1.2.4-beta" and "v1.2.4" both
+// read as 1.2.4, and every part of a longer one is kept, so "1.2.11.1" stays
+// above "1.2.11"), or a bare dotted number that has fewer than three parts
+// ("1.2"). Anything else has no core. Before this the gates rejected the
+// prefixed and suffixed shapes outright while compareVersions read a
+// non-numeric part as 0, so the two disagreed on the same input.
+function versionCore(raw) {
+  const extracted = extractVersionNumber(raw);
+  if (extracted) {
+    return extracted;
+  }
+  const bare = String(raw ?? "").trim();
+  return /^\d+(\.\d+)*$/.test(bare) ? bare : null;
+}
+
 export function compareVersions(a, b) {
-  const parse = (value) => String(value ?? "").trim().split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const parse = (value) => (versionCore(value) ?? "").split(".").map((part) => Number.parseInt(part, 10) || 0);
   const left = parse(a);
   const right = parse(b);
   const length = Math.max(left.length, right.length);
@@ -67,29 +83,30 @@ export function compareVersions(a, b) {
 }
 
 export function meetsMinimumVersion(version, minimum = MIN_AGY_VERSION) {
-  if (!/^\d+(\.\d+)*$/.test(String(version ?? "").trim())) {
+  if (versionCore(version) === null) {
     return false;
   }
   return compareVersions(version, minimum) >= 0;
 }
 
 export function newerThanVerified(version, verified = VERIFIED_AGY_VERSION) {
-  if (!/^\d+(\.\d+)*$/.test(String(version ?? "").trim())) {
+  if (versionCore(version) === null) {
     return false;
   }
   return compareVersions(version, verified) > 0;
 }
 
-// agy's own `--version` output is a bare number today ("1.2.6"), which is
-// exactly what meetsMinimumVersion's `^\d+(\.\d+)*$` gate expects whole. If
-// that output ever grows a prefix or suffix ("agy 1.3.0", "1.2.4-beta",
-// "v1.2.4"), the gate would reject it outright and checkAgy would print a
-// literal, doubled "agy agy 1.3.0 is below the 1.2.4 floor", a false claim
-// about a version that may well be fine (F80). Extracting the numeric core
-// first keeps the gate, compareVersions, and the printed detail all reading
-// the same value; returns null when the output carries no such pattern.
+// agy's own `--version` output is a bare number today ("1.2.6"). If that output
+// ever grows a prefix or suffix ("agy 1.3.0", "1.2.4-beta", "v1.2.4"), checkAgy
+// would print a literal, doubled "agy agy 1.3.0 is below the 1.2.4 floor", a
+// false claim about a version that may well be fine (F80). Extracting the
+// numeric core first keeps the gates, compareVersions, and the printed detail
+// all reading the same value (F74: the gates and compareVersions read the core
+// through this function too); returns null when the output carries no such
+// pattern. Three or more dotted parts are taken whole: stopping at three read
+// "1.2.11.1" as 1.2.11, equal to the verified version instead of above it.
 export function extractVersionNumber(raw) {
-  const match = String(raw ?? "").match(/\d+\.\d+\.\d+/);
+  const match = String(raw ?? "").match(/\d+(?:\.\d+){2,}/);
   return match ? match[0] : null;
 }
 
@@ -128,16 +145,36 @@ function checkAgy() {
   };
 }
 
-function runProbe(prompt) {
+// `workspaceRoot` is the same root the report resolves (CLAUDE_PROJECT_DIR or
+// the invoking cwd, anchored on the repository), passed as both `--add-dir` and
+// the spawn cwd the way every other run in this plugin does (F121). Without
+// them the probes ran wherever the setup script happened to be started, so the
+// read probe's file inside the workspace was not necessarily inside agy's.
+function runProbe(prompt, workspaceRoot) {
   // The setup probes stay on the argv transport: both prompts are short fixed
   // literals, so there is no size risk, and this path is the one under test.
   const result = runCommand(
     "agy",
-    ["-p", prompt, "--output-format", "json", "--print-timeout", AGY_PRINT_TIMEOUT],
-    { encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
+    ["-p", prompt, "--output-format", "json", "--add-dir", workspaceRoot, "--print-timeout", AGY_PRINT_TIMEOUT],
+    { cwd: workspaceRoot, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
   );
   if (result.error?.code === "ETIMEDOUT") {
     return { ok: false, failure: "timeout", stderr: "", payload: null };
+  }
+  // Any other spawn error means agy never started. With the workspace root as
+  // the spawn cwd, the usual cause is that root itself: a CLAUDE_PROJECT_DIR
+  // that does not exist (ENOENT) or cannot be entered (EACCES). checkAgy
+  // already ran `agy --version` without a cwd, so agy itself was found. Checked
+  // before the exit status, which is null here and would otherwise read as a
+  // failed run and send the user to sign in again.
+  if (result.error) {
+    return {
+      ok: false,
+      failure: `spawn-error (${result.error.code ?? "unknown"})`,
+      spawnErrorCode: result.error.code ?? "unknown",
+      stderr: "",
+      payload: null
+    };
   }
   const stderr = String(result.stderr ?? "").trim();
   if (result.status !== 0) {
@@ -211,8 +248,17 @@ export function classifyProbeFailure(stderr) {
   return "unknown";
 }
 
-function checkAuth() {
-  const probe = runProbe(AUTH_PROBE_PROMPT);
+function checkAuth(cwd) {
+  const probe = runProbe(AUTH_PROBE_PROMPT, cwd);
+  if (probe.spawnErrorCode) {
+    return {
+      available: false,
+      loggedIn: false,
+      detail: `agy could not be started in the workspace root ${cwd}: ${probe.failure}`,
+      failureKind: "spawn-error",
+      durationSeconds: null
+    };
+  }
   if (!probe.ok) {
     const line = decisiveStderrLine(probe.stderr);
     return {
@@ -445,27 +491,36 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
 }
 
 function checkToolPermissions(cwd) {
-  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT));
+  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT, cwd));
 
   const nonce = `agy-setup-probe-${crypto.randomBytes(8).toString("hex")}`;
   // A dotfile in the workspace root, gone again before the report prints. The
   // temp directory is not a substitute: agy auto-approved reads under /tmp
   // even outside the workspace, so a probe there proves nothing about the
-  // repository reads a rescue needs.
-  let file = path.join(cwd, `.${nonce}.txt`);
-  try {
-    fs.writeFileSync(file, `${nonce}\n`, { flag: "wx" });
-  } catch {
-    file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "agy-setup-")), "probe.txt");
-    fs.writeFileSync(file, `${nonce}\n`);
-  }
+  // repository reads a rescue needs. When the workspace root is not writable
+  // the read probe is skipped rather than moved: a file under /tmp is outside
+  // the one directory the probe adds with --add-dir, and a pass there could
+  // report reads as working when repository reads are refused. A skipped read
+  // does not block `ready`; the command probe still decides, and the detail
+  // says the read was not checked.
+  const file = path.join(cwd, `.${nonce}.txt`);
   let read;
   try {
-    read = evaluateReadProbe(runProbe(readProbePrompt(file)), nonce);
-  } finally {
-    fs.rmSync(file, { force: true });
-    if (!file.startsWith(cwd)) {
-      fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    fs.writeFileSync(file, `${nonce}\n`, { flag: "wx" });
+  } catch (error) {
+    read = {
+      available: true,
+      skipped: "workspace-not-writable",
+      detail: `read probe skipped: no marker file could be written in the workspace root ${cwd} (${error?.code ?? "error"}), so repository reads were not checked`,
+      deniedActions: [],
+      durationSeconds: null
+    };
+  }
+  if (!read) {
+    try {
+      read = evaluateReadProbe(runProbe(readProbePrompt(file), cwd), nonce);
+    } finally {
+      fs.rmSync(file, { force: true });
     }
   }
 
@@ -538,12 +593,16 @@ export function buildReport({
         : `agy ${agy.version} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
     );
   } else {
-    auth = authProbe();
+    auth = authProbe(cwd);
     if (!auth.available) {
       toolPermissions.detail = "not checked; auth probe failed";
       // One remedy per cause. A non-ready report must never leave nextSteps
       // empty, so the unknown case still says what to do next.
-      if (auth.failureKind === "environment") {
+      if (auth.failureKind === "spawn-error") {
+        nextSteps.push(
+          `agy could not be started in the workspace root ${cwd}, which the probes use as agy's working directory. Check that CLAUDE_PROJECT_DIR (or, when it is unset, the directory /agy:setup ran from) names an existing directory you can enter, then rerun /agy:setup. This is not a sign-in problem.`
+        );
+      } else if (auth.failureKind === "environment") {
         nextSteps.push(
           "This is not a login failure. The shell that ran the probe could not give agy the network it needs: either a sandbox refused its local loopback listener, or the run had no network at all and its calls failed to dial out. Your credentials are untouched, and agy saying you are not logged in here is a symptom of that, not the cause. Rerun /agy:setup from an unrestricted terminal, outside any sandbox, container, seccomp wrapper, or network namespace."
         );

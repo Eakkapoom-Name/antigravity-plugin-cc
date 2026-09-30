@@ -15,16 +15,20 @@ send, per command:
   not your project. That is a working-directory change, not a sandbox:
   whether agy can reach paths outside that directory depends on agy's own
   `toolPermission` setting (under `always-proceed` it can read a file by
-  absolute path), and with agy's `allowNonWorkspaceAccess` setting on and an
-  absolute path in the text, agy can still reach outside it.
+  absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess` setting,
+  whose effect is unmeasured here; nothing in this document relies on it.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files. agy then has the repository as its
   workspace (its cwd and its `--add-dir`) and can read files the brief names.
 - `/agy:rescue`, `/agy:continue`: the task text, and whatever agy then reads
   or runs in your repository under agy's own permission settings. agy's full
   JSON answer is saved to `${TMPDIR:-/tmp}/agy-rescue-XXXXXX`, created by
-  `mktemp` with mode 0600 so only you can read it. Nothing deletes these
-  files; the answer can quote code from the repository.
+  `mktemp`, and the response text alone to
+  `${TMPDIR:-/tmp}/agy-rescue-XXXXXX.md`, both mode 0600 so only you can read
+  them; the answer can quote code from the repository. Each rescue run first
+  deletes your own regular files of those two name shapes, directly in that
+  directory, last modified more than 10080 minutes (7 days) ago. Symlinks,
+  directories, other users' files and other names are left untouched.
 - `/agy:whisper`, `/agy:search`, `/agy:research`, `/agy:image`: the prompt
   text only, from an isolated temp directory, after the secret scan below.
 - `/agy:quota`: no user text; a fixed print-mode `/usage` slash command that
@@ -32,7 +36,10 @@ send, per command:
 - `/agy:setup`'s readiness check: no user text either, a version check plus
   fixed auth, command and read probes; the read probe briefly plants a
   marker file in your actual workspace root, not an isolated directory, and
-  asks agy to read it back. The gate on/off/status form of the same command
+  asks agy to read it back. All three probes run with that root as agy's
+  working directory and its `--add-dir`. When the root is not writable, the
+  read probe is skipped and reported as skipped, rather than planted in a
+  temp directory outside that root. The gate on/off/status form of the same command
   sends nothing to agy at all.
 - The stop-review gate: the previous Claude turn, and whatever agy reads in the
   repository to check it. The older in-repository `.claude/agy.local.md` gate

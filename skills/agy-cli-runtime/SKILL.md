@@ -34,10 +34,21 @@ Flag contract (verified against agy 1.2.4). Re-checked on agy 1.2.5 on 2026-09-1
 - `--mode accept-edits`: auto-approve file edits. Add for write-capable runs. Omit for read-only runs (review, diagnosis, research).
 - `-c` / `--continue`: continue the most recent agy conversation. `--conversation <id>`: resume a specific one.
 - `--model <name>`: only when the user asked for a specific model. List with `agy models`; do not hardcode model names.
-- `--effort <low|medium|high|max>` (`max` listed by `--help` on 1.2.11, unmeasured): only when the user asked for a specific effort. Some models reject it before any model call: agy exits 1 with `--effort is not supported for model "<name>"` (1.2.4, `claude-opus-4-6-thinking`). That spends no quota, so rerun once without `--effort` and say the flag was dropped. The companion does this itself for `/agy:transfer` and reports `effortDropped: true`.
+- `--effort <low|medium|high>` (`agy --help` on 1.2.11 also lists `max`, but no model in `agy models` on 1.2.14 accepts it): only when the user asked for a specific effort. Some models reject it before any model call: agy exits 1 with `--effort is not supported for model "<name>"` (1.2.4, `claude-opus-4-6-thinking`). That spends no quota, so rerun once without `--effort` and say the flag was dropped. The companion does this itself for `/agy:transfer`, `/agy:whisper`, `/agy:research` and `/agy:image` (the four commands that take `--effort` and run through `runWithEffortFallback` or, for transfer, its own rerun) and reports `effortDropped: true`; `/agy:search`, `/agy:review` and `/agy:adversarial-review` take no `--effort` at all. The rescue template does the rerun for `/agy:rescue` and `/agy:continue`. Which models accept which level is in the table below.
 - `--add-dir <path>`: add directories to the agy workspace. Repeatable. Pass the repository root itself too, as `--add-dir "$root"` from the base invocation; see the note under it.
 - `--agent <name>`: select an agy-side agent. List with `agy agents`. Leave unset by default.
 - Never pass `--dangerously-skip-permissions` unless the user explicitly asked for it in this session.
+
+Effort support per model (`agy models` on agy 1.2.14, 2026-09-30). That list has exactly these ids: `gemini-3.8-flash-high`, `gemini-3.8-flash-medium`, `gemini-3.8-flash-low`, `gemini-3.7-flash-high`, `gemini-3.7-flash-medium`, `gemini-3.7-flash-low`, `gemini-3.6-flash-high`, `gemini-3.6-flash-medium`, `gemini-3.6-flash-low`, `gemini-3.1-pro-high`, `gemini-3.1-pro-low`, `claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`. Every Gemini id carries its effort level as a suffix, so for Gemini the level is chosen by picking the id, and one `low|medium|high` scale does not fit every model:
+
+| Model ids (`agy models`, 1.2.14) | Effort levels | `--effort` on top |
+| --- | --- | --- |
+| `gemini-3.8-flash-high`, `-medium`, `-low`; the same three for `gemini-3.7-flash` and `gemini-3.6-flash` | `low`, `medium`, `high`, as the id suffix | unmeasured |
+| `gemini-3.1-pro-high`, `gemini-3.1-pro-low` | `low`, `high` only (no `medium`), as the id suffix | unmeasured |
+| `claude-opus-4-6-thinking` | none | refused: measured on agy 1.2.4 |
+| `claude-sonnet-4-6`, `gpt-oss-120b-medium` | none: the id carries no effort level (the `-medium` in the GPT-OSS id is part of its name) | inferred refused, not run |
+
+Only one cell was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before any model call. Everything else is read off the id list, not run. The effort levels come from the Gemini id suffixes. Whether a suffixed Gemini id also accepts `--effort`, ignores it, or refuses it is unmeasured, so pass the id with the level you want and leave `--effort` unset for them. agy's own log from a run on 2026-09-25 said `gemini-3.8-flash has no "max" effort (available: low, medium, high)`, which suggests agy resolves a base name plus an effort level internally, but the bare `gemini-3.8-flash` is not an id `agy models` lists and was never run with `--effort`, so do not pass it. No model in the list has `max`, although `agy --help` names it. A level or a model outside the table is likely refused before any model call, and the rerun-without-`--effort` rule above applies. Re-run `agy models` before trusting the table on a newer agy, and read the exact id off it rather than composing one.
 
 Flags that exist on 1.2.4 and are worth knowing:
 
@@ -72,7 +83,7 @@ never prints the target it tried to match.
 agy has no per-invocation override for this. There is no `--tool-permission`
 flag and no environment variable, so the mode cannot be set for one run; it is
 whatever the user's settings file says. `--mode accept-edits` is not a
-substitute: writes were never the thing being refused. GitHub issue #21 saw an in-repository read denied, which did not reproduce here.
+substitute: writes were never the thing being refused. GitHub issue #21 saw an in-repository read denied, which did not reproduce here. agy 1.2.14 also has an `allowNonWorkspaceAccess` settings key (`strings` on the binary shows `allowNonWorkspaceAccess,omitempty`), whose effect is unmeasured: a 2026-09-30 probe with the key unset read a file outside the workspace, which `toolPermission: always-proceed` together with a trusted home directory also explains. Do not tell a user that setting the key on or off changes outside-workspace reach.
 
 Result JSON shape (verified on agy 1.2.4; the same keys came back from a live run on 1.2.11). Under `--output-format stream-json` the terminal `{"event":"result","result":{...}}` carries this same object, plus an `error` field when it failed, which is why both transports feed the same result handling. A headless tool denial adds `denied_actions`, for example `[{"action":"read_file","display_name":"ViewFile"}]`, while `status` stays `SUCCESS` and the exit code stays 0; the companion treats that as a failed run. A run that ended on a model or agent error exits 3 and can carry a partial `response`; see the `AGY_ERROR` note above:
 

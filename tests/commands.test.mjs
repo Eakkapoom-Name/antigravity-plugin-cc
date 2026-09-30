@@ -6,7 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { listMarkdown, parseFrontmatter, read } from "./helpers.mjs";
+import { listMarkdown, parseFrontmatter, read, ROOT } from "./helpers.mjs";
 import { DEFAULT_PRINT_TIMEOUT, printTimeoutMs, spawnTimeoutMs } from "../scripts/lib/agy.mjs";
 
 const COMMANDS = listMarkdown("commands");
@@ -403,6 +403,12 @@ test("rescue agent writes the agy result to a file and returns a summary", () =>
       parseFrontmatter(source)["allowed-tools"].split(/,\s*/).includes("Read"),
       `${name} cannot read the result file without the Read tool`
     );
+    // The conversation_id cross-check on a large result searches the file
+    // instead of reading its one long line.
+    assert.ok(
+      parseFrontmatter(source)["allowed-tools"].split(/,\s*/).includes("Grep"),
+      `${name} cannot cross-check a large result file without the Grep tool`
+    );
   }
   const handling = read("skills/agy-result-handling/SKILL.md");
   assert.match(handling, /result_file/);
@@ -515,28 +521,48 @@ case "$STUB_MODE" in
   nojson) echo "not json" ;;
   symlink) out="$(readlink /proc/$$/fd/1)"; rm -f "$out"; ln -s /etc/hostname "$out" ;;
   args) printf '%s\n' "$@" > "$STUB_ARGS"; printf '%s\n' '{"conversation_id":"c-1","status":"SUCCESS","response":"ok"}' ;;
+  banner) printf '%s\n' 'agy 1.2.14 (banner line)' '{"conversation_id":"c-2","status":"SUCCESS","response":"after banner"}' ;;
+  pretty) printf '%s\n' 'agy 1.2.14 (banner line)' '{' '  "conversation_id": "c-3",' '  "status": "SUCCESS",' '  "response": "line one\\nline two"' '}' ;;
+  trailing) printf '%s\n' '{"conversation_id":"c-4","status":"SUCCESS","response":"before trailer"}' 'shutdown: flushed' ;;
+  multiline) printf '%s\n' '{"conversation_id":"c-5","status":"SUCCESS","response":"first\\nsecond\\nthird"}' ;;
+  file) cat "$STUB_OUT" ;;
 esac
 `;
 
 // Runs the template with the stub first on PATH (or no agy at all) and returns
 // the summary parsed from the last AGY_RESCUE_SUMMARY line of its output.
 // `setup` may prepare the temp dir and return a subdirectory to run from.
-function runTemplate(mode, taskText, { withAgy = true, setup } = {}) {
+// `stdout` is what the stub prints in "file" mode, `tmpdir` picks the TMPDIR
+// the template sees, and `inspect` looks at the temp dir before it is removed.
+function runTemplate(mode, taskText, { withAgy = true, setup, stdout, tmpdir, inspect } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-test-"));
   try {
     const bin = path.join(dir, "bin");
     fs.mkdirSync(bin);
     const cwd = setup ? setup(dir) : dir;
     const argsFile = path.join(dir, "agy-args");
+    const stubOut = path.join(bin, "stub-out");
+    if (stdout !== undefined) fs.writeFileSync(stubOut, stdout);
     if (withAgy) fs.writeFileSync(path.join(bin, "agy"), STUB_AGY, { mode: 0o755 });
     // Keep node and the coreutils reachable while hiding any real agy.
     const nodeDir = path.dirname(process.execPath);
     const script = rescueTemplate().replace("<task text>", taskText);
+    const startedAt = Date.now();
     const run = spawnSync("bash", ["-c", script], {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, PATH: [bin, nodeDir, "/usr/bin", "/bin"].join(path.delimiter), STUB_MODE: mode, STUB_ARGS: argsFile, TMPDIR: dir }
+      // A regressed parser can take minutes on a large result; fail instead.
+      timeout: 60000,
+      env: {
+        ...process.env,
+        PATH: [bin, nodeDir, "/usr/bin", "/bin"].join(path.delimiter),
+        STUB_MODE: mode,
+        STUB_ARGS: argsFile,
+        STUB_OUT: stubOut,
+        TMPDIR: tmpdir ? tmpdir(dir) : dir
+      }
     });
+    const elapsedMs = Date.now() - startedAt;
     const lines = run.stdout.trim().split("\n");
     const last = lines[lines.length - 1];
     assert.ok(last.startsWith("AGY_RESCUE_SUMMARY "), `summary is not the last output line: ${run.stdout}${run.stderr}`);
@@ -545,7 +571,24 @@ function runTemplate(mode, taskText, { withAgy = true, setup } = {}) {
     try { fileText = fs.readFileSync(summary.result_file, "utf8"); } catch {}
     let args = null;
     try { args = fs.readFileSync(argsFile, "utf8").split("\n"); } catch {}
-    return { run, summary, fileText, dir, args };
+    let responseText = null;
+    let responseMode = null;
+    try {
+      responseText = fs.readFileSync(summary.response_file, "utf8");
+      responseMode = fs.statSync(summary.response_file).mode & 0o777;
+    } catch {}
+    return {
+      run,
+      summary,
+      fileText,
+      dir,
+      args,
+      responseText,
+      responseMode,
+      elapsedMs,
+      leftovers: fs.readdirSync(dir).sort(),
+      inspected: inspect ? inspect(dir) : undefined
+    };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -596,6 +639,114 @@ test("rescue template reports non-JSON stdout as a null status", { skip: !HAS_BA
   const { summary, fileText } = runTemplate("nojson", "task");
   assert.equal(summary.status, null);
   assert.equal(fileText.trim(), "not json");
+});
+
+// F96. A banner before the JSON on stdout must not blank the summary, the way
+// normalizeStreamOutput already tolerates a non-JSON line on the stream.
+test("rescue template reads the JSON after a stdout banner line", { skip: !HAS_BASH }, () => {
+  const { summary, fileText } = runTemplate("banner", "task");
+  assert.equal(summary.status, "SUCCESS");
+  assert.equal(summary.conversation_id, "c-2");
+  assert.equal(summary.response_chars, "after banner".length);
+  // The result file is left as agy wrote it, banner included.
+  assert.match(fileText, /^agy 1\.2\.14 \(banner line\)\n\{/);
+});
+
+test("rescue template reads pretty-printed JSON after a banner and JSON before trailing text", { skip: !HAS_BASH }, () => {
+  const pretty = runTemplate("pretty", "task");
+  assert.equal(pretty.summary.status, "SUCCESS");
+  assert.equal(pretty.summary.conversation_id, "c-3");
+  assert.equal(pretty.responseText, "line one\nline two");
+
+  const trailing = runTemplate("trailing", "task");
+  assert.equal(trailing.summary.status, "SUCCESS");
+  assert.equal(trailing.summary.conversation_id, "c-4");
+  assert.equal(trailing.summary.response_chars, "before trailer".length);
+});
+
+// F96. A very large response cannot be paged out of a one-line JSON file, so
+// the response text is also written to a side .md file next to it.
+test("rescue template writes the response to a response_file next to the result file", { skip: !HAS_BASH }, () => {
+  const { summary, responseText, responseMode, leftovers } = runTemplate("ok", "task");
+  assert.equal(summary.response_file, `${summary.result_file}.md`);
+  assert.equal(responseText, "hello");
+  assert.equal(responseMode, 0o600);
+  assert.ok(leftovers.includes(path.basename(summary.response_file)));
+
+  const multiline = runTemplate("multiline", "task");
+  assert.equal(multiline.responseText, "first\nsecond\nthird");
+  assert.equal(multiline.summary.response_chars, "first\nsecond\nthird".length);
+});
+
+test("rescue template writes no response_file when there is no response to page", { skip: !HAS_BASH }, () => {
+  for (const mode of ["error", "nojson"]) {
+    const { summary, leftovers } = runTemplate(mode, "task");
+    assert.equal(summary.response_file, null, mode);
+    assert.ok(!leftovers.some((name) => name.endsWith(".md")), `${mode} left a .md file`);
+  }
+});
+
+test("rescue template writes no response_file for a replaced result path", { skip: !HAS_BASH || !HAS_PROC }, () => {
+  const { summary } = runTemplate("symlink", "task");
+  assert.equal(summary.regular_file, false);
+  assert.equal(summary.response_file, null);
+});
+
+// F96. Result files were never deleted. Each run first removes this user's own
+// agy-rescue result files, and their .md siblings, last modified more than
+// 10080 minutes (7 days) ago, and nothing else in the directory.
+const WEEK_MINUTES = 7 * 24 * 60;
+const minutesAgo = (n) => new Date(Date.now() - n * 60 * 1000);
+function makeAged(dir, name, ageDays) {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, "x");
+  const when = minutesAgo(ageDays * 24 * 60);
+  fs.utimesSync(file, when, when);
+}
+
+test("rescue template deletes old agy-rescue result files and keeps new and unrelated ones", { skip: !HAS_BASH }, () => {
+  const days = (n) => minutesAgo(n * 24 * 60);
+  const make = makeAged;
+  const { leftovers } = runTemplate("ok", "task", {
+    setup: (dir) => {
+      make(dir, "agy-rescue-OLD111", 10);
+      make(dir, "agy-rescue-OLD111.md", 10);
+      make(dir, "agy-rescue-NEW222", 1);
+      make(dir, "agy-rescue-NEW222.md", 1);
+      make(dir, "agy-rescue-edge333", 6);
+      // Either side of the stated age, by five minutes.
+      make(dir, "agy-rescue-OVER77", (WEEK_MINUTES + 5) / (24 * 60));
+      make(dir, "agy-rescue-UNDR88", (WEEK_MINUTES - 5) / (24 * 60));
+      // Wrong shape or wrong type: never touched, however old.
+      make(dir, "agy-rescue-toolongname", 30);
+      make(dir, "agy-rescue-OLD444.txt", 30);
+      make(dir, "unrelated-file", 30);
+      fs.mkdirSync(path.join(dir, "agy-rescue-OLDDIR"));
+      fs.utimesSync(path.join(dir, "agy-rescue-OLDDIR"), days(30), days(30));
+      // A symlink named like a result file is not a regular file, so it is
+      // not followed and not removed, and its target is untouched.
+      make(dir, "symlink-target", 30);
+      fs.symlinkSync(path.join(dir, "symlink-target"), path.join(dir, "agy-rescue-LINK55"));
+      return dir;
+    }
+  });
+  for (const gone of ["agy-rescue-OLD111", "agy-rescue-OLD111.md", "agy-rescue-OVER77"]) {
+    assert.ok(!leftovers.includes(gone), `${gone} was not cleaned up`);
+  }
+  for (const kept of [
+    "agy-rescue-NEW222",
+    "agy-rescue-NEW222.md",
+    "agy-rescue-edge333",
+    "agy-rescue-UNDR88",
+    "agy-rescue-toolongname",
+    "agy-rescue-OLD444.txt",
+    "unrelated-file",
+    "agy-rescue-OLDDIR",
+    "agy-rescue-LINK55",
+    "symlink-target"
+  ]) {
+    assert.ok(leftovers.includes(kept), `${kept} was removed`);
+  }
 });
 
 // F96. The workspace agy gets is the repository root, the same root the
@@ -747,4 +898,245 @@ test("the rescue agent adds a verification loop only for relevant tests, with co
   assert.match(agent, /name that command and the directory to run it from/);
   assert.match(agent, /Never invent a test command/);
   assert.doesNotMatch(agent, /without (asking|confirm)|skip[^.]*confirm/i);
+});
+
+// F129. Claude Code 2.1.284 and 2.1.285 ran the rescue subagent in the
+// background whatever the flags said, and the Agent tool offered no lever. The
+// flags stay, as a request the host may not honor.
+test("rescue and continue treat --wait and --background as a request the host may not honor", () => {
+  for (const name of ["rescue.md", "continue.md"]) {
+    const source = read(`commands/${name}`);
+    assert.match(source, /--background` and `--wait` are a request for an execution mode/, name);
+    assert.match(source, /may not honor/, name);
+    assert.match(source, /completion notification/, name);
+    assert.match(source, /Do not forward them to the subagent as task text/, name);
+    assert.doesNotMatch(source, /default is foreground|default to foreground/i, name);
+    assert.match(parseFrontmatter(source)["argument-hint"], /--background\|--wait/, name);
+  }
+  assert.match(read("README.md"), /`--background` and `--wait` are a request/);
+});
+
+// F130. Effort support is per model, and the docs named a model agy lacks.
+test("the docs carry a dated per-model effort table and no model agy does not list", () => {
+  const runtime = read("skills/agy-cli-runtime/SKILL.md");
+  assert.match(runtime, /Effort support per model \(`agy models` on agy 1\.2\.14, 2026-09-30\)/);
+  for (const model of ["gemini-3.8-flash", "gemini-3.1-pro", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]) {
+    assert.ok(runtime.includes(`\`${model}`), `the effort table does not name ${model}`);
+  }
+  assert.doesNotMatch(read("README.md"), /gemini-3\.5-pro/);
+  // Every companion command that reruns without a rejected --effort is named.
+  for (const command of ["/agy:transfer", "/agy:whisper", "/agy:research", "/agy:image"]) {
+    assert.ok(runtime.includes(command), `the runtime skill does not name ${command} in its effort fallback`);
+  }
+  assert.match(runtime, /`\/agy:search`, `\/agy:review` and `\/agy:adversarial-review` take no `--effort`/);
+  assert.match(read("README.md"), /### Effort levels/);
+});
+
+// F113. The setting exists in agy's binary; what it does was never measured.
+test("no doc claims what allowNonWorkspaceAccess does", () => {
+  assert.match(read("README.md"), /`allowNonWorkspaceAccess`\s+setting, but its effect is unmeasured/);
+  assert.doesNotMatch(read("README.md"), /allowNonWorkspaceAccess[^.]*still reaches outside/);
+  assert.match(read("skills/agy-cli-runtime/SKILL.md"), /`allowNonWorkspaceAccess` settings key[^.]*whose effect is unmeasured/);
+  assert.match(read("SECURITY.md").replace(/\s+/g, " "), /`allowNonWorkspaceAccess` setting, whose effect is unmeasured here; nothing in this document relies on it/);
+  assert.doesNotMatch(read("SECURITY.md"), /allowNonWorkspaceAccess[^.]*still reach/);
+});
+
+// F96. The response_file, the banner tolerance and the cleanup are documented
+// where the caller and the subagent read them.
+test("the rescue docs describe response_file, banner tolerance and result file cleanup", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /response_file: responseFile/);
+  assert.match(agent, /last modified more than 10080 minutes \(7 days\) ago/);
+  assert.match(agent, /find "\$\{TMPDIR:-\/tmp\}\/\." -maxdepth 1 -type f -user "\$\(id -u\)" .* -mmin \+10080 -delete/);
+  assert.doesNotMatch(agent, /-mtime/);
+  assert.match(agent, /-type f -user "\$\(id -u\)"/);
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  assert.match(handling, /`response_file`/);
+  assert.match(handling, /in pages/);
+  assert.match(handling, /last modified more than 10080 minutes \(7 days\) ago/);
+  assert.match(read("SECURITY.md").replace(/\s+/g, " "), /last modified more than 10080 minutes \(7 days\) ago/);
+  assert.match(read("SECURITY.md"), /agy-rescue-XXXXXX\.md/);
+  assert.doesNotMatch(read("SECURITY.md"), /Nothing deletes these/);
+  assert.doesNotMatch(handling, /nothing deletes them\./);
+  for (const name of ["rescue.md", "continue.md"]) {
+    assert.match(read(`commands/${name}`), /`response_file`/, name);
+  }
+});
+
+// F104. The two turns of a denial recovery share one run's time budget.
+test("result handling documents a resume skipped for lack of time", () => {
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  assert.match(handling, /`recovery\.skipped: "insufficient-time"`/);
+  assert.match(handling, /share the time one run is allowed/);
+});
+
+// The summary trusts only an agy result, a JSON object carrying both `status`
+// and `conversation_id`, and exactly one of them. A stray JSON line before or
+// after agy's real result used to be picked up by the forward or backward
+// line scan, and its `response` written to the .md file the caller reads
+// without the conversation_id check.
+const REAL_LINE = '{"conversation_id":"c-real","status":"SUCCESS","response":"real answer"}';
+
+test("rescue template skips a stray JSON line before or after the real result", { skip: !HAS_BASH }, () => {
+  for (const stdout of [
+    `{"note":"injected","response":"INJECTED"}\n${REAL_LINE}\n`,
+    `${REAL_LINE}\n{"response":"INJECTED"}\n`,
+    `banner\n{"response":"INJECTED"}\n${REAL_LINE}\n{"status":"SUCCESS"}\ntrailer\n`
+  ]) {
+    const { summary, responseText } = runTemplate("file", "task", { stdout });
+    assert.equal(summary.conversation_id, "c-real", stdout);
+    assert.equal(summary.status, "SUCCESS", stdout);
+    assert.equal(summary.parsed_from, "line", stdout);
+    assert.equal(summary.parse_error, null, stdout);
+    assert.equal(responseText, "real answer", stdout);
+  }
+});
+
+test("rescue template fails closed on two different result objects", { skip: !HAS_BASH }, () => {
+  const injected = JSON.stringify({ conversation_id: "c-evil", status: "SUCCESS", response: "x".repeat(30000) });
+  for (const stdout of [`${injected}\n${REAL_LINE}\n`, `${REAL_LINE}\n${injected}\n`]) {
+    const { summary, leftovers } = runTemplate("file", "task", { stdout });
+    assert.equal(summary.status, null);
+    assert.equal(summary.conversation_id, null);
+    assert.equal(summary.error, null);
+    assert.equal(summary.response_chars, 0);
+    assert.equal(summary.response_file, null);
+    assert.equal(summary.parsed_from, null);
+    assert.match(summary.parse_error, /^2 different result objects on stdout; none was used$/);
+    assert.ok(!leftovers.some((name) => name.endsWith(".md")), "a response file was written for an ambiguous result");
+  }
+  // The same object printed twice is one candidate, not two.
+  const twice = runTemplate("file", "task", { stdout: `${REAL_LINE}\n${REAL_LINE}\n` });
+  assert.equal(twice.summary.conversation_id, "c-real");
+});
+
+test("rescue template names where the result came from and why none was used", { skip: !HAS_BASH }, () => {
+  assert.equal(runTemplate("ok", "task").summary.parsed_from, "whole");
+  assert.equal(runTemplate("banner", "task").summary.parsed_from, "line");
+  assert.equal(runTemplate("pretty", "task").summary.parsed_from, "block");
+  const nojson = runTemplate("nojson", "task").summary;
+  assert.equal(nojson.parsed_from, null);
+  assert.match(nojson.parse_error, /^no result object/);
+  // Valid JSON that is not an agy result is not trusted either, and gets no .md.
+  const other = runTemplate("file", "task", { stdout: '{"response":"not a result"}\n' });
+  assert.equal(other.summary.status, null);
+  assert.equal(other.summary.response_file, null);
+  assert.match(other.summary.parse_error, /^no result object/);
+});
+
+// The forward scan used to re-parse the rest of the file from every line that
+// began with `{`, so a large pretty-printed result with a trailer took seconds.
+test("rescue template reads a large pretty-printed result with a trailer in linear time", { skip: !HAS_BASH }, () => {
+  const big = {
+    conversation_id: "c-big",
+    status: "SUCCESS",
+    response: "done",
+    steps: Array.from({ length: 45000 }, (_, i) => ({ i, note: "step" }))
+  };
+  const stdout = `agy 1.2.14 (banner line)\n${JSON.stringify(big, null, 2)}\nshutdown: flushed\n`;
+  assert.ok(stdout.length > 2 * 1024 * 1024, "the fixture is smaller than intended");
+  const { summary, elapsedMs } = runTemplate("file", "task", { stdout });
+  assert.equal(summary.conversation_id, "c-big");
+  assert.equal(summary.parsed_from, "block");
+  assert.ok(elapsedMs < 3000, `the template took ${elapsedMs} ms`);
+});
+
+// A TMPDIR that is itself a symlink to a directory is still cleaned: a bare
+// symlink start point is not descended by find, `<dir>/.` is.
+test("rescue template cleans old result files under a symlinked TMPDIR", { skip: !HAS_BASH }, () => {
+  const { inspected } = runTemplate("ok", "task", {
+    setup: (dir) => {
+      fs.mkdirSync(path.join(dir, "real"));
+      fs.symlinkSync(path.join(dir, "real"), path.join(dir, "link"));
+      makeAged(path.join(dir, "real"), "agy-rescue-OLD999", 10);
+      makeAged(path.join(dir, "real"), "agy-rescue-NEW999", 1);
+      return dir;
+    },
+    tmpdir: (dir) => path.join(dir, "link"),
+    inspect: (dir) => fs.readdirSync(path.join(dir, "real")).sort()
+  });
+  assert.ok(!inspected.includes("agy-rescue-OLD999"), "an old result file under a symlinked TMPDIR was kept");
+  assert.ok(inspected.includes("agy-rescue-NEW999"));
+});
+
+test("the rescue docs describe the result-object rule and the conversation_id cross-check", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /carries both `status` and `conversation_id`/);
+  assert.match(agent, /`parse_error` says why/);
+  assert.doesNotMatch(agent, /else the last line that is a JSON object/);
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  assert.match(handling, /`parsed_from`, and `parse_error`/);
+  assert.match(handling, /`parse_error` set \(and `parsed_from` null\)/);
+  assert.match(handling, /Still cross-check `conversation_id` against the result file/);
+  assert.match(handling, /search `result_file` with the `Grep` tool/);
+  assert.doesNotMatch(handling, /the JSON is the object that follows it/);
+  for (const name of ["rescue.md", "continue.md"]) {
+    assert.match(read(`commands/${name}`), /`parsed_from`, and `parse_error`/, name);
+  }
+});
+
+// /agy:continue resumes through the rescue subagent, write-capable, with the
+// repository added. A read-only, isolated conversation must not be sent there.
+test("result handling offers /agy:continue only for write-capable conversations", () => {
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  const skipped = handling.split("\n").find((line) => line.includes('`recovery.skipped: "insufficient-time"`'));
+  assert.ok(skipped, "no insufficient-time bullet");
+  assert.match(skipped, /For `\/agy:transfer`, `\/agy:continue <conversation_id>` with the constraint stated can/);
+  assert.match(skipped, /`\/agy:review`, `\/agy:adversarial-review`, `\/agy:search`, `\/agy:research`, `\/agy:whisper` and `\/agy:image` there is no safe continue path/);
+  assert.match(skipped, /Tell the user to rerun the command instead/);
+  const cap = handling.split("\n").find((line) => line.startsWith("One resume is the cap"));
+  assert.match(cap, /came from `\/agy:transfer` \(or `\/agy:rescue` or `\/agy:continue`\), run `\/agy:continue <conversation_id>`/);
+  assert.match(cap, /do not: `\/agy:continue` would resume that conversation write-capable/);
+});
+
+// `recovered` is only `second.ok`; a timed-out or errored resume is not a
+// second denial.
+test("result handling checks the top-level failure before calling an unrecovered run a denial", () => {
+  const handling = read("skills/agy-result-handling/SKILL.md");
+  assert.doesNotMatch(handling, /`recovery\.recovered: false`\. Both turns were denied\./);
+  assert.match(handling, /Check the top-level `failure` first\. `failure: "denied"` means both turns were denied/);
+  assert.match(handling, /`"timeout"`, which a resume given as little as 30 seconds can hit/);
+});
+
+// Every `--model <id>` in the shipped docs is an id `agy models` listed on
+// agy 1.2.14. Fake ids inside test stubs are not docs and are not scanned.
+const LISTED_MODEL_IDS = new Set([
+  "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "gemini-3.1-pro-high", "gemini-3.1-pro-low",
+  "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"
+]);
+
+function shippedMarkdown() {
+  const files = ["README.md"];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rel = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.name.endsWith(".md")) files.push(rel);
+    }
+  };
+  for (const dir of ["commands", "agents", "skills"]) walk(dir);
+  return files;
+}
+
+test("every --model id in the docs is one agy models lists", () => {
+  const files = shippedMarkdown();
+  assert.ok(files.includes(path.join("skills", "agy-cli-runtime", "SKILL.md")));
+  let seen = 0;
+  for (const file of files) {
+    for (const match of read(file).matchAll(/--model[ =]+`?([A-Za-z0-9][\w.-]*)/g)) {
+      seen += 1;
+      assert.ok(LISTED_MODEL_IDS.has(match[1]), `${file} passes --model ${match[1]}, which agy models does not list`);
+    }
+  }
+  assert.ok(seen > 0, "no --model example was found, so the scan checked nothing");
+  const runtime = read("skills/agy-cli-runtime/SKILL.md");
+  for (const id of LISTED_MODEL_IDS) {
+    assert.ok(runtime.includes(`\`${id}\``), `the runtime skill does not list ${id}`);
+  }
+  assert.match(runtime, /Only one cell was measured: agy 1\.2\.4 refused `--effort` for `claude-opus-4-6-thinking`/);
+  assert.doesNotMatch(runtime, /the pro model may list its effort inside the id/);
+  assert.match(read("README.md"), /Only one refusal was measured/);
 });

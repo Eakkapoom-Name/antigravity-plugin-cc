@@ -1,7 +1,7 @@
 ---
 description: Show active and recent background agy delegations in this session
 argument-hint: "[agent-or-task-id]"
-allowed-tools: ListAgents, TaskOutput, Read
+allowed-tools: ListAgents, TaskOutput, Read, Grep
 ---
 
 Report the status of background agy work launched from this session. This plugin has no broker or job files by design, so status comes from the session's own task tracking. The only files it leaves are rescue result files in the temporary directory, which hold a finished run's agy JSON and carry no job state.

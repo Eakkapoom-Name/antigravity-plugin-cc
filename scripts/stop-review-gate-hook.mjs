@@ -10,14 +10,16 @@ import fs from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { runPrompt } from "./lib/agy.mjs";
+import { collectDiff, screenDiff, untrackedFiles } from "./lib/git.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
-import { judgeReview } from "./lib/stop-review.mjs";
+import { judgeReview, refusalReason } from "./lib/stop-review.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const AGY_PRINT_TIMEOUT = "9m";
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_CHARS = 8000;
+const MAX_UNTRACKED_LISTED = 50;
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -74,7 +76,35 @@ function lastAssistantMessageFromTranscript(transcriptPath) {
   return last;
 }
 
-function buildPrompt(cwd, input) {
+// The gate runs with commands denied, so it cannot run `git diff` itself: the
+// hook collects the working tree against HEAD, the same scope and the same
+// screen /agy:review uses, and hands it over in the prompt. Untracked files
+// are not in that diff, so their paths are listed for agy to read. Returns
+// `{ text }` for the prompt, or `{ refusal }` when screenDiff refuses to send
+// the diff. A workspace git cannot diff (not a repository) still gets a
+// review, from file reads alone.
+function diffBlock(cwd) {
+  const collected = collectDiff("", cwd);
+  if (!collected.ok) {
+    return { text: `No diff is available for this workspace (${collected.error}).` };
+  }
+  let untracked = "";
+  const paths = untrackedFiles(cwd);
+  if (paths.length > 0) {
+    const more = paths.length > MAX_UNTRACKED_LISTED ? `\n[and ${paths.length - MAX_UNTRACKED_LISTED} more]` : "";
+    untracked = `Untracked files, not in the diff (read any the previous turn created):\n${paths.slice(0, MAX_UNTRACKED_LISTED).join("\n")}${more}\n\n`;
+  }
+  if (collected.empty) {
+    return { text: `${untracked}Diff of the working tree against HEAD: empty, no uncommitted changes to tracked files. Changes already committed are not shown: read the files the previous response names to check them.` };
+  }
+  const refusal = screenDiff(collected.diff);
+  if (refusal) {
+    return { refusal };
+  }
+  return { text: `${untracked}Diff of the working tree against HEAD follows:\n\n${collected.diff}` };
+}
+
+function buildPrompt(cwd, input, diffText) {
   let lastMessage = String(input.last_assistant_message ?? "").trim();
   if (!lastMessage && input.transcript_path) {
     lastMessage = lastAssistantMessageFromTranscript(input.transcript_path);
@@ -85,19 +115,24 @@ function buildPrompt(cwd, input) {
   const block = lastMessage ? `Previous Claude response:\n${lastMessage}` : "";
   return renderPrompt("stop-review-gate", {
     REPO_ROOT: cwd,
-    CLAUDE_RESPONSE_BLOCK: block
+    CLAUDE_RESPONSE_BLOCK: block,
+    DIFF_BLOCK: diffText
   });
 }
 
 function runStopReview(cwd, input) {
-  const prompt = buildPrompt(cwd, input);
+  const diff = diffBlock(cwd);
+  if (diff.refusal) {
+    return { ok: false, reason: refusalReason(diff.refusal) };
+  }
+  const prompt = buildPrompt(cwd, input, diff.text);
   // Read-only profile (lib/agy.mjs): plan mode, and commands and file writes
   // denied by the plugin's own per-run rules, because the previous turn is
-  // untrusted input and the gate runs in the repository itself. It cannot run
-  // `git diff`, so it reviews by reading files. The workspace is added explicitly because a bare
-  // print-mode run does not treat the cwd as its project (it resolves to the
-  // agy scratch dir), so the project must be added or the reviewer sees an
-  // empty workspace and allows everything. runPrompt carries the prompt on
+  // untrusted input and the gate runs in the repository itself. It reviews
+  // the diff in the prompt and reads files. The workspace is added explicitly
+  // because a bare print-mode run does not treat the cwd as its project (it
+  // resolves to the agy scratch dir), so the project must be added or the
+  // reviewer sees an empty workspace and allows everything. runPrompt carries the prompt on
   // stdin and reports a headless tool denial as failure: "denied", which is
   // what lets the gate name the missing rule instead of "no output".
   return judgeReview(

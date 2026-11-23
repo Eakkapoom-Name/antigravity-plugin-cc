@@ -142,9 +142,12 @@ Examples:
 
 The review runs isolated: agy runs from a temp directory, not your
 repository, and receives the diff in the prompt (on stdin). That is a
-working-directory change, not a sandbox: whether agy can still reach paths
-outside that directory depends on agy's own `toolPermission` setting (under
-`always-proceed` it can read a file by absolute path). If the diff trips the secret scanner, the run stops and reports
+working-directory change, not a sandbox: on agy 1.4.10 and later the plugin's
+read-only profile denies commands and file writes but not file reads, so it
+does not stop agy reading a file outside that directory by absolute path; on
+an older agy, whether agy can still reach paths outside that directory depends
+on agy's own `toolPermission` setting (under `always-proceed` it can read a
+file by absolute path). If the diff trips the secret scanner, the run stops and reports
 what it found; pass `--allow-secret <regex>` (repeatable) to admit a known
 false positive. A staged review during an unresolved merge is refused with the
 unmerged paths named (`git diff --cached` leaves conflicted files out of the
@@ -172,8 +175,10 @@ Examples:
 ```
 
 Same isolation and secret scan as `/agy:review`: agy runs from a temp
-directory and receives the diff in the prompt (on stdin), and whether it can
-reach paths outside that directory depends on agy's `toolPermission` setting.
+directory and receives the diff in the prompt (on stdin), under the read-only
+profile on agy 1.4.10 and later (file reads allowed, commands and file writes
+denied); on an older agy, whether it can reach paths outside that directory
+depends on agy's `toolPermission` setting.
 A diff that trips the secret scanner stops the run until
 you redact it or pass `--allow-secret <regex>` (repeatable) for a known false
 positive.
@@ -238,10 +243,12 @@ with your repository added, which would make a conversation that holds web
 content write-capable there. Rerun `/agy:whisper` with the refined request
 (the same goes for `/agy:search`, `/agy:research`, `/agy:image`, `/agy:review`
 and `/agy:adversarial-review`). agy runs from an isolated temp directory, not your project. That is a
-working-directory change rather than a sandbox: whether agy can reach paths
-outside it depends on agy's own `toolPermission` setting (`always-proceed`
-reads by absolute path) and, with an absolute path in the prompt text, may
-still reach outside it. agy 1.2.14 also has an `allowNonWorkspaceAccess`
+working-directory change rather than a sandbox: on agy 1.4.10 and later these
+runs use the plugin's read-only profile, which denies commands and file writes
+but not file reads, so agy can still read a file outside it by absolute path,
+for instance one named in the prompt text; on an older agy, whether agy can
+reach paths outside it depends on agy's own `toolPermission` setting
+(`always-proceed` reads by absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess`
 setting, but its effect is unmeasured here, so nothing above relies on it.
 Nothing in this command's text is checked for a URL; the local-network guard
 belongs to `/agy:search` alone. The prompt text does go
@@ -460,11 +467,12 @@ Either way, the result comes back with a `conversation_id`, so the thread stays 
 
 ## Stop-Review Gate
 
-Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately.
+Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately. The run is read-only and cannot run commands, so the hook collects the working-tree diff against HEAD itself, screened by the same secret scan as `/agy:review`, and passes it in the prompt along with the paths of untracked files.
 
 - Toggle per workspace with `/agy:setup gate on` / `gate off`. The flag is stored outside the repository, under `CLAUDE_PLUGIN_DATA` and keyed by a hash of the workspace root, so there is nothing in your project to commit by mistake. A gate enabled under the older in-repository `.claude/agy.local.md` is still honoured until you set it through the command, but only when git reports that file untracked (or ignored) and it is not reached through a symlink; a copy committed to the repository (including through a committed `.claude` symlink or submodule, or a case variant of the path) is ignored, and so is the file whenever git refuses to answer for the repository (for example over dubious ownership). The file is still honoured when there is no `.git` at the workspace root (a tarball or zip download) or git is not installed, since there is nothing to ask; a committed copy in such a download can still turn the gate on.
 - If agy is missing, the gate skips with a note instead of blocking.
 - Review failures and timeouts block with guidance to run `/agy:review` manually or turn the gate off.
+- A diff that trips the secret scanner blocks the stop without sending anything to agy, naming each hit by file, line and kind; redact it or turn the gate off.
 
 ## FAQ
 

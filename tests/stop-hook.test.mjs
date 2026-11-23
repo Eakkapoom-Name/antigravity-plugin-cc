@@ -103,54 +103,84 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
   assert.ok(!/runCommand\(\s*"agy"/.test(source), "the hook still spawns agy through runCommand");
 });
 
+// Runs the real hook on `root` with the gate on and a fake agy first on PATH.
+// The fake reports 1.5.14 to `--version`; on the review run it records its
+// argv and the stdin it was handed, then answers with `response`. Returns the
+// hook's spawn result, the recorded argv (null when agy was never asked to
+// review), and the prompt text agy received.
+function runHookWithFakeAgy(scratch, root, response) {
+  const dataDir = path.join(scratch, "data");
+  fs.mkdirSync(dataDir, { recursive: true });
+  const bin = path.join(scratch, "bin");
+  fs.mkdirSync(bin, { recursive: true });
+  const argvFile = path.join(scratch, "argv.txt");
+  const stdinFile = path.join(scratch, "stdin.txt");
+  const result = JSON.stringify({ event: "result", result: emptyResult({ status: "SUCCESS", response }) });
+  fs.writeFileSync(
+    path.join(bin, "agy"),
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.5.14; exit 0; fi\nprintf '%s\\n' "$@" > "$AGY_ARGV_FILE"\ncat > "$AGY_STDIN_FILE"\nprintf '%s\\n' '${result.replace(/'/g, "'\\''")}'\n`,
+    { mode: 0o755 }
+  );
+
+  const previous = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = dataDir;
+  try {
+    setGate(root, true);
+  } finally {
+    if (previous === undefined) {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+    } else {
+      process.env.CLAUDE_PLUGIN_DATA = previous;
+    }
+  }
+
+  const hook = spawnSync(process.execPath, [path.join(ROOT, "scripts", "stop-review-gate-hook.mjs")], {
+    input: JSON.stringify({ cwd: root, last_assistant_message: "Edited src/a.js." }),
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+      CLAUDE_PLUGIN_DATA: dataDir,
+      AGY_ARGV_FILE: argvFile,
+      AGY_STDIN_FILE: stdinFile
+    }
+  });
+  const argv = fs.existsSync(argvFile) ? fs.readFileSync(argvFile, "utf8").split("\n").slice(0, -1) : null;
+  let prompt = null;
+  if (fs.existsSync(stdinFile)) {
+    const line = fs.readFileSync(stdinFile, "utf8").split("\n").find((entry) => entry.trim());
+    prompt = JSON.parse(line).message.content;
+  }
+  return { hook, argv, prompt };
+}
+
+// A real repository with one committed file, `a.js`.
+function gitRepo(scratch) {
+  const root = path.join(scratch, "repo");
+  fs.mkdirSync(root);
+  const git = (...args) => {
+    const out = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" });
+    assert.equal(out.status, 0, out.stderr);
+  };
+  git("init", "--quiet");
+  fs.writeFileSync(path.join(root, "a.js"), "const kept = 1;\n");
+  git("add", "a.js");
+  git("commit", "--quiet", "--no-verify", "-m", "init");
+  return root;
+}
+
 // agy 1.5.14 compatibility, F1: the gate reviews the repository with the
 // previous turn as untrusted input, so it runs under the read-only profile:
 // plan mode with request-review and commands and file writes denied, the
-// captain's model plus the deny list measured on 1.5.14. A fake agy on PATH
-// reports 1.5.14 and records the argv of the review run, so the test sees what
-// the hook really passes.
+// captain's model plus the deny list measured on 1.5.14.
 test("the hook runs agy under the read-only profile", { skip: process.platform === "win32" }, () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
   try {
     const root = path.join(scratch, "repo");
     fs.mkdirSync(path.join(root, ".git"), { recursive: true });
-    const dataDir = path.join(scratch, "data");
-    fs.mkdirSync(dataDir);
-    const bin = path.join(scratch, "bin");
-    fs.mkdirSync(bin);
-    const argvFile = path.join(scratch, "argv.txt");
-    fs.writeFileSync(
-      path.join(bin, "agy"),
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.5.14; exit 0; fi\nprintf \'%s\\n\' "$@" > "$AGY_ARGV_FILE"\ncat > /dev/null\n',
-      { mode: 0o755 }
-    );
-
-    const previous = process.env.CLAUDE_PLUGIN_DATA;
-    process.env.CLAUDE_PLUGIN_DATA = dataDir;
-    try {
-      setGate(root, true);
-    } finally {
-      if (previous === undefined) {
-        delete process.env.CLAUDE_PLUGIN_DATA;
-      } else {
-        process.env.CLAUDE_PLUGIN_DATA = previous;
-      }
-    }
-
-    const hook = spawnSync(process.execPath, [path.join(ROOT, "scripts", "stop-review-gate-hook.mjs")], {
-      input: JSON.stringify({ cwd: root, last_assistant_message: "Edited src/a.js." }),
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
-        CLAUDE_PLUGIN_DATA: dataDir,
-        AGY_ARGV_FILE: argvFile
-      }
-    });
+    const { hook, argv } = runHookWithFakeAgy(scratch, root, "ALLOW: nothing to review");
     assert.equal(hook.status, 0, hook.stderr);
-    assert.ok(fs.existsSync(argvFile), "the hook never ran the review through agy");
-
-    const argv = fs.readFileSync(argvFile, "utf8").split("\n").slice(0, -1);
+    assert.ok(argv, "the hook never ran the review through agy");
     assert.ok(argv.includes("-p="), `not a print-mode run: ${argv.join(" ")}`);
     const settings = argv.indexOf("--settings");
     assert.notEqual(settings, -1, `no --settings in ${argv.join(" ")}`);
@@ -160,6 +190,67 @@ test("the hook runs agy under the read-only profile", { skip: process.platform =
       permissions: { allow: [], deny: ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"] }
     });
     assert.equal(argv[argv.indexOf("--mode") + 1], "plan", `read-only gate mode: ${argv.join(" ")}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// Under the read-only profile agy cannot run `git diff`, so the hook hands it
+// the diff. The oracle is git's own unified format for the edit the test makes
+// (`diff --git a/a.js b/a.js`, then the added line with a `+`), and a
+// plausible wrong behaviour it rejects is a prompt that only tells agy to look
+// at the working tree, which it can no longer do.
+test("a turn with edits goes to agy with the working-tree diff, and a BLOCK answer blocks", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = gitRepo(scratch);
+    fs.writeFileSync(path.join(root, "a.js"), "const kept = 1;\nconst changed = 2;\n");
+    fs.writeFileSync(path.join(root, "b.js"), "export {};\n");
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "BLOCK: the new constant is never used");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the hook never handed agy a prompt");
+    assert.match(prompt, /^diff --git a\/a\.js b\/a\.js$/m);
+    assert.match(prompt, /^\+const changed = 2;$/m);
+    assert.match(prompt, /^b\.js$/m, "the untracked file is not listed for agy to read");
+    assert.match(prompt, /no command is available/);
+    const decision = JSON.parse(hook.stdout);
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /the new constant is never used/);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a turn with no uncommitted change still reaches agy, and an ALLOW answer lets the stop through", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = gitRepo(scratch);
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: status update only");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the hook never handed agy a prompt");
+    assert.ok(!/^diff --git/m.test(prompt), "a clean tree produced a diff section");
+    assert.equal(hook.stdout, "", `the stop was blocked: ${hook.stdout}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// The same refusal /agy:review gives: a diff carrying a credential shape never
+// leaves. The fixture is AWS's documented example access key id.
+test("a credential in the diff blocks the stop without sending anything to agy", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = gitRepo(scratch);
+    const key = "AKIA" + "IOSFODNN7EXAMPLE";
+    fs.writeFileSync(path.join(root, "a.js"), `const kept = 1;\nconst id = "${key}";\n`);
+    const { hook, argv, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: fine");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.equal(argv, null, "agy was asked to review a diff holding a credential");
+    assert.equal(prompt, null);
+    const decision = JSON.parse(hook.stdout);
+    assert.equal(decision.decision, "block");
+    assert.match(decision.reason, /a\.js:2 aws-access-key-id/);
+    assert.ok(!decision.reason.includes(key), "the credential leaked into the block reason");
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

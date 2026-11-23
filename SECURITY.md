@@ -12,10 +12,12 @@ send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
   Not the rest of the repository: these run from an isolated temp directory,
-  not your project. That is a working-directory change, not a sandbox:
-  whether agy can reach paths outside that directory depends on agy's own
-  `toolPermission` setting (under `always-proceed` it can read a file by
-  absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess` setting,
+  not your project. That is a working-directory change, not a sandbox: on
+  agy 1.4.10 and later the plugin's read-only profile denies commands and
+  file writes but not file reads, so it does not stop agy reading a file
+  outside that directory by absolute path; on an older agy, whether agy can
+  reach paths outside it depends on agy's own `toolPermission` setting
+  (under `always-proceed` it can read a file by absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess` setting,
   whose effect is unmeasured here; nothing in this document relies on it.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files. agy then has the repository as its
@@ -41,8 +43,10 @@ send, per command:
   read probe is skipped and reported as skipped, rather than planted in a
   temp directory outside that root. The gate on/off/status form of the same command
   sends nothing to agy at all.
-- The stop-review gate: the previous Claude turn, and whatever agy reads in the
-  repository to check it. The older in-repository `.claude/agy.local.md` gate
+- The stop-review gate: the previous Claude turn, the working-tree diff
+  against HEAD with the paths of untracked files, and whatever agy reads in
+  the repository to check it. The diff gets the same secret scan as
+  `/agy:review`: a hit blocks the stop and nothing is sent. The older in-repository `.claude/agy.local.md` gate
   flag is honoured only when git reports it untracked or ignored and it is
   not reached through a symlink; one committed to the repository (directly,
   through a committed `.claude` symlink or submodule, or under a case
@@ -105,8 +109,10 @@ send, per command:
   live `API_KEY=` line that appears in a hunk header.
 - `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
   `/agy:research` and `/agy:image` run agy from an isolated temp directory
-  rather than the project; whether agy can still reach paths outside it
-  depends on agy's `toolPermission` setting. Six other runs are not isolated
+  rather than the project, under the read-only profile on agy 1.4.10 and
+  later (file reads allowed, commands and file writes denied); on an older
+  agy, whether agy can still reach paths outside it depends on agy's
+  `toolPermission` setting. Six other runs are not isolated
   this way. `/agy:quota` is read-only and sends no user text. `/agy:setup`'s
   readiness check writes a marker file into the actual workspace root for its
   read probe to read back, so it runs against the workspace, not an isolated

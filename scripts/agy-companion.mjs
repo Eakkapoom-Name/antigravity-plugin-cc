@@ -28,7 +28,7 @@ import {
   runSlashCommand,
   sharedBudgetMs
 } from "./lib/agy.mjs";
-import { collectDiff, refResolves, untrackedFiles } from "./lib/git.mjs";
+import { collectDiff, refResolves, screenDiff, untrackedFiles } from "./lib/git.mjs";
 import { reconfirmContainment, resolveOutputPath } from "./lib/output-path.mjs";
 import { gateEnabled, resolveStateFile, setGate } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
@@ -227,53 +227,19 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     });
   }
 
-  // Nothing leaves for agy while a credential shape sits anywhere in the diff,
-  // removed and context lines included, since the whole diff goes on stdin.
-  // Blocking, not redacting: a redacted diff reviews differently, and the user
-  // is one --allow-secret away when the hit is a fixture.
-  const scan = scanForSecrets(collected.diff, { allow: allowSecret, diff: true });
-  // During an unresolved merge `git diff --cached` prints `* Unmerged path
-  // <file>` for each conflicted file and no diff section for it, so the file is
-  // not in the text at all. Refused ahead of the shape test below, which would
-  // otherwise send the user to their git config (only such lines, no `diff
-  // --git` header) or, alongside ordinary sections, pass silently with the
-  // conflicted file unreviewed.
-  const unmerged = [...collected.diff.matchAll(/^\* Unmerged path (.+?)\r?$/gm)].map((match) => match[1]);
-  if (unmerged.length > 0) {
-    const shown = unmerged.slice(0, 10).join(", ");
-    const more = unmerged.length > 10 ? ` and ${unmerged.length - 10} more` : "";
+  // The user is one --allow-secret away when a credential hit is a fixture.
+  const refusal = screenDiff(collected.diff, { allow: allowSecret });
+  if (refusal) {
     return withScopeNote({
       ok: false,
-      failure: "unmerged",
       scope: collected.scope.label,
-      paths: unmerged,
-      error: `unresolved merge: ${shown}${more} ${unmerged.length === 1 ? "is" : "are"} unmerged, so the diff cannot cover ${unmerged.length === 1 ? "it" : "them"}. Resolve the merge (fix the conflict markers and stage the result), then rerun.`
-    });
-  }
-  // Fail closed on a diff the scanner could not read as one: every real
-  // `git diff` file section starts with a `diff --git` line (or, for a
-  // combined diff, a `diff --cc` or `diff --combined` one), so a non-empty
-  // diff with none of them is some other shape (color escapes, an external
-  // driver's output) whose scan proves nothing. A section with no hunk (a
-  // binary, mode-only or rename-only change) still has that line and still
-  // passes.
-  if (scan.diffHeaders === 0) {
-    return withScopeNote({
-      ok: false,
-      failure: "diff-shape",
-      scope: collected.scope.label,
-      error:
-        "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git`, `diff --cc` or `diff --combined` header the secret scanner can read. Check your git config for diff settings that change its output format."
-    });
-  }
-  if (scan.hits.length > 0) {
-    return withScopeNote({
-      ok: false,
-      failure: "secrets",
-      scope: collected.scope.label,
-      hits: scan.hits,
-      note:
-        "The review did not run: the diff carries what looks like a credential. Redact it and rerun, or pass --allow-secret <regex> for a known false positive."
+      ...refusal,
+      ...(refusal.failure === "secrets"
+        ? {
+            note:
+              "The review did not run: the diff carries what looks like a credential. Redact it and rerun, or pass --allow-secret <regex> for a known false positive."
+          }
+        : {})
     });
   }
 
@@ -282,10 +248,12 @@ export function review({ argument, adversarial, run = runPrompt, available = agy
     DIFF: collected.diff
   });
 
-  // Isolated: agy gets a temp directory, not the repo, as its cwd; whether it
-  // can still reach the project by absolute path is up to agy's own
-  // toolPermission setting. The diff rides on stdin, so its size is irrelevant. A denial here
-  // is worth one resume: the diff is already in the prompt.
+  // Isolated: agy gets a temp directory, not the repo, as its cwd. That is not
+  // a sandbox: the read-only profile denies commands and file writes, not file
+  // reads, so it does not stop agy reading the project by absolute path (on an
+  // agy older than 1.4.10, agy's own toolPermission setting decides). The diff
+  // rides on stdin, so its size is irrelevant. A denial here is worth one
+  // resume: the diff is already in the prompt.
   const out = runIsolated(
     prompt,
     {

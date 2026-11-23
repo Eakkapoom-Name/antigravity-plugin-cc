@@ -29,6 +29,21 @@ export function parseReviewResponse(response) {
   };
 }
 
+// Why the gate blocked without running agy: screenDiff (lib/git.mjs) refused
+// to send the working-tree diff. A credential hit is named by place and kind
+// only, never by its sample.
+export function refusalReason(refusal) {
+  if (refusal.failure === "secrets") {
+    const shown = refusal.hits
+      .slice(0, 10)
+      .map((hit) => `${hit.file ? `${hit.file}:` : ""}${hit.line} ${hit.kind}`)
+      .join(", ");
+    const more = refusal.hits.length > 10 ? ` and ${refusal.hits.length - 10} more` : "";
+    return `The stop-time agy review did not run: the working-tree diff carries what looks like a credential (${shown}${more}), so nothing was sent to agy. Redact it, then end the turn again. ${OFF_HINT}`;
+  }
+  return `The stop-time agy review did not run: ${refusal.error} ${OFF_HINT}`;
+}
+
 // The rule that lifts each denial agy 1.2.4 reports. Anything else gets the
 // generic form agy's own denial line uses.
 function ruleFor(action) {

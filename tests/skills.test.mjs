@@ -101,13 +101,11 @@ test("runtime contract documents denied_actions in the result shape", () => {
 });
 
 // F18. `--mode plan` was documented as unexplored. It was run on 1.2.4 and did
-// not stay plan-only in print mode, which is why the rescue flow does not
-// expose it and read-only runs keep omitting --mode instead.
-test("runtime contract records what --mode plan actually did and does not expose it", () => {
+// not stay plan-only in print mode.
+test("runtime contract records what --mode plan actually did", () => {
   assert.ok(!/Unexplored here/.test(CLI_RUNTIME), "the runtime skill still calls --mode plan unexplored");
   assert.match(CLI_RUNTIME, /`--mode plan`/);
   assert.match(CLI_RUNTIME, /edited .* in the same turn/);
-  assert.match(CLI_RUNTIME, /not exposed/);
 });
 
 // F22. Both skills claimed in-workspace reads pass without a rule. That held

@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { spawnSync } from "node:child_process";
 
 import { judgeReview, parseReviewResponse } from "../scripts/lib/stop-review.mjs";
 import { emptyResult } from "../scripts/lib/agy.mjs";
-import { read } from "./helpers.mjs";
+import { setGate } from "../scripts/lib/state.mjs";
+import { ROOT, read } from "./helpers.mjs";
 
 // The shape runPrompt returns, so the hook's decision can be tested against the
 // same payloads the rest of the plugin sees.
@@ -100,10 +106,59 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
 // agy 1.5.14 compatibility, F1: the gate reviews the repository with the
 // previous turn as untrusted input, so it pins Default mode; Auto would run
 // commands there under request-review.
-test("the hook asks runPrompt for the Default-mode pin", () => {
-  const source = read("scripts/stop-review-gate-hook.mjs");
-  assert.match(source, /readOnly: true/);
-  assert.doesNotMatch(source, /mode: "/);
+// The pin is agy's own saved value for Default mode, `{"agentMode":""}`, as
+// measured on 1.5.14. A fake agy on PATH reports 1.5.14 and records the argv
+// of the review run, so the test sees what the hook really passes.
+test("the hook runs agy with the Default-mode pin and no --mode", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = path.join(scratch, "repo");
+    fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+    const dataDir = path.join(scratch, "data");
+    fs.mkdirSync(dataDir);
+    const bin = path.join(scratch, "bin");
+    fs.mkdirSync(bin);
+    const argvFile = path.join(scratch, "argv.txt");
+    fs.writeFileSync(
+      path.join(bin, "agy"),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.5.14; exit 0; fi\nprintf \'%s\\n\' "$@" > "$AGY_ARGV_FILE"\ncat > /dev/null\n',
+      { mode: 0o755 }
+    );
+
+    const previous = process.env.CLAUDE_PLUGIN_DATA;
+    process.env.CLAUDE_PLUGIN_DATA = dataDir;
+    try {
+      setGate(root, true);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CLAUDE_PLUGIN_DATA;
+      } else {
+        process.env.CLAUDE_PLUGIN_DATA = previous;
+      }
+    }
+
+    const hook = spawnSync(process.execPath, [path.join(ROOT, "scripts", "stop-review-gate-hook.mjs")], {
+      input: JSON.stringify({ cwd: root, last_assistant_message: "Edited src/a.js." }),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+        CLAUDE_PLUGIN_DATA: dataDir,
+        AGY_ARGV_FILE: argvFile
+      }
+    });
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(fs.existsSync(argvFile), "the hook never ran the review through agy");
+
+    const argv = fs.readFileSync(argvFile, "utf8").split("\n").slice(0, -1);
+    assert.ok(argv.includes("-p="), `not a print-mode run: ${argv.join(" ")}`);
+    const settings = argv.indexOf("--settings");
+    assert.notEqual(settings, -1, `no --settings in ${argv.join(" ")}`);
+    assert.deepEqual(JSON.parse(argv[settings + 1]), { agentMode: "" });
+    assert.ok(!argv.includes("--mode"), `read-only gate passed --mode: ${argv.join(" ")}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 });
 
 test("a print timeout blocks with a timeout reason, not a model error", () => {

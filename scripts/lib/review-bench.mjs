@@ -157,13 +157,17 @@ export function matchesAnyMarker(text, markers) {
 // A response that follows `schemas/review-output.schema.json` (what
 // `adversarial-review` asks agy for): a string `verdict` plus a `findings`
 // array. Anything else, including JSON of some other shape, is null.
+function isReviewShape(value) {
+  return Boolean(value) && typeof value === "object" && typeof value.verdict === "string" && Array.isArray(value.findings);
+}
+
 export function parseStructuredReview(response) {
   if (typeof response !== "string" || response.length === 0) {
     return null;
   }
   try {
     const parsed = JSON.parse(response);
-    if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string" && Array.isArray(parsed.findings)) {
+    if (isReviewShape(parsed)) {
       return parsed;
     }
   } catch {
@@ -181,12 +185,7 @@ export function parseStructuredReview(response) {
 // no such field, so `response` is still parsed as before.
 export function structuredReview(result) {
   const structured = result?.structured_output;
-  if (
-    structured &&
-    typeof structured === "object" &&
-    typeof structured.verdict === "string" &&
-    Array.isArray(structured.findings)
-  ) {
+  if (isReviewShape(structured)) {
     return structured;
   }
   return parseStructuredReview(result?.response);

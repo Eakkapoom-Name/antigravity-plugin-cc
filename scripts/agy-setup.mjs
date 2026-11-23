@@ -625,7 +625,7 @@ export function buildReport({
     readOnlySettingsFor(agy.version) === null
   ) {
     nextSteps.push(
-      `Your saved Agent Mode is \`auto\`, and agy ${agy.version} is older than ${SETTINGS_FLAG_MIN_VERSION}, the first version with the per-run \`--settings\` flag this plugin uses to pin Default mode (\`--settings '${READ_ONLY_SETTINGS}'\`) on its read-only runs. Until then the stop-review gate, review, search, research, whisper and image run in Auto, which can run commands without a rule. Run \`agy update\`, or choose Default for \`Agent Mode\` in agy's \`/config\`, then rerun /agy:setup.`
+      `Your saved Agent Mode is \`auto\`, and agy ${agy.version} is older than ${SETTINGS_FLAG_MIN_VERSION}, the first version with the per-run \`--settings\` flag this plugin uses to pin Default mode (\`--settings '${READ_ONLY_SETTINGS}'\`) on its read-only runs. Until then every read-only run (the stop-review gate, review, adversarial-review, search, research, whisper, image and read-only rescue) runs in Auto, which can run commands without a rule. Run \`agy update\`, or choose Default for \`Agent Mode\` in agy's \`/config\`, then rerun /agy:setup.`
     );
   }
 

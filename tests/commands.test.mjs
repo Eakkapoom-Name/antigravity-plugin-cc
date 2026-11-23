@@ -1700,15 +1700,21 @@ test("every --model id in the docs is one agy models lists", () => {
   assert.match(read("README.md"), /Only one refusal was measured/);
 });
 
-// agy 1.5.14 compatibility. F1: a read-only rescue pins Default mode in place
-// of --mode, with the one rerun an agy too old for --settings needs. F2: the
+// agy 1.5.14 compatibility. F1: the rescue template pins one of two profiles
+// on every run, with the one rerun an agy too old for --settings needs. F2: the
 // rescue's effort rerun names every refusal text 1.5.14 prints.
-test("rescue agent pins Default mode on read-only runs and knows every effort refusal", () => {
+test("rescue agent pins the write or read-only profile and knows every effort refusal", () => {
   const agent = read("agents/agy-rescue.md");
-  assert.match(agent, /For read-only runs, a read-only continuation included, omit `--mode` and add `--settings '\{"agentMode":""\}'`/);
-  assert.doesNotMatch(agent, /For read-only runs, omit `--mode`\./);
+  assert.match(agent, /^agy_write='\{"toolPermission":"always-proceed","agentMode":"auto"\}'$/m);
+  assert.match(
+    agent,
+    /^agy_read_only='\{"toolPermission":"request-review","agentMode":"auto","permissions":\{"allow":\[\],"deny":\["write_file\(\*\)","command\(\*\)","mcp\(\*\)","execute_url\(\*\)"\]\}\}'$/m
+  );
+  assert.match(agent, /--mode auto --settings "\$agy_write" 2>&1 > "\$out"/);
+  assert.match(agent, /replace those flags with `--mode plan --settings "\$agy_read_only"`/);
+  assert.doesNotMatch(agent, /agentMode":""/);
   assert.match(agent, /flags provided but not defined: -settings/);
-  assert.match(agent, /run the same command again without `--settings`/);
+  assert.match(agent, /with `--mode accept-edits` in place of the write flags, or with no `--mode` and no `--settings` in place of the read-only flags/);
   for (const text of [/--effort is not supported for model/, /conflicts with --effort=<level>/, /has no "<level>" effort/]) {
     assert.match(agent, text);
   }
@@ -1721,6 +1727,7 @@ test("adversarial-review reads structured_output first and handles a timeout", (
   assert.match(doc, /take the review object from `result\.structured_output` when it is an object/);
   assert.match(doc, /Only when there is no `result\.structured_output` object and `result\.response` is not valid JSON/);
   assert.doesNotMatch(doc, /so agy cannot edit/);
+  assert.match(doc, /runs agy under the plugin's read-only profile \(plan mode, commands and file writes denied\)/);
   for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/research.md", "commands/search.md", "skills/agy-result-handling/SKILL.md"]) {
     const text = read(file);
     assert.ok(text.includes('failure: "timeout"'), `${file} does not handle failure: "timeout"`);

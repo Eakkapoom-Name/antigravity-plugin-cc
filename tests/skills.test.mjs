@@ -137,15 +137,18 @@ test("runtime contract records that agy has no per-invocation permission flag", 
 
 // F1 of the 1.5.14 compatibility pass. Since agy 1.5.7 an unpinned headless run
 // starts in Auto mode, which ran commands under request-review on 1.5.14. The
-// contract has to say so, name the per-run pin and the version it needs, and
-// keep saying that toolPermission is never overridden.
-test("runtime contract documents Auto mode and the per-run Default-mode pin", () => {
+// contract has to name both per-run profiles, the deny list and why it exists,
+// the version they need, and what happens below it.
+test("runtime contract documents Auto mode and the two per-run permission profiles", () => {
   assert.match(CLI_RUNTIME, /Since agy 1\.5\.7 a headless `-p` run with no saved Agent Mode starts in Auto mode/);
-  assert.match(CLI_RUNTIME, /--settings '\{"agentMode":""\}'/);
+  assert.match(CLI_RUNTIME, /- Read-only: `--mode plan` with `\{"toolPermission":"request-review","agentMode":"auto","permissions":\{"allow":\[\],"deny":\["write_file\(\*\)","command\(\*\)","mcp\(\*\)","execute_url\(\*\)"\]\}\}`/);
+  assert.match(CLI_RUNTIME, /- Write: `--mode auto` with `\{"toolPermission":"always-proceed","agentMode":"auto"\}`/);
+  assert.match(CLI_RUNTIME, /agy runs any command and writes any file, anywhere, without asking/);
   assert.match(CLI_RUNTIME, /The first release whose `--help` lists it is 1\.4\.10/);
-  assert.match(CLI_RUNTIME, /It never overrides `toolPermission`/);
-  assert.match(CLI_RUNTIME, /file-tool writes are not gated in either mode/);
+  assert.match(CLI_RUNTIME, /`--mode plan` with `request-review` alone refused commands but still let the file tool write/);
+  assert.match(CLI_RUNTIME, /Below 1\.4\.10 nothing can be set for one run/);
   assert.doesNotMatch(CLI_RUNTIME, /agy has no per-invocation override for this/);
+  assert.doesNotMatch(CLI_RUNTIME, /The plugin passes only `\{"agentMode":""\}`/);
   assert.doesNotMatch(CLI_RUNTIME, /30 minute cap\)/);
 });
 

@@ -23,9 +23,16 @@ import {
   printTimeoutMs,
   promptArgs,
   installedAgyVersion,
+  LEGACY_WRITE_MODE,
+  profileFlags,
+  READ_ONLY_DENY,
+  READ_ONLY_MODE,
   READ_ONLY_SETTINGS,
-  readOnlySettingsFor,
   resetInstalledAgyVersion,
+  settingsFlagSupported,
+  slashCommandArgs,
+  WRITE_MODE,
+  WRITE_SETTINGS,
   runIsolated,
   runPromptWithDenialRecovery,
   runSlashCommand,
@@ -1172,53 +1179,90 @@ test("runSlashCommand reports a real spawn timeout as a timeout, not invalid JSO
   }
 });
 
-// agy 1.5.14 compatibility, F1. Since agy 1.5.7 a headless run with no saved
-// Agent Mode starts in Auto, which ran commands under request-review. Read-only
-// runs pin Default mode with `--settings '{"agentMode":""}'`, on an agy that
-// has the flag (1.4.10 and later, bisected on the release binaries).
-test("the read-only pin is an empty agentMode, the value agy saves for Default", () => {
-  assert.equal(READ_ONLY_SETTINGS, '{"agentMode":""}');
-  assert.deepEqual(JSON.parse(READ_ONLY_SETTINGS), { agentMode: "" });
-  assert.equal(SETTINGS_FLAG_MIN_VERSION, "1.4.10");
+// agy 1.5.14 compatibility, F1. Every plugin-initiated run pins its own
+// permissions per run with `--settings`, so the user's saved settings never
+// change what it may do. The expected values are the captain's model, plus the
+// deny list measured live on 1.5.14 (2026-11-23): without it `--mode plan` with
+// request-review still let the file tool write, and a user's `command(*)`
+// allow rule let a command run.
+test("the read-only profile is plan mode, request-review, Auto, and denies every changing tool kind", () => {
+  assert.equal(READ_ONLY_MODE, "plan");
+  assert.deepEqual(JSON.parse(READ_ONLY_SETTINGS), {
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny: ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"] }
+  });
+  assert.deepEqual(READ_ONLY_DENY, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]);
+  // Reads and web reads stay allowed: search, research and every review need them.
+  for (const kind of ["read_file", "read_url"]) {
+    assert.ok(!READ_ONLY_SETTINGS.includes(kind), `${kind} is denied`);
+  }
 });
 
-test("readOnlySettingsFor pins from 1.4.10 on, and when the version is unknown", () => {
-  for (const version of ["1.4.10", "1.4.11", "1.5.7", "1.5.14", "2.0.0", "v1.5.14", "1.4.10.1"]) {
-    assert.equal(readOnlySettingsFor(version), READ_ONLY_SETTINGS, version);
+test("the write profile is Auto mode with always-proceed and no deny list", () => {
+  assert.equal(WRITE_MODE, "auto");
+  assert.deepEqual(JSON.parse(WRITE_SETTINGS), { toolPermission: "always-proceed", agentMode: "auto" });
+});
+
+test("--settings is used from 1.4.10 on, and when the version is unknown", () => {
+  assert.equal(SETTINGS_FLAG_MIN_VERSION, "1.4.10");
+  for (const version of ["1.4.10", "1.4.11", "1.5.7", "1.5.14", "2.0.0", "v1.5.14", "1.4.10.1", null, undefined, "", "not a version"]) {
+    assert.equal(settingsFlagSupported(version), true, String(version));
   }
   for (const version of ["1.4.9", "1.2.11", "1.2.4", "1.4.9.9"]) {
-    assert.equal(readOnlySettingsFor(version), null, version);
+    assert.equal(settingsFlagSupported(version), false, version);
   }
-  // Unknown fails closed: an agy too old for the flag then stops on a usage
-  // error rather than starting silently in Auto.
-  for (const version of [null, undefined, "", "not a version"]) {
-    assert.equal(readOnlySettingsFor(version), READ_ONLY_SETTINGS, String(version));
-  }
+});
+
+test("profileFlags pins both profiles, and below 1.4.10 falls back to the pre-1.5.7 behaviour", () => {
+  assert.deepEqual(profileFlags("read-only", "1.5.14"), { mode: "plan", settings: READ_ONLY_SETTINGS });
+  assert.deepEqual(profileFlags("write", "1.5.14"), { mode: "auto", settings: WRITE_SETTINGS });
+  // Below the gate: no --settings exists. Read-only passes no mode (plan mode
+  // still edited files headlessly on 1.2.4); write keeps accept-edits.
+  assert.deepEqual(profileFlags("read-only", "1.4.9"), { mode: null, settings: null });
+  assert.deepEqual(profileFlags("write", "1.4.9"), { mode: LEGACY_WRITE_MODE, settings: null });
+  assert.equal(LEGACY_WRITE_MODE, "accept-edits");
+  assert.throws(() => profileFlags("admin", "1.5.14"), /unknown permission profile/);
 });
 
 test("buildArgs passes --settings only when given one", () => {
   const args = buildArgs({ settings: READ_ONLY_SETTINGS });
-  assert.equal(args[args.indexOf("--settings") + 1], '{"agentMode":""}');
+  assert.equal(args[args.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
   assert.ok(!buildArgs({ settings: null }).includes("--settings"));
 });
 
-test("promptArgs pins Default mode for a read-only run and nothing else", () => {
-  const pinned = promptArgs({ readOnly: true, addDir: ["/tmp/x"] }, () => "1.5.14");
-  assert.equal(pinned[pinned.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
-  assert.ok(!pinned.includes("--mode"));
-  assert.ok(!pinned.includes("readOnly") && !pinned.includes("true"));
+test("promptArgs replaces the caller's mode with the profile's and probes the version only for a profile", () => {
+  const readOnly = promptArgs({ profile: "read-only", mode: "accept-edits", addDir: ["/tmp/x"] }, () => "1.5.14");
+  assert.equal(readOnly[readOnly.indexOf("--mode") + 1], "plan");
+  assert.equal(readOnly.filter((arg) => arg === "--mode").length, 1);
+  assert.equal(readOnly[readOnly.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!readOnly.includes("profile") && !readOnly.includes("read-only"));
 
-  const old = promptArgs({ readOnly: true }, () => "1.4.9");
-  assert.ok(!old.includes("--settings"), "an agy without --settings got the flag");
+  const write = promptArgs({ profile: "write" }, () => "1.5.14");
+  assert.equal(write[write.indexOf("--mode") + 1], "auto");
+  assert.equal(write[write.indexOf("--settings") + 1], WRITE_SETTINGS);
+
+  const old = promptArgs({ profile: "read-only", mode: "accept-edits" }, () => "1.4.9");
+  assert.ok(!old.includes("--settings") && !old.includes("--mode"), `old agy read-only argv: ${old.join(" ")}`);
+  const oldWrite = promptArgs({ profile: "write" }, () => "1.4.9");
+  assert.equal(oldWrite[oldWrite.indexOf("--mode") + 1], "accept-edits");
+  assert.ok(!oldWrite.includes("--settings"));
 
   let probed = false;
-  const writable = promptArgs({ mode: "accept-edits" }, () => {
+  const plain = promptArgs({ mode: "accept-edits" }, () => {
     probed = true;
     return "1.5.14";
   });
-  assert.ok(!writable.includes("--settings"));
-  assert.equal(writable[writable.indexOf("--mode") + 1], "accept-edits");
-  assert.equal(probed, false, "a run that is not read-only spent an agy --version call");
+  assert.ok(!plain.includes("--settings"));
+  assert.equal(probed, false, "a run with no profile spent an agy --version call");
+});
+
+test("slash commands carry the read-only settings but never --mode", () => {
+  const args = slashCommandArgs("usage", "2m", "1.5.14");
+  assert.deepEqual(args.slice(0, 6), ["-p", "/usage", "--output-format", "json", "--print-timeout", "2m"]);
+  assert.equal(args[args.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!args.includes("--mode"));
+  assert.ok(!slashCommandArgs("usage", "2m", "1.4.9").includes("--settings"));
 });
 
 test("installedAgyVersion reads agy --version once and caches it", () => {
@@ -1244,15 +1288,16 @@ test("installedAgyVersion reads agy --version once and caches it", () => {
   }
 });
 
-test("runIsolated pins Default mode, and a caller cannot drop the pin", () => {
+test("runIsolated gives every run the read-only profile, and a caller cannot change it", () => {
   let seen;
-  runIsolated("x", { readOnly: false, mode: "auto" }, (_prompt, options) => {
+  runIsolated("x", { profile: "write", mode: "auto" }, (_prompt, options) => {
     seen = options;
     return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
   });
-  assert.equal(seen.readOnly, true);
+  assert.equal(seen.profile, "read-only");
   assert.equal(seen.mode, undefined);
   const argv = promptArgs(seen, () => "1.5.14");
+  assert.equal(argv[argv.indexOf("--mode") + 1], "plan");
   assert.equal(argv[argv.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
 });
 
@@ -1274,7 +1319,7 @@ test("the pin survives the denial resume inside runIsolated", () => {
   }, () => 0);
   assert.equal(calls.length, 2);
   assert.equal(calls[1].conversationId, "c-denied");
-  assert.equal(calls[1].readOnly, true, "the resumed turn lost the Default-mode pin");
+  assert.equal(calls[1].profile, "read-only", "the resumed turn lost the read-only profile");
   assert.equal(out.recovery.attempted, true);
 });
 

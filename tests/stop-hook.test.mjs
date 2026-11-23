@@ -104,12 +104,12 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
 });
 
 // agy 1.5.14 compatibility, F1: the gate reviews the repository with the
-// previous turn as untrusted input, so it pins Default mode; Auto would run
-// commands there under request-review.
-// The pin is agy's own saved value for Default mode, `{"agentMode":""}`, as
-// measured on 1.5.14. A fake agy on PATH reports 1.5.14 and records the argv
-// of the review run, so the test sees what the hook really passes.
-test("the hook runs agy with the Default-mode pin and no --mode", { skip: process.platform === "win32" }, () => {
+// previous turn as untrusted input, so it runs under the read-only profile:
+// plan mode with request-review and commands and file writes denied, the
+// captain's model plus the deny list measured on 1.5.14. A fake agy on PATH
+// reports 1.5.14 and records the argv of the review run, so the test sees what
+// the hook really passes.
+test("the hook runs agy under the read-only profile", { skip: process.platform === "win32" }, () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
   try {
     const root = path.join(scratch, "repo");
@@ -154,8 +154,12 @@ test("the hook runs agy with the Default-mode pin and no --mode", { skip: proces
     assert.ok(argv.includes("-p="), `not a print-mode run: ${argv.join(" ")}`);
     const settings = argv.indexOf("--settings");
     assert.notEqual(settings, -1, `no --settings in ${argv.join(" ")}`);
-    assert.deepEqual(JSON.parse(argv[settings + 1]), { agentMode: "" });
-    assert.ok(!argv.includes("--mode"), `read-only gate passed --mode: ${argv.join(" ")}`);
+    assert.deepEqual(JSON.parse(argv[settings + 1]), {
+      toolPermission: "request-review",
+      agentMode: "auto",
+      permissions: { allow: [], deny: ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"] }
+    });
+    assert.equal(argv[argv.indexOf("--mode") + 1], "plan", `read-only gate mode: ${argv.join(" ")}`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

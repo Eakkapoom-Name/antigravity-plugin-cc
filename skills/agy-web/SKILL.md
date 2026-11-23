@@ -45,7 +45,7 @@ the Antigravity CLI, and sits **second** in the web tool order:
   `/agy:image` hand their text to the same web-capable agy with no URL check,
   so nothing refuses a local-network address named in one of those prompts.
 - One question per run. There is no safe continue path for a follow-up: `/agy:continue`
-  resumes through the rescue subagent in `--mode accept-edits` with the
+  resumes through the rescue subagent in the write profile (`--mode auto` with always-proceed, which runs any command and writes anywhere without asking) with the
   repository added, so it would make a conversation that holds untrusted web
   content write-capable in the repository. Rerun the command with the refined
   request instead.

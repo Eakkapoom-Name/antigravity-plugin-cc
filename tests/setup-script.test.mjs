@@ -861,17 +861,26 @@ test("an unwritable workspace root skips the read probe instead of probing a tem
   }
 });
 
-// agy 1.5.14 compatibility, F1. Unpinned, the probes ran in Auto mode on
-// 1.5.14 and reported ready under request-review while the plugin's read-only
-// runs would still be refused the same command. They now pin Default mode the
-// way those runs do, on an agy that has `--settings`.
-test("the setup probes pin Default mode on an agy that has --settings", () => {
-  const args = probeArgs("Reply with exactly: OK", "/work", "1.5.14");
-  assert.equal(args[args.indexOf("--settings") + 1], '{"agentMode":""}');
-  assert.equal(args[args.indexOf("--add-dir") + 1], "/work");
-  assert.ok(!args.includes("--mode"));
-  assert.ok(!probeArgs("x", "/work", "1.4.9").includes("--settings"), "an agy without --settings got the flag");
-  assert.ok(probeArgs("x", "/work", "1.4.10").includes("--settings"));
+// agy 1.5.14 compatibility, F1. Each probe runs under the profile of the runs
+// it stands for, so the user's saved settings do not decide setup's verdict on
+// an agy that has `--settings`: auth and read under the read-only profile,
+// the command probe under the write profile.
+test("the setup probes run under the read-only and write profiles", () => {
+  const RO = '{"toolPermission":"request-review","agentMode":"auto","permissions":{"allow":[],"deny":["write_file(*)","command(*)","mcp(*)","execute_url(*)"]}}';
+  const read = probeArgs("Reply with exactly: OK", "/work", "1.5.14");
+  assert.equal(read[read.indexOf("--mode") + 1], "plan");
+  assert.equal(read[read.indexOf("--settings") + 1], RO);
+  assert.equal(read[read.indexOf("--add-dir") + 1], "/work");
+
+  const write = probeArgs("run pwd", "/work", "1.5.14", "write");
+  assert.equal(write[write.indexOf("--mode") + 1], "auto");
+  assert.deepEqual(JSON.parse(write[write.indexOf("--settings") + 1]), { toolPermission: "always-proceed", agentMode: "auto" });
+
+  // Below 1.4.10 the probes keep their old shape and measure the user's settings.
+  for (const profile of ["read-only", "write"]) {
+    const old = probeArgs("x", "/work", "1.4.9", profile);
+    assert.ok(!old.includes("--settings") && !old.includes("--mode"), `${profile}: ${old.join(" ")}`);
+  }
 });
 
 test("buildReport hands the agy version to both probes", () => {
@@ -934,9 +943,14 @@ test("a saved Auto mode on an agy too old to pin it gets a warning, and nothing 
   assert.deepEqual(modeReport(VERIFIED_AGY_VERSION, "auto").nextSteps, []);
 });
 
-test("the request-review advice explains Auto mode and the plugin's pin", () => {
-  const step = permissionNextStep(["command"], "request-review");
-  assert.match(step, /Since agy 1\.5\.7 a headless run with no saved Agent Mode starts in Auto/);
-  assert.match(step, /--settings '\{"agentMode":""\}'/);
-  assert.match(step, /the rules are still needed/);
+test("on an agy with --settings the denial advice says the plugin's own settings ran the probe", () => {
+  const step = permissionNextStep(["command"], "strict", true);
+  assert.match(step, /this plugin sets its own permissions for every run/);
+  assert.match(step, /--mode plan --settings/);
+  assert.match(step, /runs any command and writes anywhere without asking/);
+  assert.match(step, /changing them does not help/);
+  assert.match(step, /`permissions\.deny`/);
+  assert.doesNotMatch(step, /Your `toolPermission` is `strict`/);
+  // Below the gate the old per-mode advice still applies.
+  assert.match(permissionNextStep(["command"], "request-review", false), /Your `toolPermission` is `request-review`/);
 });

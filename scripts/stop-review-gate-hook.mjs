@@ -91,10 +91,10 @@ function buildPrompt(cwd, input) {
 
 function runStopReview(cwd, input) {
   const prompt = buildPrompt(cwd, input);
-  // Read-only: no --mode, and Default mode pinned with `readOnly`, because
-  // since agy 1.5.7 a run with no saved mode starts in Auto, which runs
-  // commands in the repository under the stock request-review permission
-  // (lib/agy.mjs, READ_ONLY_SETTINGS). The workspace is added explicitly because a bare
+  // Read-only profile (lib/agy.mjs): plan mode, and commands and file writes
+  // denied by the plugin's own per-run rules, because the previous turn is
+  // untrusted input and the gate runs in the repository itself. It cannot run
+  // `git diff`, so it reviews by reading files. The workspace is added explicitly because a bare
   // print-mode run does not treat the cwd as its project (it resolves to the
   // agy scratch dir), so the project must be added or the reviewer sees an
   // empty workspace and allows everything. runPrompt carries the prompt on
@@ -106,7 +106,7 @@ function runStopReview(cwd, input) {
       addDir: [cwd],
       printTimeout: AGY_PRINT_TIMEOUT,
       timeoutMs: SPAWN_TIMEOUT_MS,
-      readOnly: true
+      profile: "read-only"
     })
   );
 }

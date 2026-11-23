@@ -6,8 +6,12 @@ import path from "node:path";
 
 import {
   DENIAL_CASES,
+  OUTCOME_CASES,
+  OUTCOME_NONCE,
   assertScratchHome,
   evaluateCase,
+  evaluateOutcome,
+  fillOutcomePrompt,
   mergeSettings
 } from "../scripts/lib/denial-matrix.mjs";
 
@@ -25,6 +29,27 @@ function caseById(id) {
   assert.ok(found, `no case named ${id}`);
   return found;
 }
+
+// The mechanics of evaluateCase, checked on a synthetic row that expects a
+// denial: since the per-run pin no live setup row does, but the evaluator still
+// has to read every expectation shape correctly (an agy below 1.4.10 measures
+// the user's own settings again).
+const DENIAL_EXPECTING = {
+  id: "synthetic-denial",
+  settings: { toolPermission: "request-review" },
+  expect: {
+    ready: false,
+    toolPermission: "request-review",
+    deniedNonEmpty: true,
+    nextStepIncludes: ["`request-review`"],
+    nextStepIncludesAny: ["command(*)", "read_file(*)"]
+  }
+};
+const SANDBOX_EXPECTING = {
+  id: "synthetic-sandbox",
+  settings: { toolPermission: "proceed-in-sandbox" },
+  expect: { ready: false, toolPermission: "proceed-in-sandbox", deniedIncludes: ["command"], nextStepIncludes: ["`proceed-in-sandbox`", "--sandbox"] }
+};
 
 function report({ ready, toolPermission, declared, denied = [], nextSteps = [] }) {
   return {
@@ -52,7 +77,7 @@ test("every mode agy accepts has a case, and each case names the settings it wri
 });
 
 test("a case passes only when the live report matches every expectation", () => {
-  const entry = caseById("request-review-default");
+  const entry = DENIAL_EXPECTING;
   const matching = evaluateCase(
     entry,
     report({
@@ -69,7 +94,7 @@ test("a case passes only when the live report matches every expectation", () => 
 });
 
 test("a ready report fails a case that expects a denial, and says which field disagreed", () => {
-  const entry = caseById("request-review-default");
+  const entry = DENIAL_EXPECTING;
   const result = evaluateCase(entry, report({ ready: true, toolPermission: "request-review" }));
   assert.equal(result.pass, false);
   assert.ok(
@@ -79,7 +104,7 @@ test("a ready report fails a case that expects a denial, and says which field di
 });
 
 test("a denial the case requires must appear in deniedActions", () => {
-  const entry = caseById("proceed-in-sandbox");
+  const entry = SANDBOX_EXPECTING;
   const result = evaluateCase(
     entry,
     report({
@@ -97,7 +122,7 @@ test("a denial the case requires must appear in deniedActions", () => {
 });
 
 test("a remedy the case requires must appear in nextSteps", () => {
-  const entry = caseById("proceed-in-sandbox");
+  const entry = SANDBOX_EXPECTING;
   const result = evaluateCase(
     entry,
     report({
@@ -120,13 +145,7 @@ test("a mode agy rejects is reported as declared but resolved to the default", (
   assert.notEqual(entry.settings.toolPermission, "request-review");
   const result = evaluateCase(
     entry,
-    report({
-      ready: false,
-      toolPermission: "request-review",
-      declared: entry.settings.toolPermission,
-      denied: ["command"],
-      nextSteps: ["Your `toolPermission` is `request-review`, agy's default. command(*) read_file(*)"]
-    })
+    report({ ready: true, toolPermission: "request-review", declared: entry.settings.toolPermission })
   );
   assert.equal(result.pass, true, result.failures.join(" | "));
 });
@@ -174,7 +193,7 @@ test("a case that supplies rules writes exactly those rules", () => {
 // picks the tool it reaches for first, and that varies between runs of the same
 // prompt. A case that names one action makes a true denial look like a miss.
 test("a case can require a denial without naming which action was denied", () => {
-  const entry = caseById("unknown-mode");
+  const entry = { ...DENIAL_EXPECTING, expect: { ...DENIAL_EXPECTING.expect, nextStepIncludesAny: [], declaredToolPermission: "agent-decides" } };
   const denied = evaluateCase(
     entry,
     report({
@@ -218,10 +237,10 @@ test("a case can opt out of trusting the scratch workspace", () => {
 // `read_file` instead. The same nondeterminism that stopped cases naming a
 // denied action stops them naming one rule.
 test("a case can require the remedy to name a rule without saying which", () => {
-  const entry = caseById("request-review-default");
+  const entry = DENIAL_EXPECTING;
   assert.ok(
     !(entry.expect.nextStepIncludes ?? []).some((fragment) => /\(\*\)/.test(fragment)),
-    "the default case still pins one tool's rule in nextStepIncludes"
+    "the case pins one tool's rule in nextStepIncludes"
   );
 
   for (const rule of ["command(*)", "read_file(*)"]) {
@@ -294,4 +313,74 @@ test("a report from an agy below the floor fails every row, so a denial is never
   const outcome = evaluateCase(testCase, report);
   assert.equal(outcome.pass, false);
   assert.ok(outcome.failures.some((line) => /below the floor|1\.2\.3/.test(line)), outcome.failures.join("; "));
+});
+
+// agy 1.5.14 compatibility, F1. Every plugin run pins its own permissions, so
+// on an agy with `--settings` no saved setting may change setup's verdict.
+test("every setup row expects ready whatever the user saved, with no permission advice", () => {
+  for (const entry of DENIAL_CASES) {
+    assert.equal(entry.expect.ready, true, entry.id);
+    assert.deepEqual(entry.expect.nextStepExcludes, ["Headless delegation is blocked"], entry.id);
+  }
+  const strict = caseById("strict");
+  const advised = evaluateCase(
+    strict,
+    report({ ready: true, toolPermission: "strict", nextSteps: ["Headless delegation is blocked: agy refused command."] })
+  );
+  assert.equal(advised.pass, false);
+  assert.ok(advised.failures.some((line) => /no mention of Headless delegation is blocked/.test(line)), advised.failures.join(" | "));
+  assert.equal(evaluateCase(strict, report({ ready: true, toolPermission: "strict" })).pass, true);
+});
+
+const PATHS = { outside: "/out/marker.txt", inside: "/ws/created.txt", note: "/ws/note.txt", victim: "/ws/victim.txt" };
+
+test("outcome rows cover every read-only refusal the addendum names, with a write control", () => {
+  const ids = OUTCOME_CASES.map((entry) => entry.id);
+  for (const id of [
+    "read-only-shell-command",
+    "read-only-authorized-claim",
+    "read-only-user-allow-rule",
+    "read-only-file-write",
+    "read-only-file-edit",
+    "read-only-read",
+    "write-control"
+  ]) {
+    assert.ok(ids.includes(id), `no outcome row ${id}`);
+  }
+  const allowRule = OUTCOME_CASES.find((entry) => entry.id === "read-only-user-allow-rule");
+  assert.deepEqual(allowRule.settings.permissions.allow, ["command(*)"]);
+  const control = OUTCOME_CASES.find((entry) => entry.id === "write-control");
+  assert.equal(control.profile, "write");
+  assert.deepEqual(control.expect, { outside: true, victimKept: false, inside: true, noteChanged: true });
+  for (const entry of OUTCOME_CASES.filter((row) => row.profile === "read-only")) {
+    assert.notEqual(entry.expect.outside, true, entry.id);
+    assert.notEqual(entry.expect.inside, true, entry.id);
+    assert.notEqual(entry.expect.noteChanged, true, entry.id);
+    assert.notEqual(entry.expect.victimKept, false, entry.id);
+  }
+});
+
+test("fillOutcomePrompt puts the real paths and nonce in every placeholder", () => {
+  const filled = fillOutcomePrompt("{OUTSIDE} {INSIDE} {NOTE} {VICTIM} {NONCE} {OUTSIDE}", PATHS);
+  assert.equal(filled, `/out/marker.txt /ws/created.txt /ws/note.txt /ws/victim.txt ${OUTCOME_NONCE} /out/marker.txt`);
+});
+
+test("evaluateOutcome fails a read-only row whose file was written, and names what happened", () => {
+  const entry = OUTCOME_CASES.find((row) => row.id === "read-only-file-write");
+  assert.equal(evaluateOutcome(entry, { outside: false, inside: false }).pass, true);
+  const written = evaluateOutcome(entry, { outside: true, inside: false });
+  assert.equal(written.pass, false);
+  assert.match(written.failures.join(" | "), /outside the workspace exists: expected false, got true/);
+});
+
+test("evaluateOutcome checks a read by the nonce in the response", () => {
+  const entry = OUTCOME_CASES.find((row) => row.id === "read-only-read");
+  assert.equal(evaluateOutcome(entry, { noteChanged: false, response: `${OUTCOME_NONCE}\n` }).pass, true);
+  assert.equal(evaluateOutcome(entry, { noteChanged: false, response: "I cannot read it." }).pass, false);
+});
+
+test("evaluateOutcome fails the write control when an action did not happen", () => {
+  const entry = OUTCOME_CASES.find((row) => row.id === "write-control");
+  assert.equal(evaluateOutcome(entry, { outside: true, victimKept: false, inside: true, noteChanged: true }).pass, true);
+  assert.equal(evaluateOutcome(entry, { outside: true, victimKept: true, inside: true, noteChanged: true }).pass, false);
 });

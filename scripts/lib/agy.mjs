@@ -8,39 +8,79 @@ import { compareVersions, extractVersionNumber, versionCore } from "./version.mj
 
 export const DEFAULT_PRINT_TIMEOUT = "8m";
 
-// agy 1.5.7 changed the default Agent Mode from Default to Auto: a session with
-// no saved mode, headless `-p` runs included, starts in Auto wherever Auto is
-// available. Under agy's stock `request-review` permission, Auto runs commands
-// (including shell writes outside the workspace) that Default refused, and
-// since 1.5.14 it also reads outside the workspace. Measured live on 1.5.14
-// (2026-11-23): with this override the command probe was denied
-// (`denied_actions: [{"action":"command"}]`) and nothing was written; without
-// it the same run executed the command. `--mode` cannot pin Default (it takes
-// only accept-edits, auto and plan), but `--settings` takes settings.json keys
-// for this session only, never saved, merged over the user's file, and an
-// empty `agentMode` is what agy itself saves for Default.
+// Every agy run this plugin starts pins its own permission settings for that
+// run, so what the user saved in ~/.gemini/antigravity-cli/settings.json (their
+// Tool Permission, Agent Mode and allow rules) never changes what the plugin's
+// runs may do. `--settings` takes settings.json keys for one session only,
+// merged over the user's file and never saved.
 //
-// Every plugin-initiated read-only or untrusted-input run asks for this pin:
-// the isolated commands (runIsolated), the stop-review gate and the /agy:setup
-// probes. Write-capable runs keep their explicit `--mode accept-edits`.
-export const READ_ONLY_SETTINGS = JSON.stringify({ agentMode: "" });
+// Why: agy 1.5.7 made Auto the default Agent Mode for a headless run with no
+// saved mode, and under the stock request-review permission Auto ran commands,
+// shell writes outside the workspace included, that the plugin's read-only
+// paths had relied on being refused. Pinning one value was not enough either:
+// measured live on 1.5.14 (2026-11-23), `--mode plan` with request-review
+// refused commands but still let the file tool write inside and outside the
+// workspace, and a user's saved `command(*)` allow rule let it run commands.
+//
+// Two profiles:
+//   read-only  `--mode plan`, request-review, and a deny rule on every tool kind
+//              that changes anything: write_file (writes and edits), command
+//              (agy's file tools have no delete, so deletion is a command), mcp
+//              and execute_url. `allow: []` replaces the user's allow rules for
+//              the run. read_file and read_url stay allowed. Measured on 1.5.14
+//              with each refusal checked by outcome (no file written in or
+//              outside the workspace, no command run, including a user
+//              `command(*)` allow rule and a prompt claiming authorization),
+//              while whisper, search, review, adversarial-review, image and the
+//              stop-gate prompt still answered normally.
+//   write      `--mode auto` with always-proceed: agy runs any command and
+//              writes anywhere without asking. Write-capable rescue only.
+// A refusal under these deny rules usually comes back as prose, not as a
+// `denied_actions` entry, so the read-only guarantee is the rules themselves,
+// not the plugin noticing a denial.
+export const READ_ONLY_MODE = "plan";
+export const READ_ONLY_DENY = ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"];
+export const READ_ONLY_SETTINGS = JSON.stringify({
+  toolPermission: "request-review",
+  agentMode: "auto",
+  permissions: { allow: [], deny: READ_ONLY_DENY }
+});
+export const WRITE_MODE = "auto";
+export const WRITE_SETTINGS = JSON.stringify({ toolPermission: "always-proceed", agentMode: "auto" });
+
+// Below SETTINGS_FLAG_MIN_VERSION there is no `--settings`, and nothing can be
+// pinned for one run. Such an agy predates the 1.5.7 Auto default, so a
+// read-only run passes no mode (Default, the behaviour this plugin was built
+// on: commands refused under request-review), and a write run keeps
+// `--mode accept-edits`. `--mode plan` is not used there: on 1.2.4 it still
+// edited files headlessly.
+export const LEGACY_WRITE_MODE = "accept-edits";
 
 // The first agy whose `--help` lists `--settings`: bisected on the linux-x64
 // release binaries (1.4.9 has no such flag, 1.4.10, 1.4.11, 1.5.0 and 1.5.7
 // have it). An older agy exits 2 on the unknown flag (`flags provided but not
-// defined: -settings`), and it also predates the 1.5.7 default change, so a
-// run there starts in Default unless the user saved another mode.
+// defined: -settings`).
 export const SETTINGS_FLAG_MIN_VERSION = "1.4.10";
 
-// The `--settings` value a read-only run passes on an agy of `version`, or
-// null when that agy has no such flag. A version that could not be read gets
-// the pin: on an agy that cannot take the flag the run fails loudly with a
-// usage error, which is safer than a run that silently starts in Auto.
-export function readOnlySettingsFor(version) {
-  if (version && versionCore(version) !== null && compareVersions(version, SETTINGS_FLAG_MIN_VERSION) < 0) {
-    return null;
+// Whether an agy of `version` takes `--settings`. A version that could not be
+// read counts as yes: on an agy that cannot take the flag the run then fails
+// loudly with a usage error, which is safer than a run that silently starts
+// with the user's own permissions.
+export function settingsFlagSupported(version) {
+  return !(version && versionCore(version) !== null && compareVersions(version, SETTINGS_FLAG_MIN_VERSION) < 0);
+}
+
+// The `--mode` and `--settings` a run of `profile` ("read-only" or "write")
+// passes on an agy of `version`; null for a flag that is left out.
+export function profileFlags(profile, version) {
+  const pinned = settingsFlagSupported(version);
+  if (profile === "write") {
+    return pinned ? { mode: WRITE_MODE, settings: WRITE_SETTINGS } : { mode: LEGACY_WRITE_MODE, settings: null };
   }
-  return READ_ONLY_SETTINGS;
+  if (profile === "read-only") {
+    return pinned ? { mode: READ_ONLY_MODE, settings: READ_ONLY_SETTINGS } : { mode: null, settings: null };
+  }
+  throw new Error(`unknown permission profile: ${JSON.stringify(profile)}`);
 }
 
 // `agy --version` once per process (about 0.1 s on 1.5.14), read the way
@@ -239,13 +279,18 @@ export function agyAvailable() {
 
 // The prompt goes in on stdin and never appears in argv at any layer.
 //
-// `readOnly: true` pins Default mode with READ_ONLY_SETTINGS when the installed
-// agy can take `--settings`. The version is read here, at the spawn, rather than
-// by the callers, so the stubbed runners the tests pass never spawn agy for it.
-// `detectVersion` is injectable for the same reason.
+// `profile` ("read-only" or "write") pins that profile's mode and settings
+// for the installed agy, replacing any `mode` the caller passed. The version is
+// read here, at the spawn, rather than by the callers, so the stubbed runners
+// the tests pass never spawn agy for it. `detectVersion` is injectable for the
+// same reason.
 export function promptArgs(options = {}, detectVersion = installedAgyVersion) {
-  const { readOnly, ...rest } = options;
-  return buildArgs(readOnly ? { ...rest, settings: readOnlySettingsFor(detectVersion()) } : rest);
+  const { profile, ...rest } = options;
+  if (!profile) {
+    return buildArgs(rest);
+  }
+  const { mode, settings } = profileFlags(profile, detectVersion());
+  return buildArgs({ ...rest, mode: mode ?? undefined, settings });
 }
 
 export function runPrompt(prompt, options = {}, detectVersion = installedAgyVersion) {
@@ -359,11 +404,24 @@ export function interpretSlashCommandRun(spawned) {
 // Slash commands are answered by the CLI itself and are unavailable under
 // `--input-format stream-json` (agy says so explicitly), so they keep the
 // classic argv form. Their text is a fixed literal, so there is no size risk.
-export function runSlashCommand(name, options = {}) {
+//
+// A slash command is answered by agy itself and calls no tool, but it is still
+// a plugin-initiated run, so it carries the read-only settings too (never
+// `--mode`), on an agy that takes `--settings`.
+export function slashCommandArgs(name, printTimeout, version) {
+  const args = ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout];
+  const { settings } = profileFlags("read-only", version);
+  if (settings) {
+    args.push("--settings", settings);
+  }
+  return args;
+}
+
+export function runSlashCommand(name, options = {}, detectVersion = installedAgyVersion) {
   const printTimeout = options.printTimeout ?? "2m";
   const spawned = runCommand(
     "agy",
-    ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout],
+    slashCommandArgs(name, printTimeout, detectVersion()),
     { cwd: options.cwd, encoding: "utf8", timeout: options.timeoutMs ?? spawnTimeoutMs(printTimeout) }
   );
   return interpretSlashCommandRun(spawned);
@@ -487,14 +545,10 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
 // that the reviewer cannot open files around a hunk: the prompt is the whole
 // evidence. The stop gate, rescue and transfer never come through here.
 //
-// The temp workspace bounds command cwd, not what a command may do: under
-// agy 1.5.7+'s default Auto mode, request-review lets commands run, including
-// shell writes outside the workspace. So every isolated run is also pinned to
-// Default mode (`readOnly`, set after the caller's options so no caller can
-// drop it); the denial resume and the effort rerun reuse these options and keep
-// the pin. File-tool writes to an absolute path were not gated even in
-// Default mode on 1.5.14 (measured once), so isolation is not a guarantee
-// against those.
+// The temp workspace bounds command cwd, not what agy may do, so every
+// isolated run also gets the read-only profile (set after the caller's
+// options so no caller can drop it or pass its own `mode`); the denial resume
+// and the effort rerun reuse these options and keep it.
 export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let tmp;
   try {
@@ -514,7 +568,7 @@ export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let out;
   let thrown;
   try {
-    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp], readOnly: true }, run, now);
+    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp], profile: "read-only" }, run, now);
   } catch (error) {
     thrown = error;
   }

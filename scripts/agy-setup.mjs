@@ -11,7 +11,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { deniedActions, READ_ONLY_SETTINGS, readOnlySettingsFor, SETTINGS_FLAG_MIN_VERSION } from "./lib/agy.mjs";
+import { deniedActions, profileFlags, READ_ONLY_SETTINGS, SETTINGS_FLAG_MIN_VERSION, settingsFlagSupported, WRITE_SETTINGS } from "./lib/agy.mjs";
 import { resolveCommand, runCommand } from "./lib/process.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { compareVersions, extractVersionNumber, versionCore } from "./lib/version.mjs";
@@ -109,27 +109,30 @@ function checkAgy() {
 // them the probes ran wherever the setup script happened to be started, so the
 // read probe's file inside the workspace was not necessarily inside agy's.
 //
-// The probes pin Default mode the way the plugin's own read-only runs do
-// (READ_ONLY_SETTINGS, on an agy that has `--settings`), so they measure what
-// those runs are allowed rather than what agy 1.5.7+'s default Auto mode
-// allows. Without the pin, Auto ran the command probe under request-review on
-// 1.5.14 and setup reported ready while the gate and the isolated commands
-// were still refused the same command.
-export function probeArgs(prompt, workspaceRoot, version) {
+// Each probe runs under the permission profile of the runs it stands for
+// (lib/agy.mjs, profileFlags): the auth and read probes under the read-only
+// profile every read-only command uses, the command probe under the write
+// profile a write-capable rescue uses. On an agy that takes `--settings` the
+// user's own Tool Permission, Agent Mode and allow rules therefore do not
+// decide the result, the same as for the runs themselves. Below
+// SETTINGS_FLAG_MIN_VERSION the probes run with the user's settings as before.
+export function probeArgs(prompt, workspaceRoot, version, profile = "read-only") {
   const args = ["-p", prompt, "--output-format", "json", "--add-dir", workspaceRoot, "--print-timeout", AGY_PRINT_TIMEOUT];
-  const settings = readOnlySettingsFor(version);
+  const { mode, settings } = profileFlags(profile, version);
+  // Below the gate the probes kept their old shape: no --mode at all, which is
+  // also what the old command probe measured against the user's settings.
   if (settings) {
-    args.push("--settings", settings);
+    args.push("--mode", mode, "--settings", settings);
   }
   return args;
 }
 
-function runProbe(prompt, workspaceRoot, version) {
+function runProbe(prompt, workspaceRoot, version, profile = "read-only") {
   // The setup probes stay on the argv transport: both prompts are short fixed
   // literals, so there is no size risk, and this path is the one under test.
   const result = runCommand(
     "agy",
-    probeArgs(prompt, workspaceRoot, version),
+    probeArgs(prompt, workspaceRoot, version, profile),
     { cwd: workspaceRoot, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
   );
   if (result.error?.code === "ETIMEDOUT") {
@@ -319,8 +322,8 @@ export function readAgySettings(homeDir = os.homedir()) {
     declaredToolPermission: parsed?.toolPermission ?? null,
     // The saved Agent Mode, or null when none is saved. agy saves Default as
     // "", and since 1.5.7 a missing value means Auto wherever Auto is
-    // available. The plugin's read-only runs and the probes override it with
-    // READ_ONLY_SETTINGS on an agy that has `--settings`.
+    // available. On an agy that has `--settings` the plugin's runs and the
+    // probes override it with their own profile (lib/agy.mjs).
     agentMode: typeof parsed?.agentMode === "string" ? parsed.agentMode : null,
     allowNonWorkspaceAccess: parsed?.allowNonWorkspaceAccess === true,
     sandboxMode: parsed?.sandboxMode === true
@@ -409,6 +412,24 @@ export function evaluateReadProbe(probe, nonce) {
   };
 }
 
+// The advice for an agy that takes `--settings`. Every probe ran under the
+// plugin's own per-run settings: the read and auth probes under the read-only
+// profile (request-review, plan mode, commands and file writes denied), the
+// command probe under the write profile (always-proceed, Auto mode). The
+// user's Tool Permission, Agent Mode and allow rules were overridden for the
+// run, so changing them does not help. What still reaches the write profile is
+// a deny rule the user saved (the read-only profile replaces only the allow
+// list and sets its own deny list), or an organisation policy agy enforces.
+export function pinnedPermissionNextStep(denied) {
+  const names = denied.length > 0 ? denied.join(", ") : "unknown";
+  return [
+    `Headless delegation is blocked: agy refused ${names} in a probe even though this plugin sets its own permissions for every run.`,
+    `Read-only runs (the stop-review gate, review, adversarial-review, search, research, whisper, image, transfer and read-only rescue) run with \`--mode plan --settings '${READ_ONLY_SETTINGS}'\`, which reads files but runs no command and writes no file. Write-capable rescue runs with \`--mode auto --settings '${WRITE_SETTINGS}'\`, which runs any command and writes anywhere without asking.`,
+    "Your own `toolPermission`, Agent Mode and allow rules are overridden for these runs, so changing them does not help. A deny rule you saved under `permissions.deny` in ~/.gemini/antigravity-cli/settings.json still applies to write runs, and an organisation policy can refuse tools on its own; check those.",
+    "This edit has to be made by hand, by the user, in their own terminal, outside the agent session. In a Claude Code auto mode session the classifier denies the settings edit, `--dangerously-skip-permissions`, and even a read-only `agy -p \"/permissions\"` query, all as [Create Unsafe Agents]; do not attempt any of them from the session."
+  ].join(" ");
+}
+
 // One remedy naming the rule for each tool that was denied, plus what the
 // user's `toolPermission` mode contributes. Every earlier version said
 // `command(...)` only and never mentioned the mode, so a user whose reads were
@@ -421,11 +442,15 @@ export function evaluateReadProbe(probe, nonce) {
 //                      file writes were NOT denied
 //   proceed-in-sandbox commands denied unless --sandbox is passed, which this plugin does not pass
 //   strict             denied even for a read inside the workspace
-// That table is Default mode, the Agent Mode the probes and the plugin's
-// read-only runs pin (READ_ONLY_SETTINGS). Since agy 1.5.7 an unpinned
-// headless run starts in Auto, where request-review ran commands, and shell
-// writes outside the workspace, with no rule (measured on 1.5.14, 2026-11-23).
-export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
+// That table is agy's Default Agent Mode with the user's own settings, which is
+// what the probes measure only below SETTINGS_FLAG_MIN_VERSION. On an agy that
+// takes `--settings` every probe runs under the plugin's own pinned profile, so
+// the user's mode is not the cause of a denial and `pinned` selects the advice
+// that says so.
+export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION, pinned = false) {
+  if (pinned) {
+    return pinnedPermissionNextStep(denied);
+  }
   const names = new Set(denied);
   const parts = [
     `Headless delegation is blocked until agy's permission settings allow the tools it needs. agy cannot prompt in headless mode, so any tool not covered by a rule is auto-denied. Denied here: ${denied.length > 0 ? denied.join(", ") : "unknown"}. Fix it in ~/.gemini/antigravity-cli/settings.json.`
@@ -441,7 +466,7 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
     );
   } else if (mode === "request-review") {
     parts.push(
-      'Your `toolPermission` is `request-review`, agy\'s default. Measured on agy 1.2.4 with no allow-rules: commands were refused, a read of a file inside the workspace was allowed, and file writes were not gated. GitHub issue #21 reported an in-workspace read refused on this same default, on a machine that differs from ours in some way we have not identified, so do not count on reads passing. Either add the rules below, or switch the mode to `always-proceed`. Since agy 1.5.7 a headless run with no saved Agent Mode starts in Auto, which runs commands under `request-review` without a rule; this plugin pins Default mode (`--settings \'{"agentMode":""}\'`) on its read-only runs and on these probes, so the rules are still needed there, whatever your own Agent Mode is.'
+      'Your `toolPermission` is `request-review`, agy\'s default. Measured on agy 1.2.4 with no allow-rules: commands were refused, a read of a file inside the workspace was allowed, and file writes were not gated. GitHub issue #21 reported an in-workspace read refused on this same default, on a machine that differs from ours in some way we have not identified, so do not count on reads passing. Either add the rules below, or switch the mode to `always-proceed`.'
     );
   }
 
@@ -474,7 +499,7 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
 }
 
 function checkToolPermissions(cwd, version) {
-  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT, cwd, version));
+  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT, cwd, version, "write"));
 
   const nonce = `agy-setup-probe-${crypto.randomBytes(8).toString("hex")}`;
   // A dotfile in the workspace root, gone again before the report prints. The
@@ -501,7 +526,7 @@ function checkToolPermissions(cwd, version) {
   }
   if (!read) {
     try {
-      read = evaluateReadProbe(runProbe(readProbePrompt(file), cwd, version), nonce);
+      read = evaluateReadProbe(runProbe(readProbePrompt(file), cwd, version, "read-only"), nonce);
     } finally {
       fs.rmSync(file, { force: true });
     }
@@ -601,7 +626,9 @@ export function buildReport({
     } else {
       toolPermissions = toolProbe(cwd, agy.version);
       if (!toolPermissions.available) {
-        nextSteps.push(permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission));
+        nextSteps.push(
+          permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission, settingsFlagSupported(agy.version))
+        );
       }
     }
   }
@@ -614,18 +641,18 @@ export function buildReport({
     );
   }
 
-  // Below SETTINGS_FLAG_MIN_VERSION nothing can pin Default mode for one run,
-  // so a saved Auto mode reaches the plugin's read-only runs and the probes
+  // Below SETTINGS_FLAG_MIN_VERSION nothing can pin the plugin's permissions
+  // for one run, so a saved Auto mode reaches its read-only runs and the probes
   // alike: the probes then measure Auto, and the gate and isolated commands
   // may run commands. A warning, like the one above; ready is unaffected.
   if (
     agy.available &&
     agy.meetsMinimum &&
     agySettings?.agentMode === "auto" &&
-    readOnlySettingsFor(agy.version) === null
+    !settingsFlagSupported(agy.version)
   ) {
     nextSteps.push(
-      `Your saved Agent Mode is \`auto\`, and agy ${agy.version} is older than ${SETTINGS_FLAG_MIN_VERSION}, the first version with the per-run \`--settings\` flag this plugin uses to pin Default mode (\`--settings '${READ_ONLY_SETTINGS}'\`) on its read-only runs. Until then every read-only run (the stop-review gate, review, adversarial-review, search, research, whisper, image and read-only rescue) runs in Auto, which can run commands without a rule. Run \`agy update\`, or choose Default for \`Agent Mode\` in agy's \`/config\`, then rerun /agy:setup.`
+      `Your saved Agent Mode is \`auto\`, and agy ${agy.version} is older than ${SETTINGS_FLAG_MIN_VERSION}, the first version with the per-run \`--settings\` flag this plugin uses to set its own permissions on every run. Until then every read-only run (the stop-review gate, review, adversarial-review, search, research, whisper, image, transfer and read-only rescue) runs with your saved settings, in Auto, which can run commands without a rule. Run \`agy update\`, or choose Default for \`Agent Mode\` in agy's \`/config\`, then rerun /agy:setup.`
     );
   }
 

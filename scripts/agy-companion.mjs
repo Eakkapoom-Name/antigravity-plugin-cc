@@ -339,7 +339,10 @@ export function parseTransferArguments(argument) {
 // the same injectable third parameter that function already defines
 // (defaulting to the real `runPrompt`). `transfer` is not isolated: cwd and
 // `addDir` stay on the repository, since a transfer is a real handoff into
-// the workspace, not a read-only look at a diff. `available` is separately
+// the workspace, not a read-only look at a diff. Its own run only seeds a
+// fresh agy conversation with the brief, so it gets the read-only profile;
+// the turns the user then continues in agy run under the user's own settings,
+// since `--settings` is never saved. `available` is separately
 // injectable so the secrets-block path can be tested without a real agy on
 // PATH. `now` is the injectable clock the effort rerun measures its budget with.
 export function transfer({ argument, run = runPrompt, available = agyAvailable, now } = {}) {
@@ -382,7 +385,7 @@ export function transfer({ argument, run = runPrompt, available = agyAvailable, 
   // contract allows.
   const { run: out, effortDropped, effortRetry } = runWithEffortFallback(
     prompt,
-    { cwd, addDir: [cwd], model, effort },
+    { cwd, addDir: [cwd], model, effort, profile: "read-only" },
     (p, options) => runPromptWithDenialRecovery(p, options, run, now),
     now
   );

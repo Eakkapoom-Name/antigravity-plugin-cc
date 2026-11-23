@@ -114,16 +114,22 @@ send, per command:
   as its `--add-dir`, because it reviews the working tree itself.
   `/agy:transfer` likewise runs agy with the repository as its cwd and as its
   `--add-dir`. `/agy:rescue` and `/agy:continue` run agy with the repository
-  as its cwd and its `--add-dir` and, by default, `--mode accept-edits`, so agy can edit it
-  there; a run the user asks to keep read-only drops `--mode` and pins
-  Default mode instead. Since agy 1.5.7 a headless run with no saved Agent
-  Mode starts in Auto, which under `request-review` runs commands without a
-  rule, so every read-only or untrusted-input run the plugin starts (the six
-  isolated commands, the stop-review gate, the `/agy:setup` probes and a
-  read-only rescue) pins Default mode with `--settings '{"agentMode":""}'` on
-  agy 1.4.10 and later. `/agy:transfer` is not pinned and runs in the user's
-  own Agent Mode. Neither mode gated a file-tool write to an absolute path
-  outside the workspace on agy 1.5.14.
+  as its cwd and its `--add-dir`, and by default write-capable.
+- On agy 1.4.10 and later every agy run the plugin starts sets its own
+  permissions for that run with `--settings` (never saved), so the user's
+  Tool Permission, Agent Mode and allow rules do not change what it may do.
+  Read-only runs (the six isolated commands, the stop-review gate,
+  `/agy:transfer`, a read-only rescue, `/agy:quota` and the setup read and auth
+  probes) use `--mode plan` with request-review and deny rules on
+  `write_file`, `command`, `mcp` and `execute_url`: measured on agy 1.5.14,
+  no command ran and no file was written in or outside the workspace, even
+  with a saved `command(*)` allow rule or a prompt claiming authorization.
+  Without the deny rules, plan mode under request-review still let the file
+  tool write. Write-capable runs (rescue by default, `/agy:continue`, the
+  setup command probe) use `--mode auto` with always-proceed: agy runs any
+  command and writes any file, anywhere, without asking. A deny rule the
+  user saved still applies to them. Below agy 1.4.10 read-only runs pass no
+  mode and write runs pass `--mode accept-edits`, under the user's settings.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:
   a URL given as the whole argument, and a URL-shaped word inside an ordinary

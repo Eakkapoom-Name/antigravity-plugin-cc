@@ -29,6 +29,8 @@ Pass `--model`, `--effort` or `--allow-secret <regex>` through only if the user 
 
 Set the Bash tool timeout to 590000 ms. The script reads the brief, sends it to agy on stdin, and deletes the file afterwards, so the brief never passes through a command line whatever its length.
 
+The transfer run itself only seeds a fresh agy conversation with the brief, so on agy 1.4.10 and later it runs under the plugin's read-only profile (`--mode plan`, commands and file writes denied): agy reads and states its understanding but does not act yet. When the user continues the conversation in agy (`agy --conversation <conversation_id>`), those turns run under the user's own agy settings, since the plugin's `--settings` is never saved. Continuing it from Claude Code with `/agy:rescue --resume` runs write-capable under the plugin's write profile instead. Say this when presenting the result.
+
 4. Present `result` per the `agy-result-handling` skill. Then show, verbatim, both resume paths:
    - In a terminal: `agy --conversation <conversation_id>`
    - From Claude Code: `/agy:rescue --resume <follow-up task>`

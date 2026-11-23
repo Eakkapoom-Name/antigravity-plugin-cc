@@ -4,8 +4,61 @@ import os from "node:os";
 import path from "node:path";
 
 import { commandAvailable, runCommand } from "./process.mjs";
+import { compareVersions, extractVersionNumber, versionCore } from "./version.mjs";
 
 export const DEFAULT_PRINT_TIMEOUT = "8m";
+
+// agy 1.5.7 changed the default Agent Mode from Default to Auto: a session with
+// no saved mode, headless `-p` runs included, starts in Auto wherever Auto is
+// available. Under agy's stock `request-review` permission, Auto runs commands
+// (including shell writes outside the workspace) that Default refused, and
+// since 1.5.14 it also reads outside the workspace. Measured live on 1.5.14
+// (2026-11-23): with this override the command probe was denied
+// (`denied_actions: [{"action":"command"}]`) and nothing was written; without
+// it the same run executed the command. `--mode` cannot pin Default (it takes
+// only accept-edits, auto and plan), but `--settings` takes settings.json keys
+// for this session only, never saved, merged over the user's file, and an
+// empty `agentMode` is what agy itself saves for Default.
+//
+// Every plugin-initiated read-only or untrusted-input run asks for this pin:
+// the isolated commands (runIsolated), the stop-review gate and the /agy:setup
+// probes. Write-capable runs keep their explicit `--mode accept-edits`.
+export const READ_ONLY_SETTINGS = JSON.stringify({ agentMode: "" });
+
+// The first agy whose `--help` lists `--settings`: bisected on the linux-x64
+// release binaries (1.4.9 has no such flag, 1.4.10, 1.4.11, 1.5.0 and 1.5.7
+// have it). An older agy exits 2 on the unknown flag (`flags provided but not
+// defined: -settings`), and it also predates the 1.5.7 default change, so a
+// run there starts in Default unless the user saved another mode.
+export const SETTINGS_FLAG_MIN_VERSION = "1.4.10";
+
+// The `--settings` value a read-only run passes on an agy of `version`, or
+// null when that agy has no such flag. A version that could not be read gets
+// the pin: on an agy that cannot take the flag the run fails loudly with a
+// usage error, which is safer than a run that silently starts in Auto.
+export function readOnlySettingsFor(version) {
+  if (version && versionCore(version) !== null && compareVersions(version, SETTINGS_FLAG_MIN_VERSION) < 0) {
+    return null;
+  }
+  return READ_ONLY_SETTINGS;
+}
+
+// `agy --version` once per process (about 0.1 s on 1.5.14), read the way
+// /agy:setup reads it. null when agy is missing or prints no version.
+let detectedAgyVersion;
+
+export function installedAgyVersion(probe = () => runCommand("agy", ["--version"], { encoding: "utf8", timeout: 30 * 1000 })) {
+  if (detectedAgyVersion === undefined) {
+    const out = probe();
+    detectedAgyVersion = out?.error || out?.status !== 0 ? null : extractVersionNumber(String(out?.stdout ?? ""));
+  }
+  return detectedAgyVersion;
+}
+
+// Test seam: forgets the cached version so the next call probes again.
+export function resetInstalledAgyVersion() {
+  detectedAgyVersion = undefined;
+}
 
 // The margin a spawn timeout keeps over the print timeout it is paired with:
 // one minute, the gap DEFAULT_SPAWN_TIMEOUT_MS always kept over
@@ -130,8 +183,22 @@ export function deniedActions(result) {
 // `--effort` is refused for some models before any model call is made (agy
 // 1.2.4: `--effort is not supported for model "..."`, exit 1, status ERROR).
 // Rerunning without the flag spends nothing, so callers can do that once.
+//
+// agy 1.5.14 words the refusal three ways, all exit 1 and status ERROR before
+// any model call, each after an `invalid model selection (...)` prefix:
+//   --effort is not supported for model "claude-sonnet-4-6"   (Claude models)
+//   --model gpt-oss-120b-medium conflicts with --effort=high  (models whose id fixes the level)
+//   gemini-3.8-flash has no "xhigh" effort (available: low, medium, high)
+// The prefix alone is not enough: every pre-model error carries it, including
+// an unknown model (`... model x is not recognized as a known model ...`),
+// which a rerun without the flag would not fix, so only the tails count. With
+// `--effort` set, 1.5.14 words an unknown model as the first text above, so
+// that case still gets its one rerun, which costs no quota and then reports
+// the unknown model.
+const EFFORT_REJECTION = /--effort is not supported for model|conflicts with --effort=|has no "[^"]*" effort/;
+
 export function effortRejected(result) {
-  return /--effort is not supported for model/.test(String(result?.error ?? ""));
+  return EFFORT_REJECTION.test(String(result?.error ?? ""));
 }
 
 export function buildArgs(options = {}) {
@@ -156,6 +223,9 @@ export function buildArgs(options = {}) {
   if (options.jsonSchema) {
     args.push("--json-schema", options.jsonSchema);
   }
+  if (options.settings) {
+    args.push("--settings", options.settings);
+  }
   for (const dir of options.addDir ?? []) {
     args.push("--add-dir", dir);
   }
@@ -168,9 +238,20 @@ export function agyAvailable() {
 }
 
 // The prompt goes in on stdin and never appears in argv at any layer.
-export function runPrompt(prompt, options = {}) {
+//
+// `readOnly: true` pins Default mode with READ_ONLY_SETTINGS when the installed
+// agy can take `--settings`. The version is read here, at the spawn, rather than
+// by the callers, so the stubbed runners the tests pass never spawn agy for it.
+// `detectVersion` is injectable for the same reason.
+export function promptArgs(options = {}, detectVersion = installedAgyVersion) {
+  const { readOnly, ...rest } = options;
+  return buildArgs(readOnly ? { ...rest, settings: readOnlySettingsFor(detectVersion()) } : rest);
+}
+
+export function runPrompt(prompt, options = {}, detectVersion = installedAgyVersion) {
   const printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
-  const spawned = runCommand("agy", buildArgs(options), {
+  const args = promptArgs(options, detectVersion);
+  const spawned = runCommand("agy", args, {
     cwd: options.cwd,
     encoding: "utf8",
     input: buildStreamInput(prompt),
@@ -198,6 +279,12 @@ export function parseAgyError(stderr) {
   }
 }
 
+// agy's own print timeout, named by `finished_reason` on the result or by the
+// AGY_ERROR line's `reason` (1.5.14 prints both).
+export function printTimedOut(result, agyError) {
+  return result?.finished_reason === "print_timeout" || (agyError !== null && typeof agyError === "object" && agyError.reason === "print_timeout");
+}
+
 // Split from runPrompt so the classification can be tested on stubbed spawn
 // results. Exit 3 is a failure whatever the result event says: since 1.2.10
 // agy exits 3 after streaming part of a response, and the JSON then carries
@@ -220,6 +307,14 @@ export function interpretPromptRun(spawned) {
   let failure = null;
   if (normalized.deniedActions.length > 0) {
     failure = "denied";
+  } else if (printTimedOut(result, agyError)) {
+    // Since 1.5.0 a turn cut short by --print-timeout exits 3 with an
+    // AGY_ERROR line, and since 1.4.11 the result names it in
+    // `finished_reason`. Measured live on 1.5.14 (2026-11-23): `status` still
+    // said SUCCESS, so it is not trusted here. The partial response stays on
+    // `result`.
+    ok = false;
+    failure = "timeout";
   } else if (spawned.status === 3 || agyError !== null) {
     ok = false;
     failure = "agy-error";
@@ -391,6 +486,15 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
 // repository cannot write into it, whatever the model decides. The price is
 // that the reviewer cannot open files around a hunk: the prompt is the whole
 // evidence. The stop gate, rescue and transfer never come through here.
+//
+// The temp workspace bounds command cwd, not what a command may do: under
+// agy 1.5.7+'s default Auto mode, request-review lets commands run, including
+// shell writes outside the workspace. So every isolated run is also pinned to
+// Default mode (`readOnly`, set after the caller's options so no caller can
+// drop it); the denial resume and the effort rerun reuse these options and keep
+// the pin. File-tool writes to an absolute path were not gated even in
+// Default mode on 1.5.14 (measured once), so isolation is not a guarantee
+// against those.
 export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let tmp;
   try {
@@ -410,7 +514,7 @@ export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let out;
   let thrown;
   try {
-    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp] }, run, now);
+    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp], readOnly: true }, run, now);
   } catch (error) {
     thrown = error;
   }

@@ -19,10 +19,17 @@ import {
   MIN_RECOVERY_PRINT_TIMEOUT_MS,
   normalizeStreamOutput,
   parseAgyError,
+  printTimedOut,
   printTimeoutMs,
+  promptArgs,
+  installedAgyVersion,
+  READ_ONLY_SETTINGS,
+  readOnlySettingsFor,
+  resetInstalledAgyVersion,
   runIsolated,
   runPromptWithDenialRecovery,
   runSlashCommand,
+  SETTINGS_FLAG_MIN_VERSION,
   SPAWN_TIMEOUT_MARGIN_MS,
   spawnTimeoutMs
 } from "../scripts/lib/agy.mjs";
@@ -151,7 +158,7 @@ test("buildArgs always selects the stdin transport", () => {
 
 test("buildArgs omits every optional flag unless asked", () => {
   const args = buildArgs({});
-  for (const flag of ["--mode", "--model", "--effort", "--json-schema", "--conversation", "-c", "--add-dir"]) {
+  for (const flag of ["--mode", "--model", "--effort", "--json-schema", "--settings", "--conversation", "-c", "--add-dir"]) {
     assert.ok(!args.includes(flag), `${flag} was passed without being requested`);
   }
 });
@@ -1163,4 +1170,178 @@ test("runSlashCommand reports a real spawn timeout as a timeout, not invalid JSO
   } finally {
     process.env.PATH = previous;
   }
+});
+
+// agy 1.5.14 compatibility, F1. Since agy 1.5.7 a headless run with no saved
+// Agent Mode starts in Auto, which ran commands under request-review. Read-only
+// runs pin Default mode with `--settings '{"agentMode":""}'`, on an agy that
+// has the flag (1.4.10 and later, bisected on the release binaries).
+test("the read-only pin is an empty agentMode, the value agy saves for Default", () => {
+  assert.equal(READ_ONLY_SETTINGS, '{"agentMode":""}');
+  assert.deepEqual(JSON.parse(READ_ONLY_SETTINGS), { agentMode: "" });
+  assert.equal(SETTINGS_FLAG_MIN_VERSION, "1.4.10");
+});
+
+test("readOnlySettingsFor pins from 1.4.10 on, and when the version is unknown", () => {
+  for (const version of ["1.4.10", "1.4.11", "1.5.7", "1.5.14", "2.0.0", "v1.5.14", "1.4.10.1"]) {
+    assert.equal(readOnlySettingsFor(version), READ_ONLY_SETTINGS, version);
+  }
+  for (const version of ["1.4.9", "1.2.11", "1.2.4", "1.4.9.9"]) {
+    assert.equal(readOnlySettingsFor(version), null, version);
+  }
+  // Unknown fails closed: an agy too old for the flag then stops on a usage
+  // error rather than starting silently in Auto.
+  for (const version of [null, undefined, "", "not a version"]) {
+    assert.equal(readOnlySettingsFor(version), READ_ONLY_SETTINGS, String(version));
+  }
+});
+
+test("buildArgs passes --settings only when given one", () => {
+  const args = buildArgs({ settings: READ_ONLY_SETTINGS });
+  assert.equal(args[args.indexOf("--settings") + 1], '{"agentMode":""}');
+  assert.ok(!buildArgs({ settings: null }).includes("--settings"));
+});
+
+test("promptArgs pins Default mode for a read-only run and nothing else", () => {
+  const pinned = promptArgs({ readOnly: true, addDir: ["/tmp/x"] }, () => "1.5.14");
+  assert.equal(pinned[pinned.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!pinned.includes("--mode"));
+  assert.ok(!pinned.includes("readOnly") && !pinned.includes("true"));
+
+  const old = promptArgs({ readOnly: true }, () => "1.4.9");
+  assert.ok(!old.includes("--settings"), "an agy without --settings got the flag");
+
+  let probed = false;
+  const writable = promptArgs({ mode: "accept-edits" }, () => {
+    probed = true;
+    return "1.5.14";
+  });
+  assert.ok(!writable.includes("--settings"));
+  assert.equal(writable[writable.indexOf("--mode") + 1], "accept-edits");
+  assert.equal(probed, false, "a run that is not read-only spent an agy --version call");
+});
+
+test("installedAgyVersion reads agy --version once and caches it", () => {
+  resetInstalledAgyVersion();
+  let calls = 0;
+  const probe = () => {
+    calls += 1;
+    return { status: 0, stdout: "1.5.14\n" };
+  };
+  try {
+    assert.equal(installedAgyVersion(probe), "1.5.14");
+    assert.equal(installedAgyVersion(probe), "1.5.14");
+    assert.equal(calls, 1);
+
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ error: { code: "ENOENT" }, status: null, stdout: "" })), null);
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ status: 2, stdout: "" })), null);
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ status: 0, stdout: "garbage" })), null);
+  } finally {
+    resetInstalledAgyVersion();
+  }
+});
+
+test("runIsolated pins Default mode, and a caller cannot drop the pin", () => {
+  let seen;
+  runIsolated("x", { readOnly: false, mode: "auto" }, (_prompt, options) => {
+    seen = options;
+    return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  });
+  assert.equal(seen.readOnly, true);
+  assert.equal(seen.mode, undefined);
+  const argv = promptArgs(seen, () => "1.5.14");
+  assert.equal(argv[argv.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+});
+
+test("the pin survives the denial resume inside runIsolated", () => {
+  const calls = [];
+  const out = runIsolated("x", {}, (prompt, options) => {
+    calls.push(options);
+    if (calls.length === 1) {
+      return {
+        result: { status: "SUCCESS", conversation_id: "c-denied", response: "", denied_actions: [{ action: "command" }] },
+        events: [],
+        deniedActions: ["command"],
+        stderr: "",
+        ok: false,
+        failure: "denied"
+      };
+    }
+    return { result: { status: "SUCCESS", conversation_id: "c-denied", response: "ok" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  }, () => 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].conversationId, "c-denied");
+  assert.equal(calls[1].readOnly, true, "the resumed turn lost the Default-mode pin");
+  assert.equal(out.recovery.attempted, true);
+});
+
+// F2. The three refusal texts agy 1.5.14 prints before any model call, captured
+// live on 2026-11-23 (exit 1, status ERROR, finished_reason error), and the
+// unknown-model text, which is not an effort refusal.
+const EFFORT_REFUSALS_1_5_14 = [
+  'invalid model selection (--model "claude-sonnet-4-6" --effort "high"): --effort is not supported for model "claude-sonnet-4-6"',
+  'invalid model selection (--model "gpt-oss-120b-medium" --effort "high"): --model gpt-oss-120b-medium conflicts with --effort=high',
+  'invalid model selection (--model "gemini-3.8-flash-high" --effort "low"): --model gemini-3.8-flash-high conflicts with --effort=low',
+  'invalid model selection (--model "" --effort "xhigh"): gemini-3.8-flash has no "xhigh" effort (available: low, medium, high)'
+];
+
+test("every effort refusal agy 1.5.14 prints is recognised", () => {
+  for (const error of EFFORT_REFUSALS_1_5_14) {
+    assert.equal(effortRejected({ status: "ERROR", error, finished_reason: "error" }), true, error);
+  }
+});
+
+test("an unknown model is not an effort refusal, even with the shared prefix", () => {
+  const unknown =
+    'invalid model selection (--model "no-such-model-x" --effort ""): model no-such-model-x is not recognized as a known model or custom model in settings\nAvailable models:\n  Gemini 3.8 Flash (High)';
+  assert.equal(effortRejected({ status: "ERROR", error: unknown }), false);
+  assert.equal(effortRejected({ status: "ERROR", error: 'invalid model selection (--model "x" --effort "high"): boom' }), false);
+  assert.equal(effortRejected({ status: "ERROR", error: 'invalid --effort "bogus" (valid: low, medium, high, xhigh, max)' }), false);
+});
+
+// F4. Since agy 1.5.0 a turn cut short by --print-timeout exits 3 with an
+// AGY_ERROR line, and since 1.4.11 the result says finished_reason
+// print_timeout. Shapes captured live through runPrompt on 1.5.14 with
+// printTimeout "1s": status still said SUCCESS.
+const PRINT_TIMEOUT_AGY_ERROR =
+  'AGY_ERROR: {"short_error":"print timeout after 1s with the turn still in progress; the response is partial","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout"}';
+
+function printTimeoutStdout(fields = {}) {
+  return `${JSON.stringify({
+    event: "result",
+    result: { conversation_id: "c-timeout", status: "SUCCESS", response: "Half", finished_reason: "print_timeout", ...fields }
+  })}\n`;
+}
+
+test("a print timeout is failure timeout, not agy-error, and keeps the partial response", () => {
+  const out = interpretPromptRun({ status: 3, stdout: printTimeoutStdout(), stderr: `[agy] print timeout after 1s\n${PRINT_TIMEOUT_AGY_ERROR}` });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "timeout");
+  assert.equal(out.result.response, "Half");
+  assert.equal(out.result.conversation_id, "c-timeout");
+  assert.equal(out.agyError.reason, "print_timeout");
+});
+
+test("either signal alone marks a print timeout", () => {
+  const byField = interpretPromptRun({ status: 3, stdout: printTimeoutStdout(), stderr: "" });
+  assert.equal(byField.failure, "timeout");
+  const byLine = interpretPromptRun({ status: 3, stdout: printTimeoutStdout({ finished_reason: undefined }), stderr: PRINT_TIMEOUT_AGY_ERROR });
+  assert.equal(byLine.failure, "timeout");
+  assert.equal(printTimedOut({ finished_reason: "error" }, null), false);
+  assert.equal(printTimedOut({}, "raw text"), false);
+  assert.equal(printTimedOut(null, null), false);
+});
+
+test("a denial still wins over a print timeout, and other exit-3 errors stay agy-error", () => {
+  const denied = interpretPromptRun({
+    status: 0,
+    stdout: printTimeoutStdout({ denied_actions: [{ action: "command", display_name: "Bash" }] }),
+    stderr: ""
+  });
+  assert.equal(denied.failure, "denied");
+  const other = interpretPromptRun({ status: 3, stdout: printTimeoutStdout({ finished_reason: "error" }), stderr: "" });
+  assert.equal(other.failure, "agy-error");
 });

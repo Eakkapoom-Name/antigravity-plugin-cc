@@ -11,10 +11,13 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { deniedActions } from "./lib/agy.mjs";
+import { deniedActions, READ_ONLY_SETTINGS, readOnlySettingsFor, SETTINGS_FLAG_MIN_VERSION } from "./lib/agy.mjs";
 import { resolveCommand, runCommand } from "./lib/process.mjs";
 import { gateEnabled } from "./lib/state.mjs";
+import { compareVersions, extractVersionNumber, versionCore } from "./lib/version.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+
+export { compareVersions, extractVersionNumber };
 
 const AGY_PRINT_TIMEOUT = "2m";
 const SPAWN_TIMEOUT_MS = 3 * 60 * 1000;
@@ -49,38 +52,7 @@ export const MIN_AGY_VERSION = "1.2.4";
 // re-checked on; a test keeps the two in step. agy updates itself silently, so
 // setup warns on anything newer instead of refusing it: the floor above is what
 // refuses, and a newer agy usually still works.
-export const VERIFIED_AGY_VERSION = "1.2.11";
-
-// F74. compareVersions and the two gates below read a version the same way: the
-// numeric core extractVersionNumber pulls out ("1.2.4-beta" and "v1.2.4" both
-// read as 1.2.4, and every part of a longer one is kept, so "1.2.11.1" stays
-// above "1.2.11"), or a bare dotted number that has fewer than three parts
-// ("1.2"). Anything else has no core. Before this the gates rejected the
-// prefixed and suffixed shapes outright while compareVersions read a
-// non-numeric part as 0, so the two disagreed on the same input.
-function versionCore(raw) {
-  const extracted = extractVersionNumber(raw);
-  if (extracted) {
-    return extracted;
-  }
-  const bare = String(raw ?? "").trim();
-  return /^\d+(\.\d+)*$/.test(bare) ? bare : null;
-}
-
-export function compareVersions(a, b) {
-  const parse = (value) => (versionCore(value) ?? "").split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const left = parse(a);
-  const right = parse(b);
-  const length = Math.max(left.length, right.length);
-  for (let i = 0; i < length; i += 1) {
-    const l = left[i] ?? 0;
-    const r = right[i] ?? 0;
-    if (l !== r) {
-      return l > r ? 1 : -1;
-    }
-  }
-  return 0;
-}
+export const VERIFIED_AGY_VERSION = "1.5.14";
 
 export function meetsMinimumVersion(version, minimum = MIN_AGY_VERSION) {
   if (versionCore(version) === null) {
@@ -94,20 +66,6 @@ export function newerThanVerified(version, verified = VERIFIED_AGY_VERSION) {
     return false;
   }
   return compareVersions(version, verified) > 0;
-}
-
-// agy's own `--version` output is a bare number today ("1.2.6"). If that output
-// ever grows a prefix or suffix ("agy 1.3.0", "1.2.4-beta", "v1.2.4"), checkAgy
-// would print a literal, doubled "agy agy 1.3.0 is below the 1.2.4 floor", a
-// false claim about a version that may well be fine (F80). Extracting the
-// numeric core first keeps the gates, compareVersions, and the printed detail
-// all reading the same value (F74: the gates and compareVersions read the core
-// through this function too); returns null when the output carries no such
-// pattern. Three or more dotted parts are taken whole: stopping at three read
-// "1.2.11.1" as 1.2.11, equal to the verified version instead of above it.
-export function extractVersionNumber(raw) {
-  const match = String(raw ?? "").match(/\d+(?:\.\d+){2,}/);
-  return match ? match[0] : null;
 }
 
 function checkAgy() {
@@ -150,12 +108,28 @@ function checkAgy() {
 // the spawn cwd the way every other run in this plugin does (F121). Without
 // them the probes ran wherever the setup script happened to be started, so the
 // read probe's file inside the workspace was not necessarily inside agy's.
-function runProbe(prompt, workspaceRoot) {
+//
+// The probes pin Default mode the way the plugin's own read-only runs do
+// (READ_ONLY_SETTINGS, on an agy that has `--settings`), so they measure what
+// those runs are allowed rather than what agy 1.5.7+'s default Auto mode
+// allows. Without the pin, Auto ran the command probe under request-review on
+// 1.5.14 and setup reported ready while the gate and the isolated commands
+// were still refused the same command.
+export function probeArgs(prompt, workspaceRoot, version) {
+  const args = ["-p", prompt, "--output-format", "json", "--add-dir", workspaceRoot, "--print-timeout", AGY_PRINT_TIMEOUT];
+  const settings = readOnlySettingsFor(version);
+  if (settings) {
+    args.push("--settings", settings);
+  }
+  return args;
+}
+
+function runProbe(prompt, workspaceRoot, version) {
   // The setup probes stay on the argv transport: both prompts are short fixed
   // literals, so there is no size risk, and this path is the one under test.
   const result = runCommand(
     "agy",
-    ["-p", prompt, "--output-format", "json", "--add-dir", workspaceRoot, "--print-timeout", AGY_PRINT_TIMEOUT],
+    probeArgs(prompt, workspaceRoot, version),
     { cwd: workspaceRoot, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
   );
   if (result.error?.code === "ETIMEDOUT") {
@@ -248,8 +222,8 @@ export function classifyProbeFailure(stderr) {
   return "unknown";
 }
 
-function checkAuth(cwd) {
-  const probe = runProbe(AUTH_PROBE_PROMPT, cwd);
+function checkAuth(cwd, version) {
+  const probe = runProbe(AUTH_PROBE_PROMPT, cwd, version);
   if (probe.spawnErrorCode) {
     return {
       available: false,
@@ -343,6 +317,11 @@ export function readAgySettings(homeDir = os.homedir()) {
     readable,
     toolPermission: resolveToolPermission(parsed),
     declaredToolPermission: parsed?.toolPermission ?? null,
+    // The saved Agent Mode, or null when none is saved. agy saves Default as
+    // "", and since 1.5.7 a missing value means Auto wherever Auto is
+    // available. The plugin's read-only runs and the probes override it with
+    // READ_ONLY_SETTINGS on an agy that has `--settings`.
+    agentMode: typeof parsed?.agentMode === "string" ? parsed.agentMode : null,
     allowNonWorkspaceAccess: parsed?.allowNonWorkspaceAccess === true,
     sandboxMode: parsed?.sandboxMode === true
   };
@@ -442,6 +421,10 @@ export function evaluateReadProbe(probe, nonce) {
 //                      file writes were NOT denied
 //   proceed-in-sandbox commands denied unless --sandbox is passed, which this plugin does not pass
 //   strict             denied even for a read inside the workspace
+// That table is Default mode, the Agent Mode the probes and the plugin's
+// read-only runs pin (READ_ONLY_SETTINGS). Since agy 1.5.7 an unpinned
+// headless run starts in Auto, where request-review ran commands, and shell
+// writes outside the workspace, with no rule (measured on 1.5.14, 2026-11-23).
 export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
   const names = new Set(denied);
   const parts = [
@@ -458,7 +441,7 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
     );
   } else if (mode === "request-review") {
     parts.push(
-      'Your `toolPermission` is `request-review`, agy\'s default. Measured on agy 1.2.4 with no allow-rules: commands were refused, a read of a file inside the workspace was allowed, and file writes were not gated. GitHub issue #21 reported an in-workspace read refused on this same default, on a machine that differs from ours in some way we have not identified, so do not count on reads passing. Either add the rules below, or switch the mode to `always-proceed`.'
+      'Your `toolPermission` is `request-review`, agy\'s default. Measured on agy 1.2.4 with no allow-rules: commands were refused, a read of a file inside the workspace was allowed, and file writes were not gated. GitHub issue #21 reported an in-workspace read refused on this same default, on a machine that differs from ours in some way we have not identified, so do not count on reads passing. Either add the rules below, or switch the mode to `always-proceed`. Since agy 1.5.7 a headless run with no saved Agent Mode starts in Auto, which runs commands under `request-review` without a rule; this plugin pins Default mode (`--settings \'{"agentMode":""}\'`) on its read-only runs and on these probes, so the rules are still needed there, whatever your own Agent Mode is.'
     );
   }
 
@@ -490,8 +473,8 @@ export function permissionNextStep(denied, mode = DEFAULT_TOOL_PERMISSION) {
   return parts.join(" ");
 }
 
-function checkToolPermissions(cwd) {
-  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT, cwd));
+function checkToolPermissions(cwd, version) {
+  const command = evaluateCommandProbe(runProbe(TOOL_PROBE_PROMPT, cwd, version));
 
   const nonce = `agy-setup-probe-${crypto.randomBytes(8).toString("hex")}`;
   // A dotfile in the workspace root, gone again before the report prints. The
@@ -518,7 +501,7 @@ function checkToolPermissions(cwd) {
   }
   if (!read) {
     try {
-      read = evaluateReadProbe(runProbe(readProbePrompt(file), cwd), nonce);
+      read = evaluateReadProbe(runProbe(readProbePrompt(file), cwd, version), nonce);
     } finally {
       fs.rmSync(file, { force: true });
     }
@@ -593,7 +576,7 @@ export function buildReport({
         : `agy ${agy.version} is below the ${MIN_AGY_VERSION} this plugin was measured on. Run \`agy update\` (or reinstall from the Antigravity documentation), then rerun /agy:setup. The probes were skipped: an older agy fails them with errors that do not name this cause.`
     );
   } else {
-    auth = authProbe(cwd);
+    auth = authProbe(cwd, agy.version);
     if (!auth.available) {
       toolPermissions.detail = "not checked; auth probe failed";
       // One remedy per cause. A non-ready report must never leave nextSteps
@@ -616,7 +599,7 @@ export function buildReport({
         );
       }
     } else {
-      toolPermissions = toolProbe(cwd);
+      toolPermissions = toolProbe(cwd, agy.version);
       if (!toolPermissions.available) {
         nextSteps.push(permissionNextStep(toolPermissions.deniedActions, agySettings.toolPermission));
       }
@@ -628,6 +611,21 @@ export function buildReport({
   if (agy.available && agy.meetsMinimum && agy.newerThanVerified) {
     nextSteps.push(
       `agy ${agy.version} is newer than ${VERIFIED_AGY_VERSION}, the version this plugin's CLI contract was last verified on. Delegation should still work; if a run fails in a way these docs do not describe, check \`agy changelog\` for a print-mode or result-shape change.`
+    );
+  }
+
+  // Below SETTINGS_FLAG_MIN_VERSION nothing can pin Default mode for one run,
+  // so a saved Auto mode reaches the plugin's read-only runs and the probes
+  // alike: the probes then measure Auto, and the gate and isolated commands
+  // may run commands. A warning, like the one above; ready is unaffected.
+  if (
+    agy.available &&
+    agy.meetsMinimum &&
+    agySettings?.agentMode === "auto" &&
+    readOnlySettingsFor(agy.version) === null
+  ) {
+    nextSteps.push(
+      `Your saved Agent Mode is \`auto\`, and agy ${agy.version} is older than ${SETTINGS_FLAG_MIN_VERSION}, the first version with the per-run \`--settings\` flag this plugin uses to pin Default mode (\`--settings '${READ_ONLY_SETTINGS}'\`) on its read-only runs. Until then the stop-review gate, review, search, research, whisper and image run in Auto, which can run commands without a rule. Run \`agy update\`, or choose Default for \`Agent Mode\` in agy's \`/config\`, then rerun /agy:setup.`
     );
   }
 

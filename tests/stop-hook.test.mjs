@@ -96,3 +96,18 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
   // The argv call is what kept denied_actions invisible to the gate.
   assert.ok(!/runCommand\(\s*"agy"/.test(source), "the hook still spawns agy through runCommand");
 });
+
+// agy 1.5.14 compatibility, F1: the gate reviews the repository with the
+// previous turn as untrusted input, so it pins Default mode; Auto would run
+// commands there under request-review.
+test("the hook asks runPrompt for the Default-mode pin", () => {
+  const source = read("scripts/stop-review-gate-hook.mjs");
+  assert.match(source, /readOnly: true/);
+  assert.doesNotMatch(source, /mode: "/);
+});
+
+test("a print timeout blocks with a timeout reason, not a model error", () => {
+  const judged = judgeReview(run({ ok: false, failure: "timeout", result: emptyResult({ status: "SUCCESS", response: "partial", finished_reason: "print_timeout" }) }));
+  assert.equal(judged.ok, false);
+  assert.match(judged.reason, /timed out before it finished/);
+});

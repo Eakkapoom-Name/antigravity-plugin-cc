@@ -115,7 +115,15 @@ send, per command:
   `/agy:transfer` likewise runs agy with the repository as its cwd and as its
   `--add-dir`. `/agy:rescue` and `/agy:continue` run agy with the repository
   as its cwd and its `--add-dir` and, by default, `--mode accept-edits`, so agy can edit it
-  there; a run the user asks to keep read-only drops `--mode`.
+  there; a run the user asks to keep read-only drops `--mode` and pins
+  Default mode instead. Since agy 1.5.7 a headless run with no saved Agent
+  Mode starts in Auto, which under `request-review` runs commands without a
+  rule, so every read-only or untrusted-input run the plugin starts (the six
+  isolated commands, the stop-review gate, the `/agy:setup` probes and a
+  read-only rescue) pins Default mode with `--settings '{"agentMode":""}'` on
+  agy 1.4.10 and later. `/agy:transfer` is not pinned and runs in the user's
+  own Agent Mode. Neither mode gated a file-tool write to an absolute path
+  outside the workspace on agy 1.5.14.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:
   a URL given as the whole argument, and a URL-shaped word inside an ordinary

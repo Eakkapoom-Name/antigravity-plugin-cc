@@ -51,7 +51,7 @@ export function judgeReview(run) {
   if (run.failure === "timeout") {
     return {
       ok: false,
-      reason: `The stop-time agy review timed out after 10 minutes. ${OFF_HINT}`
+      reason: `The stop-time agy review timed out before it finished (agy's 9 minute print timeout or the hook's 10 minute limit). ${OFF_HINT}`
     };
   }
   const denied = run.deniedActions ?? [];

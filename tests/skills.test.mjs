@@ -129,8 +129,24 @@ for (const [label, source] of [["result handling", RESULT_HANDLING], ["runtime c
 
 test("runtime contract records that agy has no per-invocation permission flag", () => {
   // Checked against agy 1.2.4: no --tool-permission flag and no environment
-  // variable, so the mode cannot be overridden for one run.
-  assert.match(CLI_RUNTIME, /no .*flag|cannot be overridden|per-invocation/i);
+  // variable for the permission mode. Still true on 1.5.14; what changed is
+  // `--settings`, which the next test covers.
+  assert.match(CLI_RUNTIME, /There is no `--tool-permission` flag and no environment\s+variable for the permission mode/);
+  assert.doesNotMatch(CLI_RUNTIME, /so the mode cannot be set for one run/);
+});
+
+// F1 of the 1.5.14 compatibility pass. Since agy 1.5.7 an unpinned headless run
+// starts in Auto mode, which ran commands under request-review on 1.5.14. The
+// contract has to say so, name the per-run pin and the version it needs, and
+// keep saying that toolPermission is never overridden.
+test("runtime contract documents Auto mode and the per-run Default-mode pin", () => {
+  assert.match(CLI_RUNTIME, /Since agy 1\.5\.7 a headless `-p` run with no saved Agent Mode starts in Auto mode/);
+  assert.match(CLI_RUNTIME, /--settings '\{"agentMode":""\}'/);
+  assert.match(CLI_RUNTIME, /The first release whose `--help` lists it is 1\.4\.10/);
+  assert.match(CLI_RUNTIME, /It never overrides `toolPermission`/);
+  assert.match(CLI_RUNTIME, /file-tool writes are not gated in either mode/);
+  assert.doesNotMatch(CLI_RUNTIME, /agy has no per-invocation override for this/);
+  assert.doesNotMatch(CLI_RUNTIME, /30 minute cap\)/);
 });
 
 // F24. Correcting 0.6.4's false claim went one step too far: both skills then

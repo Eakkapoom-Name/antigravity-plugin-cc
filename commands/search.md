@@ -12,7 +12,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" search "$ARGUMENTS"
 
 One argument, two modes: a single `http://` or `https://` URL fetches that page as markdown; anything else is a search question answered with a `Sources:` list. `mode` in the JSON says which ran.
 
-If the JSON has `failure: "agy-error"`, agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr): report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result.
+If the JSON has `failure: "agy-error"`, agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr): report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result. If it has `failure: "timeout"`, the run ran out of time (agy's own print timeout, `result.finished_reason: "print_timeout"`, or the spawn timeout): report it as a timeout, label any text in `result.response` as a partial answer, and do not retry on your own.
 
 Present `result.response` as-is, keeping the `Sources:` or `Links:` list intact; those URLs are the evidence. Report `result.conversation_id` on its own line, and say there is no safe continue path for it: `/agy:continue` resumes through the rescue subagent in `--mode accept-edits` with the repository added, so it would make this conversation, which holds untrusted page content, write-capable in the repository. For a follow-up, tell the user to rerun `/agy:search` with the refined request.
 

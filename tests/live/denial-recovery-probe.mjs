@@ -11,11 +11,16 @@ import { runPromptWithDenialRecovery } from "../../scripts/lib/agy.mjs";
 const PROMPT =
   "Use your terminal command tool to run 'pwd', then reply with exactly the word READY.";
 
+// `readOnly` pins Default mode the way runIsolated does for the read-only
+// commands, the runs this recovery serves. Without it agy 1.5.7+ starts the run
+// in Auto, which runs the command under request-review, so there is no denial
+// to recover from.
 const run = runPromptWithDenialRecovery(PROMPT, {
   cwd: process.cwd(),
   addDir: [process.cwd()],
   printTimeout: "2m",
-  timeoutMs: 3 * 60 * 1000
+  timeoutMs: 3 * 60 * 1000,
+  readOnly: true
 });
 
 process.stdout.write(

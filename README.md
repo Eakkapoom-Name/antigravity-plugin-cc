@@ -384,7 +384,7 @@ Examples:
 
 ### Effort levels
 
-`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.2.14 (`agy models`, 2026-09-30) every Gemini id carries its effort level in the id itself: `gemini-3.8-flash-high`, `-medium` and `-low` (the same for `gemini-3.7-flash` and `gemini-3.6-flash`), and `gemini-3.1-pro-high` and `-low` only. The Claude and GPT-OSS ids (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`) carry none. Only one refusal was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before running anything. The rest is read off `agy models`, not run, and whether a suffixed Gemini id accepts `--effort` on top is unmeasured, so pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so. The companion commands (`/agy:whisper`, `/agy:research`, `/agy:image`, `/agy:transfer`) skip that rerun when too little of the run's time budget is left, and report it as `effortRetry.skipped`.
+`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.5.14 (`agy models`, 2026-11-23) this account lists `gemini-3.8-flash-high`, `-medium` and `-low`, which carry their effort level in the id, and `claude-sonnet-4-6`, `claude-opus-4-6-thinking` and `gpt-oss-120b-medium`, which carry none; the list varies by auth type, and on agy 1.2.14 it also had `gemini-3.7-flash`, `gemini-3.6-flash` and `gemini-3.1-pro` ids. Only one refusal was measured on agy 1.2.4 (`claude-opus-4-6-thinking`); on 1.5.14 every non-Gemini id refused `--effort`, a Gemini id refused any level but its own suffix, and the default model refused `xhigh`, each before running anything. So pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so. The companion commands (`/agy:whisper`, `/agy:research`, `/agy:image`, `/agy:transfer`) skip that rerun when too little of the run's time budget is left, and report it as `effortRetry.skipped`.
 
 ## Typical Flows
 
@@ -485,7 +485,8 @@ Yes, and one of those settings decides whether delegation works at all.
 agy's `toolPermission` setting decides whether headless delegation can work at
 all, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's
 own `/config` screen. Measured on agy 1.2.4 with no allow-rules, and the same
-live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18:
+live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18 and,
+with the Default-mode pin described below, on agy 1.5.14 on 2026-11-23:
 
 | mode | headless behaviour |
 |---|---|
@@ -497,6 +498,19 @@ live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18:
 Anything else, including a typo, is accepted and silently read back as
 `request-review`, so a mode that never takes effect looks the same as one that
 does.
+
+That table is agy's Default Agent Mode. Since agy 1.5.7 a headless run with no
+saved Agent Mode starts in Auto mode instead, and under `request-review` Auto
+ran commands, including a shell write outside the workspace, with no rule
+(measured on agy 1.5.14). The plugin therefore pins Default mode with
+`--settings '{"agentMode":""}'` (agy 1.4.10 and later) on every read-only or
+untrusted-input run: the stop-review gate, `/agy:review`,
+`/agy:adversarial-review`, `/agy:search`, `/agy:research`, `/agy:whisper`,
+`/agy:image`, a read-only `/agy:rescue`, and the `/agy:setup` probes. It never
+overrides `toolPermission`, so the rules above are still what lets those runs
+use a tool. Write-capable rescue runs use `--mode accept-edits`, and
+`/agy:transfer` runs in your own Agent Mode. File-tool writes to an absolute
+path were not gated in either mode on 1.5.14.
 
 When a delegation is refused anyway, the plugin resumes that conversation once,
 stating the constraint, rather than throwing the turn away. The result carries a

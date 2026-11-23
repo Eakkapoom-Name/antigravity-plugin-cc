@@ -281,6 +281,36 @@ test("a credential left from an earlier turn does not block a turn with no edits
   }
 });
 
+// git C-quotes a non-ASCII path in a plain path list (core.quotePath), and
+// agy cannot open the quoted form. The oracle is the name the test wrote to
+// disk; the wrong behaviour it rejects is `"\340\271\203..."` in the list.
+test("a withheld diff lists non-ASCII changed and untracked paths as they are on disk", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = gitRepo(scratch);
+    const tracked = "ไฟล์.js";
+    const untracked = "ใหม่.js";
+    fs.writeFileSync(path.join(root, tracked), "export {};\n");
+    const git = (...args) => {
+      const out = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd: root, encoding: "utf8" });
+      assert.equal(out.status, 0, out.stderr);
+    };
+    git("add", tracked);
+    git("commit", "--quiet", "--no-verify", "-m", "tracked");
+    fs.writeFileSync(path.join(root, tracked), `export const id = "${"AKIA" + "IOSFODNN7EXAMPLE"}";\n`);
+    fs.writeFileSync(path.join(root, untracked), "export {};\n");
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: fine");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the gate did not run the review");
+    assert.match(prompt, /withheld: the plugin's secret screen/);
+    const lines = prompt.split("\n");
+    assert.ok(lines.includes(tracked), "the changed non-ASCII path is not listed as it is on disk");
+    assert.ok(lines.includes(untracked), "the untracked non-ASCII path is not listed as it is on disk");
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 // A repository with no commit yet has no HEAD to diff against, so every file
 // the previous turn created is untracked; agy has to be told which they are.
 test("a repository with no commit yet still lists its new files for agy", { skip: process.platform === "win32" }, () => {

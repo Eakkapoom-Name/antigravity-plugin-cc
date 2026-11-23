@@ -171,13 +171,13 @@ export function screenDiff(diff, { allow = [] } = {}) {
 // Untracked files never appear in `git diff`, so an empty diff alone does not
 // mean there is nothing to review.
 export function untrackedFiles(cwd) {
-  return pathList(git(["ls-files", "--others", "--exclude-standard"], cwd));
+  return pathList(git(["ls-files", "-z", "--others", "--exclude-standard"], cwd));
 }
 
 // Paths of tracked files that differ from HEAD, for when the diff itself is
 // not sent.
 export function changedFiles(cwd) {
-  return pathList(git(["diff", "--name-only", "--no-ext-diff", "HEAD"], cwd));
+  return pathList(git(["diff", "-z", "--name-only", "--no-ext-diff", "HEAD"], cwd));
 }
 
 function pathList(result) {
@@ -185,7 +185,6 @@ function pathList(result) {
     return [];
   }
   return String(result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
+    .split("\0")
     .filter(Boolean);
 }

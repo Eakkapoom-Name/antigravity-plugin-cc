@@ -20,6 +20,11 @@ const AGY_PRINT_TIMEOUT = "9m";
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_CHARS = 8000;
 const MAX_PATHS_LISTED = 50;
+const WITHHELD_BECAUSE = {
+  secrets: "the plugin's secret screen found what looks like a credential in it",
+  "diff-shape": "git printed it in a format the plugin's secret screen cannot read",
+  unmerged: "the repository has an unresolved merge, so the diff leaves the conflicted files out"
+};
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -100,9 +105,10 @@ function diffBlock(cwd) {
   if (collected.empty) {
     return `${untracked}Diff of the working tree against HEAD: empty, no uncommitted changes to tracked files. Changes already committed are not shown: read the files the previous response names to check them.`;
   }
-  if (screenDiff(collected.diff)) {
+  const refusal = screenDiff(collected.diff);
+  if (refusal) {
     const changed = pathSection("Tracked files changed against HEAD", changedFiles(cwd));
-    return `${changed}${untracked}The diff of the working tree against HEAD was withheld by the plugin's secret screen. Review by reading the files listed above.`;
+    return `${changed}${untracked}The diff of the working tree against HEAD was withheld: ${WITHHELD_BECAUSE[refusal.failure]}. Review by reading the files listed above.`;
   }
   return `${untracked}Diff of the working tree against HEAD follows:\n\n${collected.diff}`;
 }

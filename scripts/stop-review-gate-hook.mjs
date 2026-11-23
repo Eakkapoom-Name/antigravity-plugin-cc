@@ -10,16 +10,16 @@ import fs from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { runPrompt } from "./lib/agy.mjs";
-import { collectDiff, screenDiff, untrackedFiles } from "./lib/git.mjs";
+import { changedFiles, collectDiff, screenDiff, untrackedFiles } from "./lib/git.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
-import { judgeReview, refusalReason } from "./lib/stop-review.mjs";
+import { judgeReview } from "./lib/stop-review.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 const AGY_PRINT_TIMEOUT = "9m";
 const SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_RESPONSE_CHARS = 8000;
-const MAX_UNTRACKED_LISTED = 50;
+const MAX_PATHS_LISTED = 50;
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -76,32 +76,35 @@ function lastAssistantMessageFromTranscript(transcriptPath) {
   return last;
 }
 
+function pathSection(title, paths) {
+  if (paths.length === 0) {
+    return "";
+  }
+  const more = paths.length > MAX_PATHS_LISTED ? `\n[and ${paths.length - MAX_PATHS_LISTED} more]` : "";
+  return `${title}:\n${paths.slice(0, MAX_PATHS_LISTED).join("\n")}${more}\n\n`;
+}
+
 // The gate runs with commands denied, so it cannot run `git diff` itself: the
 // hook collects the working tree against HEAD, the same scope and the same
 // screen /agy:review uses, and hands it over in the prompt. Untracked files
-// are not in that diff, so their paths are listed for agy to read. Returns
-// `{ text }` for the prompt, or `{ refusal }` when screenDiff refuses to send
-// the diff. A workspace git cannot diff (not a repository) still gets a
-// review, from file reads alone.
+// are not in that diff, so their paths are listed for agy to read. A diff the
+// screen refuses is withheld, and agy gets the changed paths to read instead;
+// the refusal never blocks the stop by itself. A workspace git cannot diff
+// (not a repository, or no commit yet) still gets a review, from file reads.
 function diffBlock(cwd) {
+  const untracked = pathSection("Untracked files, not in the diff (read any the previous turn created)", untrackedFiles(cwd));
   const collected = collectDiff("", cwd);
   if (!collected.ok) {
-    return { text: `No diff is available for this workspace (${collected.error}).` };
-  }
-  let untracked = "";
-  const paths = untrackedFiles(cwd);
-  if (paths.length > 0) {
-    const more = paths.length > MAX_UNTRACKED_LISTED ? `\n[and ${paths.length - MAX_UNTRACKED_LISTED} more]` : "";
-    untracked = `Untracked files, not in the diff (read any the previous turn created):\n${paths.slice(0, MAX_UNTRACKED_LISTED).join("\n")}${more}\n\n`;
+    return `${untracked}No diff is available for this workspace (${collected.error}).`;
   }
   if (collected.empty) {
-    return { text: `${untracked}Diff of the working tree against HEAD: empty, no uncommitted changes to tracked files. Changes already committed are not shown: read the files the previous response names to check them.` };
+    return `${untracked}Diff of the working tree against HEAD: empty, no uncommitted changes to tracked files. Changes already committed are not shown: read the files the previous response names to check them.`;
   }
-  const refusal = screenDiff(collected.diff);
-  if (refusal) {
-    return { refusal };
+  if (screenDiff(collected.diff)) {
+    const changed = pathSection("Tracked files changed against HEAD", changedFiles(cwd));
+    return `${changed}${untracked}The diff of the working tree against HEAD was withheld by the plugin's secret screen. Review by reading the files listed above.`;
   }
-  return { text: `${untracked}Diff of the working tree against HEAD follows:\n\n${collected.diff}` };
+  return `${untracked}Diff of the working tree against HEAD follows:\n\n${collected.diff}`;
 }
 
 function buildPrompt(cwd, input, diffText) {
@@ -121,11 +124,7 @@ function buildPrompt(cwd, input, diffText) {
 }
 
 function runStopReview(cwd, input) {
-  const diff = diffBlock(cwd);
-  if (diff.refusal) {
-    return { ok: false, reason: refusalReason(diff.refusal) };
-  }
-  const prompt = buildPrompt(cwd, input, diff.text);
+  const prompt = buildPrompt(cwd, input, diffBlock(cwd));
   // Read-only profile (lib/agy.mjs): plan mode, and commands and file writes
   // denied by the plugin's own per-run rules, because the previous turn is
   // untrusted input and the gate runs in the repository itself. It reviews

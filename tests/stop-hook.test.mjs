@@ -108,7 +108,7 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
 // argv and the stdin it was handed, then answers with `response`. Returns the
 // hook's spawn result, the recorded argv (null when agy was never asked to
 // review), and the prompt text agy received.
-function runHookWithFakeAgy(scratch, root, response) {
+function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.") {
   const dataDir = path.join(scratch, "data");
   fs.mkdirSync(dataDir, { recursive: true });
   const bin = path.join(scratch, "bin");
@@ -135,7 +135,7 @@ function runHookWithFakeAgy(scratch, root, response) {
   }
 
   const hook = spawnSync(process.execPath, [path.join(ROOT, "scripts", "stop-review-gate-hook.mjs")], {
-    input: JSON.stringify({ cwd: root, last_assistant_message: "Edited src/a.js." }),
+    input: JSON.stringify({ cwd: root, last_assistant_message: message }),
     encoding: "utf8",
     env: {
       ...process.env,
@@ -235,22 +235,66 @@ test("a turn with no uncommitted change still reaches agy, and an ALLOW answer l
   }
 });
 
-// The same refusal /agy:review gives: a diff carrying a credential shape never
-// leaves. The fixture is AWS's documented example access key id.
-test("a credential in the diff blocks the stop without sending anything to agy", { skip: process.platform === "win32" }, () => {
+// The same screen /agy:review uses keeps a diff carrying a credential shape
+// from leaving, but the gate does not block on it: agy reviews by reading the
+// changed files, and the stop is decided by agy's answer alone. The fixture is
+// AWS's documented example access key id.
+function withCredential(scratch) {
+  const root = gitRepo(scratch);
+  const key = "AKIA" + "IOSFODNN7EXAMPLE";
+  fs.writeFileSync(path.join(root, "a.js"), `const kept = 1;\nconst id = "${key}";\n`);
+  fs.writeFileSync(path.join(root, "b.js"), "export {};\n");
+  return { root, key };
+}
+
+test("a credential in the diff withholds the diff and agy reviews the changed files by reading them", { skip: process.platform === "win32" }, () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
   try {
-    const root = gitRepo(scratch);
-    const key = "AKIA" + "IOSFODNN7EXAMPLE";
-    fs.writeFileSync(path.join(root, "a.js"), `const kept = 1;\nconst id = "${key}";\n`);
-    const { hook, argv, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: fine");
+    const { root, key } = withCredential(scratch);
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "BLOCK: the id is hard-coded");
     assert.equal(hook.status, 0, hook.stderr);
-    assert.equal(argv, null, "agy was asked to review a diff holding a credential");
-    assert.equal(prompt, null);
+    assert.ok(prompt, "the gate did not run the review");
+    assert.ok(!prompt.includes(key), "the credential reached agy");
+    assert.ok(!/^diff --git/m.test(prompt), "diff text reached agy");
+    assert.match(prompt, /withheld/);
+    assert.match(prompt, /^a\.js$/m, "the changed file is not listed for agy to read");
+    assert.match(prompt, /^b\.js$/m, "the untracked file is not listed for agy to read");
     const decision = JSON.parse(hook.stdout);
     assert.equal(decision.decision, "block");
-    assert.match(decision.reason, /a\.js:2 aws-access-key-id/);
-    assert.ok(!decision.reason.includes(key), "the credential leaked into the block reason");
+    assert.match(decision.reason, /the id is hard-coded/);
+    assert.ok(!/redact/i.test(decision.reason));
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("a credential left from an earlier turn does not block a turn with no edits", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const { root } = withCredential(scratch);
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: answered a question", "The function returns a list.");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the gate did not run the review");
+    assert.equal(hook.stdout, "", `the stop was blocked: ${hook.stdout}`);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// A repository with no commit yet has no HEAD to diff against, so every file
+// the previous turn created is untracked; agy has to be told which they are.
+test("a repository with no commit yet still lists its new files for agy", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = path.join(scratch, "repo");
+    fs.mkdirSync(root);
+    assert.equal(spawnSync("git", ["init", "--quiet"], { cwd: root }).status, 0);
+    fs.writeFileSync(path.join(root, "new.js"), "export {};\n");
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: fine");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the gate did not run the review");
+    assert.match(prompt, /No diff is available/);
+    assert.match(prompt, /^new\.js$/m, "the new file is not listed for agy to read");
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

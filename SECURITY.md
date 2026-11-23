@@ -46,7 +46,9 @@ send, per command:
 - The stop-review gate: the previous Claude turn, the working-tree diff
   against HEAD with the paths of untracked files, and whatever agy reads in
   the repository to check it. The diff gets the same secret scan as
-  `/agy:review`: a hit blocks the stop and nothing is sent. The older in-repository `.claude/agy.local.md` gate
+  `/agy:review`: on a hit the diff is withheld and only the changed and
+  untracked file paths are sent, though agy can still read those files
+  in the repository. The older in-repository `.claude/agy.local.md` gate
   flag is honoured only when git reports it untracked or ignored and it is
   not reached through a symlink; one committed to the repository (directly,
   through a committed `.claude` symlink or submodule, or under a case

@@ -12,7 +12,7 @@ node "${CLAUDE_PLUGIN_ROOT}/scripts/agy-companion.mjs" review "$ARGUMENTS"
 
 Set the Bash tool timeout to 590000 ms; the script allows agy up to 8 minutes.
 
-The script does all of it: scope selection, diff collection, prompt construction, and the agy call. The diff goes to agy on stdin, so there is no size limit to work around and nothing for you to write to a temp file. The review itself runs isolated: agy runs from a temp directory, never the repository, and is handed only the diff. That is a working-directory change, not a sandbox: whether agy can still reach paths outside that directory depends on agy's own `toolPermission` setting (under `always-proceed` it can read a file by absolute path).
+The script does all of it: scope selection, diff collection, prompt construction, and the agy call. The diff goes to agy on stdin, so there is no size limit to work around and nothing for you to write to a temp file. The review itself runs isolated: agy runs from a temp directory, never the repository, and is handed only the diff. That is a working-directory change, not a sandbox: on agy 1.4.10 and later the plugin's read-only profile denies commands and file writes but not file reads, so it does not stop agy reading a file outside that directory by absolute path; on an older agy, whether agy can reach paths outside it depends on agy's own `toolPermission` setting (under `always-proceed` it can read a file by absolute path).
 
 The first word of the argument is read as a scope only when it is `staged`, `branch`, or a branch, tag, or commit name (letters, digits, `.`, `_`, `/`, `-`) that git resolves (a commit id needs at least 7 hex digits); anything else is read as focus text, with the scope defaulting to the working tree. A branch that shares its name with the first focus word wins, so to keep that word as focus, put the focus after `staged`, `branch`, or a ref.
 
@@ -31,6 +31,7 @@ Reading the JSON the script prints:
 - `ok: false` with an `error`: report the error and stop. If it says agy is not installed, point at `/agy:setup`.
 - `empty: true`: say there is nothing to review in that scope, quoting `scope`. If `untrackedFiles` is non-empty, list them and say a diff review does not cover untracked files.
 - `failure: "agy-error"`: agy ended on a model or agent error (exit code 3, or an `AGY_ERROR:` line on stderr). Report it as a failure and quote `agyError`; if `result.response` has text, present it labelled as a partial answer, never as a finished result.
+- `failure: "timeout"`: the run ran out of time (agy's own print timeout, `result.finished_reason: "print_timeout"`, or the spawn timeout). Report it as a timeout; if `result.response` has text, present it labelled as a partial answer, never as a finished result. Do not retry on your own.
 - Otherwise present `result` per the `agy-result-handling` skill: findings first, ordered by severity, file paths and line numbers verbatim, then the `conversation_id` on its own line.
 
 `scope` names what was actually reviewed. Report it, rather than assuming which scope the user's argument selected.

@@ -100,7 +100,7 @@ One simple first run is:
 
 Checks agy readiness through a companion script (`scripts/agy-setup.mjs`) that runs every check itself (agy on PATH, auth probe, a command probe and a file-read probe for headless permission denial, stop-review gate state) and prints a single JSON report with `ready`, per-check sections, and `nextSteps`.
 
-Headless agy auto-denies any tool its `permissions.allow` rules do not cover, and it reports the refusal as `denied_actions` on an otherwise successful-looking result. The two probes exercise a terminal command and a file read, because the two need different rules (`command(...)` and `read_file(*)`) and `--mode accept-edits` covers neither. The report names each denied tool and the rule for it. That settings edit is yours to make by hand, in your own terminal: in a Claude Code auto mode session the classifier blocks the agent from editing the file, from passing `--dangerously-skip-permissions`, and even from querying `agy -p "/permissions"`.
+On agy 1.4.10 and later the probes run under the plugin's own per-run permissions (see [Will it use the same agy settings I already have?](#will-it-use-the-same-agy-settings-i-already-have) below): the file-read probe under the read-only profile, the command probe under the write profile, so your saved settings do not decide the result. On an older agy, headless agy auto-denies any tool its `permissions.allow` rules do not cover, and it reports the refusal as `denied_actions` on an otherwise successful-looking result. The two probes exercise a terminal command and a file read, because the two need different rules (`command(...)` and `read_file(*)`) and `--mode accept-edits` covers neither. The report names each denied tool and the rule for it. That settings edit is yours to make by hand, in your own terminal: in a Claude Code auto mode session the classifier blocks the agent from editing the file, from passing `--dangerously-skip-permissions`, and even from querying `agy -p "/permissions"`.
 
 When a probe fails, the report says which of three things went wrong rather than assuming a login problem: a real authentication failure, a restricted environment where the invoking shell blocked a syscall agy needs, or an unknown cause. Only the first is fixed by signing in again.
 
@@ -142,9 +142,12 @@ Examples:
 
 The review runs isolated: agy runs from a temp directory, not your
 repository, and receives the diff in the prompt (on stdin). That is a
-working-directory change, not a sandbox: whether agy can still reach paths
-outside that directory depends on agy's own `toolPermission` setting (under
-`always-proceed` it can read a file by absolute path). If the diff trips the secret scanner, the run stops and reports
+working-directory change, not a sandbox: on agy 1.4.10 and later the plugin's
+read-only profile denies commands and file writes but not file reads, so it
+does not stop agy reading a file outside that directory by absolute path; on
+an older agy, whether agy can still reach paths outside that directory depends
+on agy's own `toolPermission` setting (under `always-proceed` it can read a
+file by absolute path). If the diff trips the secret scanner, the run stops and reports
 what it found; pass `--allow-secret <regex>` (repeatable) to admit a known
 false positive. A staged review during an unresolved merge is refused with the
 unmerged paths named (`git diff --cached` leaves conflicted files out of the
@@ -172,8 +175,10 @@ Examples:
 ```
 
 Same isolation and secret scan as `/agy:review`: agy runs from a temp
-directory and receives the diff in the prompt (on stdin), and whether it can
-reach paths outside that directory depends on agy's `toolPermission` setting.
+directory and receives the diff in the prompt (on stdin), under the read-only
+profile on agy 1.4.10 and later (file reads allowed, commands and file writes
+denied); on an older agy, whether it can reach paths outside that directory
+depends on agy's `toolPermission` setting.
 A diff that trips the secret scanner stops the run until
 you redact it or pass `--allow-secret <regex>` (repeatable) for a known false
 positive.
@@ -208,14 +213,14 @@ Examples:
 - if you do not pass `--model` or `--effort`, agy chooses its own defaults
 - `--background` and `--wait` are a request: Claude Code 2.1.284 and 2.1.285 run the rescue subagent in the background whichever you pass, and its `Agent` tool offers no foreground or background parameter. Where the host lets the command choose, it asks for the mode you gave (foreground when you gave neither); where it does not, the result arrives through the completion notification, and the command says so
 - some models reject `--effort` outright (agy 1.2.4 refuses it for `claude-opus-4-6-thinking` before running anything); the rescue agent then reruns once without the flag and says so. See [Effort levels](#effort-levels) for which models take which level
-- write-capable runs use `--mode accept-edits` on the agy side; review and diagnosis runs stay read-only
-- follow-up rescue requests can continue the latest agy conversation, but only one that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`: `--resume` reopens it write-capable (`--mode accept-edits`) with your repository added, so it must not be pointed at a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`. When the most recent agy conversation in this session came from one of those, there is no safe continue path: rerun that command, or start fresh without `--resume`
+- write-capable runs use `--mode auto` with always-proceed on the agy side, so agy runs any command and writes anywhere without asking; review and diagnosis runs use the read-only profile (plan mode, no command and no file write)
+- follow-up rescue requests can continue the latest agy conversation, but only one that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`: `--resume` reopens it write-capable (`--mode auto` with always-proceed, which runs any command and writes anywhere without asking) with your repository added, so it must not be pointed at a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`. When the most recent agy conversation in this session came from one of those, there is no safe continue path: rerun that command, or start fresh without `--resume`
 
 ### `/agy:continue`
 
 Sends a follow-up into an existing agy conversation instead of starting a new one. With no id, continues the most recent conversation from this session. Same `--background`/`--wait`, `--model`, `--effort` flags as `/agy:rescue`.
 
-Only use it on conversations that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`. It resumes write-capable (`--mode accept-edits`) with your repository added, so it must not be used on a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`, which ran isolated and read-only over untrusted web or diff content. Rerun those commands with the refined request instead.
+Only use it on conversations that came from `/agy:rescue`, `/agy:continue` or `/agy:transfer`. It resumes write-capable (`--mode auto` with always-proceed, which runs any command and writes anywhere without asking) with your repository added, so it must not be used on a conversation from `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:review` or `/agy:adversarial-review`, which ran isolated and read-only over untrusted web or diff content. Rerun those commands with the refined request instead.
 
 Examples:
 
@@ -233,15 +238,17 @@ Examples:
 
 One-shot: no repository, no `--add-dir`, no follow-up. The answer comes back
 with a `conversation_id`, but there is no safe continue path for it:
-`/agy:continue` resumes through the rescue subagent in `--mode accept-edits`
+`/agy:continue` resumes through the rescue subagent in the write profile (`--mode auto` with always-proceed, which runs any command and writes anywhere without asking)
 with your repository added, which would make a conversation that holds web
 content write-capable there. Rerun `/agy:whisper` with the refined request
 (the same goes for `/agy:search`, `/agy:research`, `/agy:image`, `/agy:review`
 and `/agy:adversarial-review`). agy runs from an isolated temp directory, not your project. That is a
-working-directory change rather than a sandbox: whether agy can reach paths
-outside it depends on agy's own `toolPermission` setting (`always-proceed`
-reads by absolute path) and, with an absolute path in the prompt text, may
-still reach outside it. agy 1.2.14 also has an `allowNonWorkspaceAccess`
+working-directory change rather than a sandbox: on agy 1.4.10 and later these
+runs use the plugin's read-only profile, which denies commands and file writes
+but not file reads, so agy can still read a file outside it by absolute path,
+for instance one named in the prompt text; on an older agy, whether agy can
+reach paths outside it depends on agy's own `toolPermission` setting
+(`always-proceed` reads by absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess`
 setting, but its effect is unmeasured here, so nothing above relies on it.
 Nothing in this command's text is checked for a URL; the local-network guard
 belongs to `/agy:search` alone. The prompt text does go
@@ -384,7 +391,7 @@ Examples:
 
 ### Effort levels
 
-`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.2.14 (`agy models`, 2026-09-30) every Gemini id carries its effort level in the id itself: `gemini-3.8-flash-high`, `-medium` and `-low` (the same for `gemini-3.7-flash` and `gemini-3.6-flash`), and `gemini-3.1-pro-high` and `-low` only. The Claude and GPT-OSS ids (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`, `gpt-oss-120b-medium`) carry none. Only one refusal was measured: agy 1.2.4 refused `--effort` for `claude-opus-4-6-thinking` before running anything. The rest is read off `agy models`, not run, and whether a suffixed Gemini id accepts `--effort` on top is unmeasured, so pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so. The companion commands (`/agy:whisper`, `/agy:research`, `/agy:image`, `/agy:transfer`) skip that rerun when too little of the run's time budget is left, and report it as `effortRetry.skipped`.
+`--effort <low|medium|high>` is not accepted by every model at every level. On agy 1.5.14 (`agy models`, 2026-11-23) this account lists `gemini-3.8-flash-high`, `-medium` and `-low`, which carry their effort level in the id, and `claude-sonnet-4-6`, `claude-opus-4-6-thinking` and `gpt-oss-120b-medium`, which carry none; the list varies by auth type, and on agy 1.2.14 it also had `gemini-3.7-flash`, `gemini-3.6-flash` and `gemini-3.1-pro` ids. Only one refusal was measured on agy 1.2.4 (`claude-opus-4-6-thinking`); on 1.5.14 every non-Gemini id refused `--effort`, a Gemini id refused any level but its own suffix, and the default model refused `xhigh`, each before running anything. So pick the level through the id (`--model gemini-3.8-flash-high`) rather than adding the flag. The dated per-model table is in `skills/agy-cli-runtime/SKILL.md`. A refused level costs nothing, since agy refuses it before any model call: `/agy:rescue`, `/agy:continue`, `/agy:whisper`, `/agy:research`, `/agy:image` and `/agy:transfer` rerun once without `--effort` and say so. The companion commands (`/agy:whisper`, `/agy:research`, `/agy:image`, `/agy:transfer`) skip that rerun when too little of the run's time budget is left, and report it as `effortRetry.skipped`.
 
 ## Typical Flows
 
@@ -460,11 +467,12 @@ Either way, the result comes back with a `conversation_id`, so the thread stays 
 
 ## Stop-Review Gate
 
-Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately.
+Off by default. When enabled, a Stop hook runs a read-only `agy -p` review of the previous Claude turn before the session is allowed to end. The reviewer answers `ALLOW:` or `BLOCK:` on its first line; a block keeps the session open with the reviewer's reason. Turns without code changes are allowed through immediately. The run is read-only and cannot run commands, so the hook collects the working-tree diff against HEAD itself, screened by the same secret scan as `/agy:review`, and passes it in the prompt along with the paths of untracked files.
 
 - Toggle per workspace with `/agy:setup gate on` / `gate off`. The flag is stored outside the repository, under `CLAUDE_PLUGIN_DATA` and keyed by a hash of the workspace root, so there is nothing in your project to commit by mistake. A gate enabled under the older in-repository `.claude/agy.local.md` is still honoured until you set it through the command, but only when git reports that file untracked (or ignored) and it is not reached through a symlink; a copy committed to the repository (including through a committed `.claude` symlink or submodule, or a case variant of the path) is ignored, and so is the file whenever git refuses to answer for the repository (for example over dubious ownership). The file is still honoured when there is no `.git` at the workspace root (a tarball or zip download) or git is not installed, since there is nothing to ask; a committed copy in such a download can still turn the gate on.
 - If agy is missing, the gate skips with a note instead of blocking.
 - Review failures and timeouts block with guidance to run `/agy:review` manually or turn the gate off.
+- A diff that trips the secret scanner is withheld: agy gets the paths of the changed and untracked files instead and reviews by reading them. The scanner hit does not block the stop by itself.
 
 ## FAQ
 
@@ -480,10 +488,14 @@ No. Every delegation is a call to the same local `agy` binary you would use dire
 
 ### Will it use the same agy settings I already have?
 
-Yes, and one of those settings decides whether delegation works at all.
+Mostly. Your sign-in, model and other agy settings, yes. Permissions, partly:
+on agy 1.4.10 and later the plugin overrides your Tool Permission, Agent Mode
+and allow rules for every run it starts (the table further down), and your
+saved deny rules still apply. On an older agy, your own settings decide, as
+follows.
 
 agy's `toolPermission` setting decides whether headless delegation can work at
-all, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's
+all on an agy older than 1.4.10, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's
 own `/config` screen. Measured on agy 1.2.4 with no allow-rules, and the same
 live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18:
 
@@ -497,6 +509,31 @@ live harness (`npm run test:denials`) passed on agy 1.2.5 on 2026-09-18:
 Anything else, including a typo, is accepted and silently read back as
 `request-review`, so a mode that never takes effect looks the same as one that
 does.
+
+That table is what agy does with your own settings, and on agy 1.4.10 and
+later it no longer decides what the plugin's runs may do. Since agy 1.5.7 a
+headless run with no saved Agent Mode starts in Auto, which under
+`request-review` ran commands, including a shell write outside the workspace,
+with no rule (measured on agy 1.5.14). So every agy run the plugin starts now
+sets its own permissions for that run with `--settings`, which agy never saves:
+
+| runs | flags | what agy may do |
+|---|---|---|
+| the stop-review gate, `/agy:review`, `/agy:adversarial-review`, `/agy:search`, `/agy:research`, `/agy:whisper`, `/agy:image`, `/agy:transfer`, a read-only `/agy:rescue`, the `/agy:setup` read and auth probes, `/agy:quota` | `--mode plan --settings '{"toolPermission":"request-review","agentMode":"auto","permissions":{"allow":[],"deny":["write_file(*)","command(*)","mcp(*)","execute_url(*)"]}}'` | read files and the web; no command runs and no file is written or edited, in or outside the workspace |
+| a write-capable `/agy:rescue` or `/agy:continue`, the `/agy:setup` command probe | `--mode auto --settings '{"toolPermission":"always-proceed","agentMode":"auto"}'` | **anything**: any command runs and any file is written, anywhere, without asking |
+
+Your own Tool Permission, Agent Mode and allow rules are overridden for these
+runs. A deny rule you saved (`permissions.deny`) still applies to every run:
+agy replaces a saved permissions list with the one a run carries, so the
+plugin adds your saved deny rules to the read-only runs' own list. `/agy:transfer`'s own
+run only seeds the agy conversation with the brief; when you continue it in agy
+yourself, your own settings apply again. Every row of the live harness
+(`npm run test:denials`) checks the result by outcome, not by agy's report:
+under the read-only flags no command ran and no file was written, including
+with a saved `command(*)` allow rule and a prompt claiming the user authorized
+the command, while the same actions all happened under the write flags. On an
+agy older than 1.4.10, which has no `--settings`, read-only runs pass no mode
+and write runs pass `--mode accept-edits`, with your own settings, as before.
 
 When a delegation is refused anyway, the plugin resumes that conversation once,
 stating the constraint, rather than throwing the turn away. The result carries a

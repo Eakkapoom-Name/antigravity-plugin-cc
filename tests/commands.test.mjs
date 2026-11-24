@@ -1377,8 +1377,8 @@ test("rescue and continue treat --wait and --background as a request the host ma
 // F130. Effort support is per model, and the docs named a model agy lacks.
 test("the docs carry a dated per-model effort table and no model agy does not list", () => {
   const runtime = read("skills/agy-cli-runtime/SKILL.md");
-  assert.match(runtime, /Effort support per model \(`agy models` on agy 1\.2\.14, 2026-09-30\)/);
-  for (const model of ["gemini-3.8-flash", "gemini-3.1-pro", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]) {
+  assert.match(runtime, /Effort support per model \(`agy models` on agy 1\.5\.14, 2026-11-23\)/);
+  for (const model of ["gemini-3.8-flash", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"]) {
     assert.ok(runtime.includes(`\`${model}`), `the effort table does not name ${model}`);
   }
   assert.doesNotMatch(read("README.md"), /gemini-3\.5-pro/);
@@ -1650,14 +1650,18 @@ test("result handling checks the top-level failure before calling an unrecovered
 });
 
 // Every `--model <id>` in the shipped docs is an id `agy models` listed on
-// agy 1.2.14. Fake ids inside test stubs are not docs and are not scanned.
+// agy 1.5.14 (2026-11-23). Fake ids inside test stubs are not docs and are not
+// scanned. The ids 1.2.14 also listed are kept apart: the runtime skill still
+// names them as no longer listed, but no doc may pass one as `--model`.
 const LISTED_MODEL_IDS = new Set([
   "gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gemini-3.8-flash-low",
-  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
-  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
-  "gemini-3.1-pro-high", "gemini-3.1-pro-low",
   "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gpt-oss-120b-medium"
 ]);
+const RETIRED_MODEL_IDS = [
+  "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
+  "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
+  "gemini-3.1-pro-high", "gemini-3.1-pro-low"
+];
 
 function shippedMarkdown() {
   const files = ["README.md"];
@@ -1687,7 +1691,80 @@ test("every --model id in the docs is one agy models lists", () => {
   for (const id of LISTED_MODEL_IDS) {
     assert.ok(runtime.includes(`\`${id}\``), `the runtime skill does not list ${id}`);
   }
-  assert.match(runtime, /Only one cell was measured: agy 1\.2\.4 refused `--effort` for `claude-opus-4-6-thinking`/);
+  for (const id of RETIRED_MODEL_IDS) {
+    assert.ok(runtime.includes(`\`${id}\``), `the runtime skill does not record ${id} as no longer listed`);
+  }
+  assert.match(runtime, /which 1\.5\.14 no longer lists here/);
+  assert.match(runtime, /Earlier, only one cell was measured: agy 1\.2\.4 refused `--effort` for `claude-opus-4-6-thinking`/);
   assert.doesNotMatch(runtime, /the pro model may list its effort inside the id/);
   assert.match(read("README.md"), /Only one refusal was measured/);
+});
+
+// agy 1.5.14 compatibility. F1: the rescue template pins one of two profiles
+// on every run, with the one rerun an agy too old for --settings needs. F2: the
+// rescue's effort rerun names every refusal text 1.5.14 prints.
+test("rescue agent pins the write or read-only profile and knows every effort refusal", () => {
+  const agent = read("agents/agy-rescue.md");
+  assert.match(agent, /^agy_write='\{"toolPermission":"always-proceed","agentMode":"auto"\}'$/m);
+  assert.match(
+    agent,
+    /^agy_read_only='\{"toolPermission":"request-review","agentMode":"auto","permissions":\{"allow":\[\],"deny":\["write_file\(\*\)","command\(\*\)","mcp\(\*\)","execute_url\(\*\)"\]\}\}'$/m
+  );
+  assert.match(agent, /--mode auto --settings "\$agy_write" 2>&1 > "\$out"/);
+  assert.match(agent, /replace those flags with `--mode plan --settings "\$agy_read_only"`/);
+  assert.doesNotMatch(agent, /agentMode":""/);
+  assert.match(agent, /flags provided but not defined: -settings/);
+  assert.match(agent, /with `--mode accept-edits` in place of the write flags, or with no `--mode` and no `--settings` in place of the read-only flags/);
+  for (const text of [/--effort is not supported for model/, /conflicts with --effort=<level>/, /has no "<level>" effort/]) {
+    assert.match(agent, text);
+  }
+  assert.match(agent, /An unknown model \(`\.\.\. is not recognized as a known model \.\.\.`\) is not an effort refusal/);
+});
+
+// F3 and F4 in the command docs.
+test("adversarial-review reads structured_output first and handles a timeout", () => {
+  const doc = read("commands/adversarial-review.md");
+  assert.match(doc, /take the review object from `result\.structured_output` when it is an object/);
+  assert.match(doc, /Only when there is no `result\.structured_output` object and `result\.response` is not valid JSON/);
+  assert.doesNotMatch(doc, /so agy cannot edit/);
+  assert.match(doc, /runs agy under the plugin's read-only profile \(plan mode, commands and file writes denied\)/);
+  for (const file of ["commands/review.md", "commands/adversarial-review.md", "commands/research.md", "commands/search.md", "skills/agy-result-handling/SKILL.md"]) {
+    const text = read(file);
+    assert.ok(text.includes('failure: "timeout"'), `${file} does not handle failure: "timeout"`);
+    assert.match(text, /print_timeout/, `${file} does not name finished_reason print_timeout`);
+  }
+  assert.match(read("skills/agy-result-handling/SKILL.md"), /take the structured object from `structured_output` when it is present/);
+});
+
+// agy replaces a saved `permissions` block with the run's own, so the rescue
+// template adds the user's saved deny rules to agy_read_only before agy runs.
+// The template's own two lines run here under bash with a scratch HOME.
+test("rescue template merges the user's saved deny rules into the read-only settings", { skip: process.platform === "win32" }, () => {
+  const agent = read("agents/agy-rescue.md");
+  const base = agent.split("\n").find((line) => line.startsWith("agy_read_only='"));
+  const merge = agent.split("\n").find((line) => line.startsWith("merged=$("));
+  assert.ok(base && merge, "the template lost its read-only settings or its merge line");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-deny-"));
+  try {
+    const script = `${base}\n${merge}\nprintf '%s' "$agy_read_only"\n`;
+    const run = (env) => spawnSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, HOME: home, ...env } });
+    const plain = JSON.parse(run({}).stdout);
+    assert.deepEqual(plain.permissions.deny, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"], "no settings file must leave the base list");
+    fs.mkdirSync(path.join(home, ".gemini", "antigravity-cli"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".gemini", "antigravity-cli", "settings.json"),
+      `﻿${JSON.stringify({ permissions: { allow: ["command(*)"], deny: ["read_file(/home/u/.aws/*)", "command(*)"] } })}`
+    );
+    const merged = JSON.parse(run({}).stdout);
+    assert.deepEqual(merged.permissions, {
+      allow: [],
+      deny: ["read_file(/home/u/.aws/*)", "command(*)", "write_file(*)", "mcp(*)", "execute_url(*)"]
+    });
+    // With node missing from PATH the template keeps its own list rather than
+    // an empty one.
+    const noNode = JSON.parse(spawnSync("/bin/bash", ["-c", script], { encoding: "utf8", env: { HOME: home, PATH: "/nonexistent" } }).stdout);
+    assert.deepEqual(noNode.permissions.deny, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 });

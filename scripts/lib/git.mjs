@@ -1,4 +1,5 @@
 import { runCommand } from "./process.mjs";
+import { scanForSecrets } from "./secrets.mjs";
 
 // Diffs are collected here rather than by the model so the bytes go straight
 // from git into agy's stdin. They are never interpolated into a command line,
@@ -123,15 +124,74 @@ export function collectDiff(scopeArgument, cwd) {
   return { ok: true, scope, diff, error: null, empty: diff.trim().length === 0 };
 }
 
+// What keeps a collected diff from leaving for agy, shared by /agy:review and
+// the stop-review gate. Returns null for a diff that may be sent, otherwise
+// `{ failure, ... }`: "unmerged" (with `paths`), "diff-shape", or "secrets"
+// (with `hits`). Nothing leaves while a credential shape sits anywhere in the
+// diff, removed and context lines included, since the whole diff goes on
+// stdin. Blocking, not redacting: a redacted diff reviews differently.
+export function screenDiff(diff, { allow = [] } = {}) {
+  const scan = scanForSecrets(diff, { allow, diff: true });
+  // During an unresolved merge `git diff --cached` prints `* Unmerged path
+  // <file>` for each conflicted file and no diff section for it, so the file is
+  // not in the text at all. Refused ahead of the shape test below, which would
+  // otherwise send the user to their git config (only such lines, no `diff
+  // --git` header) or, alongside ordinary sections, pass silently with the
+  // conflicted file unreviewed.
+  const unmerged = [...diff.matchAll(/^\* Unmerged path (.+?)\r?$/gm)].map((match) => match[1]);
+  if (unmerged.length > 0) {
+    const shown = unmerged.slice(0, 10).join(", ");
+    const more = unmerged.length > 10 ? ` and ${unmerged.length - 10} more` : "";
+    return {
+      failure: "unmerged",
+      paths: unmerged,
+      error: `unresolved merge: ${shown}${more} ${unmerged.length === 1 ? "is" : "are"} unmerged, so the diff cannot cover ${unmerged.length === 1 ? "it" : "them"}. Resolve the merge (fix the conflict markers and stage the result), then rerun.`
+    };
+  }
+  // Fail closed on a diff the scanner could not read as one: every real
+  // `git diff` file section starts with a `diff --git` line (or, for a
+  // combined diff, a `diff --cc` or `diff --combined` one), so a non-empty
+  // diff with none of them is some other shape (color escapes, an external
+  // driver's output) whose scan proves nothing. A section with no hunk (a
+  // binary, mode-only or rename-only change) still has that line and still
+  // passes.
+  if (scan.diffHeaders === 0) {
+    return {
+      failure: "diff-shape",
+      error:
+        "diff shape not recognized, refusing to send it unscanned: git's output has no `diff --git`, `diff --cc` or `diff --combined` header the secret scanner can read. Check your git config for diff settings that change its output format."
+    };
+  }
+  if (scan.hits.length > 0) {
+    return { failure: "secrets", hits: scan.hits };
+  }
+  return null;
+}
+
 // Untracked files never appear in `git diff`, so an empty diff alone does not
 // mean there is nothing to review.
 export function untrackedFiles(cwd) {
-  const result = git(["ls-files", "--others", "--exclude-standard"], cwd);
+  return pathList(git(["ls-files", "-z", "--others", "--exclude-standard"], cwd));
+}
+
+// Paths of tracked files that differ from HEAD, for when the diff itself is
+// not sent.
+export function changedFiles(cwd) {
+  return pathList(git(["diff", "-z", "--name-only", "--no-ext-diff", "HEAD"], cwd));
+}
+
+// Paths staged in the index against HEAD, or against the empty tree when HEAD
+// is unborn (no commit yet), which is when the gate needs them: such files are
+// neither untracked nor in `git diff HEAD`.
+export function stagedFiles(cwd) {
+  return pathList(git(["diff", "-z", "--cached", "--name-only", "--no-ext-diff"], cwd));
+}
+
+function pathList(result) {
   if (result.status !== 0) {
     return [];
   }
   return String(result.stdout ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
+    .split("\0")
     .filter(Boolean);
 }

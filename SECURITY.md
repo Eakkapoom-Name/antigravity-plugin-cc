@@ -12,10 +12,12 @@ send, per command:
 
 - `/agy:review`, `/agy:adversarial-review`: the git diff of the chosen scope.
   Not the rest of the repository: these run from an isolated temp directory,
-  not your project. That is a working-directory change, not a sandbox:
-  whether agy can reach paths outside that directory depends on agy's own
-  `toolPermission` setting (under `always-proceed` it can read a file by
-  absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess` setting,
+  not your project. That is a working-directory change, not a sandbox: on
+  agy 1.4.10 and later the plugin's read-only profile denies commands and
+  file writes but not file reads, so it does not stop agy reading a file
+  outside that directory by absolute path; on an older agy, whether agy can
+  reach paths outside it depends on agy's own `toolPermission` setting
+  (under `always-proceed` it can read a file by absolute path). agy 1.2.14 also has an `allowNonWorkspaceAccess` setting,
   whose effect is unmeasured here; nothing in this document relies on it.
 - `/agy:transfer`: the handoff brief Claude Code wrote, which summarises the
   conversation and can quote files. agy then has the repository as its
@@ -41,8 +43,13 @@ send, per command:
   read probe is skipped and reported as skipped, rather than planted in a
   temp directory outside that root. The gate on/off/status form of the same command
   sends nothing to agy at all.
-- The stop-review gate: the previous Claude turn, and whatever agy reads in the
-  repository to check it. The older in-repository `.claude/agy.local.md` gate
+- The stop-review gate: the previous Claude turn, the working-tree diff
+  against HEAD with the paths of untracked files (with no commit yet, the
+  staged and untracked file paths and no diff), and whatever agy reads in
+  the repository to check it. The diff gets the same secret scan as
+  `/agy:review`: on a hit the diff is withheld and only the changed and
+  untracked file paths are sent, though agy can still read those files
+  in the repository. The older in-repository `.claude/agy.local.md` gate
   flag is honoured only when git reports it untracked or ignored and it is
   not reached through a symlink; one committed to the repository (directly,
   through a committed `.claude` symlink or submodule, or under a case
@@ -105,8 +112,10 @@ send, per command:
   live `API_KEY=` line that appears in a hunk header.
 - `/agy:review`, `/agy:adversarial-review`, `/agy:whisper`, `/agy:search`,
   `/agy:research` and `/agy:image` run agy from an isolated temp directory
-  rather than the project; whether agy can still reach paths outside it
-  depends on agy's `toolPermission` setting. Six other runs are not isolated
+  rather than the project, under the read-only profile on agy 1.4.10 and
+  later (file reads allowed, commands and file writes denied); on an older
+  agy, whether agy can still reach paths outside it depends on agy's
+  `toolPermission` setting. Six other runs are not isolated
   this way. `/agy:quota` is read-only and sends no user text. `/agy:setup`'s
   readiness check writes a marker file into the actual workspace root for its
   read probe to read back, so it runs against the workspace, not an isolated
@@ -114,8 +123,25 @@ send, per command:
   as its `--add-dir`, because it reviews the working tree itself.
   `/agy:transfer` likewise runs agy with the repository as its cwd and as its
   `--add-dir`. `/agy:rescue` and `/agy:continue` run agy with the repository
-  as its cwd and its `--add-dir` and, by default, `--mode accept-edits`, so agy can edit it
-  there; a run the user asks to keep read-only drops `--mode`.
+  as its cwd and its `--add-dir`, and by default write-capable.
+- On agy 1.4.10 and later every agy run the plugin starts sets its own
+  permissions for that run with `--settings` (never saved), so the user's
+  Tool Permission, Agent Mode and allow rules do not change what it may do.
+  Read-only runs (the six isolated commands, the stop-review gate,
+  `/agy:transfer`, a read-only rescue, `/agy:quota` and the setup read and auth
+  probes) use `--mode plan` with request-review and deny rules on
+  `write_file`, `command`, `mcp` and `execute_url`: measured on agy 1.5.14,
+  no command ran and no file was written in or outside the workspace, even
+  with a saved `command(*)` allow rule or a prompt claiming authorization.
+  Without the deny rules, plan mode under request-review still let the file
+  tool write. Write-capable runs (rescue by default, `/agy:continue`, the
+  setup command probe) use `--mode auto` with always-proceed: agy runs any
+  command and writes any file, anywhere, without asking. A deny rule the
+  user saved (`permissions.deny`) applies to every run: agy replaces a saved
+  permissions list with the one `--settings` carries (measured on 1.5.14),
+  so the read-only runs add the user's saved deny rules to their own list.
+  Below agy 1.4.10 read-only runs pass no
+  mode and write runs pass `--mode accept-edits`, under the user's settings.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:
   a URL given as the whole argument, and a URL-shaped word inside an ordinary

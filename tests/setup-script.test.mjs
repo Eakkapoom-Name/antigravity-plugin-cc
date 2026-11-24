@@ -19,6 +19,7 @@ import {
   meetsMinimumVersion,
   newerThanVerified,
   permissionNextStep,
+  probeArgs,
   readAgySettings,
   resolveToolPermission
 } from "../scripts/agy-setup.mjs";
@@ -858,4 +859,105 @@ test("an unwritable workspace root skips the read probe instead of probing a tem
     assert.equal(call.cwd, workspace);
     assert.doesNotMatch(call.argv, /probe\.txt|file viewing tool/);
   }
+});
+
+// agy 1.5.14 compatibility, F1. Each probe runs under the profile of the runs
+// it stands for, so the user's saved settings do not decide setup's verdict on
+// an agy that has `--settings`: auth and read under the read-only profile,
+// the command probe under the write profile.
+test("the setup probes run under the read-only and write profiles", () => {
+  const RO = '{"toolPermission":"request-review","agentMode":"auto","permissions":{"allow":[],"deny":["write_file(*)","command(*)","mcp(*)","execute_url(*)"]}}';
+  const read = probeArgs("Reply with exactly: OK", "/work", "1.5.14");
+  assert.equal(read[read.indexOf("--mode") + 1], "plan");
+  assert.equal(read[read.indexOf("--settings") + 1], RO);
+  assert.equal(read[read.indexOf("--add-dir") + 1], "/work");
+
+  const write = probeArgs("run pwd", "/work", "1.5.14", "write");
+  assert.equal(write[write.indexOf("--mode") + 1], "auto");
+  assert.deepEqual(JSON.parse(write[write.indexOf("--settings") + 1]), { toolPermission: "always-proceed", agentMode: "auto" });
+
+  // Below 1.4.10 the probes keep their old shape and measure the user's settings.
+  for (const profile of ["read-only", "write"]) {
+    const old = probeArgs("x", "/work", "1.4.9", profile);
+    assert.ok(!old.includes("--settings") && !old.includes("--mode"), `${profile}: ${old.join(" ")}`);
+  }
+});
+
+test("buildReport hands the agy version to both probes", () => {
+  const seen = [];
+  buildReport({
+    cwd: "/work",
+    node: { available: true, detail: "v22.0.0" },
+    agy: { available: true, version: "1.5.14", meetsMinimum: true, newerThanVerified: false },
+    agySettings: { toolPermission: "request-review", agentMode: null },
+    gateOn: true,
+    checkAuth: (cwd, version) => {
+      seen.push(["auth", cwd, version]);
+      return { available: true, loggedIn: true, detail: "ok", failureKind: null, durationSeconds: 1 };
+    },
+    checkToolPermissions: (cwd, version) => {
+      seen.push(["tools", cwd, version]);
+      return { available: true, detail: "ok", deniedActions: [], command: null, read: null, durationSeconds: 1 };
+    }
+  });
+  assert.deepEqual(seen, [["auth", "/work", "1.5.14"], ["tools", "/work", "1.5.14"]]);
+});
+
+test("readAgySettings reports the saved Agent Mode, or null when none is saved", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-setup-mode-"));
+  try {
+    const dir = path.join(home, ".gemini", "antigravity-cli");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "settings.json");
+    fs.writeFileSync(file, JSON.stringify({ toolPermission: "request-review", agentMode: "auto" }));
+    assert.equal(readAgySettings(home).agentMode, "auto");
+    fs.writeFileSync(file, JSON.stringify({ agentMode: "" }));
+    assert.equal(readAgySettings(home).agentMode, "");
+    fs.writeFileSync(file, JSON.stringify({ toolPermission: "request-review" }));
+    assert.equal(readAgySettings(home).agentMode, null);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function modeReport(version, agentMode) {
+  return buildReport({
+    cwd: os.tmpdir(),
+    node: { available: true, detail: "v22.0.0" },
+    agy: { available: true, version, meetsMinimum: true, newerThanVerified: newerThanVerified(version) },
+    agySettings: { toolPermission: "always-proceed", agentMode },
+    gateOn: true,
+    checkAuth: () => ({ available: true, loggedIn: true, detail: "ok", failureKind: null, durationSeconds: 1 }),
+    checkToolPermissions: () => ({ available: true, detail: "ok", deniedActions: [], command: null, read: null, durationSeconds: 1 })
+  });
+}
+
+test("a saved Auto mode on an agy too old to pin it gets a warning, and nothing else does", () => {
+  const old = modeReport("1.4.9", "auto");
+  assert.equal(old.ready, true);
+  assert.equal(old.nextSteps.length, 1);
+  assert.match(old.nextSteps[0], /saved Agent Mode is `auto`/);
+  assert.match(old.nextSteps[0], /older than 1\.4\.10/);
+  assert.deepEqual(modeReport("1.4.9", null).nextSteps, []);
+  assert.deepEqual(modeReport("1.4.9", "").nextSteps, []);
+  assert.deepEqual(modeReport(VERIFIED_AGY_VERSION, "auto").nextSteps, []);
+});
+
+test("on an agy with --settings the denial advice says the plugin's own settings ran the probe", () => {
+  const step = permissionNextStep(["command"], "strict", true);
+  assert.match(step, /this plugin sets its own permissions for every run/);
+  assert.match(step, /--mode plan --settings/);
+  assert.match(step, /runs any command and writes anywhere without asking/);
+  assert.match(step, /changing them does not help/);
+  assert.match(step, /`permissions\.deny`/);
+  assert.doesNotMatch(step, /Your `toolPermission` is `strict`/);
+  // Below the gate the old per-mode advice still applies.
+  assert.match(permissionNextStep(["command"], "request-review", false), /Your `toolPermission` is `request-review`/);
+});
+
+test("the setup read probe keeps the user's saved deny rules; the write probe sets no permissions", () => {
+  const read = probeArgs("x", "/work", "1.5.14", "read-only", ["read_file(/secret/*)"]);
+  assert.deepEqual(JSON.parse(read[read.indexOf("--settings") + 1]).permissions.deny[0], "read_file(/secret/*)");
+  const write = probeArgs("x", "/work", "1.5.14", "write", ["read_file(/secret/*)"]);
+  assert.equal(JSON.parse(write[write.indexOf("--settings") + 1]).permissions, undefined);
 });

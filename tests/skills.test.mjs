@@ -101,13 +101,11 @@ test("runtime contract documents denied_actions in the result shape", () => {
 });
 
 // F18. `--mode plan` was documented as unexplored. It was run on 1.2.4 and did
-// not stay plan-only in print mode, which is why the rescue flow does not
-// expose it and read-only runs keep omitting --mode instead.
-test("runtime contract records what --mode plan actually did and does not expose it", () => {
+// not stay plan-only in print mode.
+test("runtime contract records what --mode plan actually did", () => {
   assert.ok(!/Unexplored here/.test(CLI_RUNTIME), "the runtime skill still calls --mode plan unexplored");
   assert.match(CLI_RUNTIME, /`--mode plan`/);
   assert.match(CLI_RUNTIME, /edited .* in the same turn/);
-  assert.match(CLI_RUNTIME, /not exposed/);
 });
 
 // F22. Both skills claimed in-workspace reads pass without a rule. That held
@@ -129,8 +127,27 @@ for (const [label, source] of [["result handling", RESULT_HANDLING], ["runtime c
 
 test("runtime contract records that agy has no per-invocation permission flag", () => {
   // Checked against agy 1.2.4: no --tool-permission flag and no environment
-  // variable, so the mode cannot be overridden for one run.
-  assert.match(CLI_RUNTIME, /no .*flag|cannot be overridden|per-invocation/i);
+  // variable for the permission mode. Still true on 1.5.14; what changed is
+  // `--settings`, which the next test covers.
+  assert.match(CLI_RUNTIME, /There is no `--tool-permission` flag and no environment\s+variable for the permission mode/);
+  assert.doesNotMatch(CLI_RUNTIME, /so the mode cannot be set for one run/);
+});
+
+// F1 of the 1.5.14 compatibility pass. Since agy 1.5.7 an unpinned headless run
+// starts in Auto mode, which ran commands under request-review on 1.5.14. The
+// contract has to name both per-run profiles, the deny list and why it exists,
+// the version they need, and what happens below it.
+test("runtime contract documents Auto mode and the two per-run permission profiles", () => {
+  assert.match(CLI_RUNTIME, /Since agy 1\.5\.7 a headless `-p` run with no saved Agent Mode starts in Auto mode/);
+  assert.match(CLI_RUNTIME, /- Read-only: `--mode plan` with `\{"toolPermission":"request-review","agentMode":"auto","permissions":\{"allow":\[\],"deny":\["write_file\(\*\)","command\(\*\)","mcp\(\*\)","execute_url\(\*\)"\]\}\}`/);
+  assert.match(CLI_RUNTIME, /- Write: `--mode auto` with `\{"toolPermission":"always-proceed","agentMode":"auto"\}`/);
+  assert.match(CLI_RUNTIME, /agy runs any command and writes any file, anywhere, without asking/);
+  assert.match(CLI_RUNTIME, /The first release whose `--help` lists it is 1\.4\.10/);
+  assert.match(CLI_RUNTIME, /`--mode plan` with `request-review` alone refused commands but still let the file tool write/);
+  assert.match(CLI_RUNTIME, /Below 1\.4\.10 nothing can be set for one run/);
+  assert.doesNotMatch(CLI_RUNTIME, /agy has no per-invocation override for this/);
+  assert.doesNotMatch(CLI_RUNTIME, /The plugin passes only `\{"agentMode":""\}`/);
+  assert.doesNotMatch(CLI_RUNTIME, /30 minute cap\)/);
 });
 
 // F24. Correcting 0.6.4's false claim went one step too far: both skills then

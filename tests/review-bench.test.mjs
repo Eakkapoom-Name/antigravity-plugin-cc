@@ -14,7 +14,8 @@ import {
   loadCassette,
   loadCassettes,
   matchesAnyMarker,
-  reviewText
+  reviewText,
+  structuredReview
 } from "../scripts/lib/review-bench.mjs";
 import { scanForSecrets } from "../scripts/lib/secrets.mjs";
 
@@ -303,4 +304,40 @@ test("buildCassetteRepo ignores a caller's GIT_DIR and GIT_INDEX_FILE", () => {
   scratchDirs.push(dir);
   assert.ok(fs.existsSync(path.join(dir, ".git")), "the scratch repo was not initialised in its own dir");
   assert.ok(diffAgainstHead(dir).trim().length > 0);
+});
+
+// agy 1.5.14 compatibility, F3. A --json-schema run carries the validated
+// object as `structured_output`, and its `response` held the object twice
+// (pretty, then compact), which JSON.parse rejects. Shape taken from a live
+// adversarial-review on 1.5.14 (2026-11-23).
+const LIVE_STRUCTURED = {
+  verdict: "needs-attention",
+  summary: "The loop reads one past the end.",
+  findings: [{ severity: "high", title: "Off-by-one loop bound", body: "i <= n.", file: "sum.js", line_start: 3, line_end: 3, confidence: 0.9, recommendation: "Use i < n." }],
+  next_steps: []
+};
+const DOUBLED_RESPONSE = `${JSON.stringify(LIVE_STRUCTURED, null, 2)}\n${JSON.stringify(LIVE_STRUCTURED)}`;
+
+test("structuredReview prefers structured_output over a doubled response", () => {
+  assert.throws(() => JSON.parse(DOUBLED_RESPONSE));
+  const result = { response: DOUBLED_RESPONSE, structured_output: LIVE_STRUCTURED };
+  assert.deepEqual(structuredReview(result), LIVE_STRUCTURED);
+  const text = reviewText({ ok: true, result });
+  assert.match(text, /Off-by-one loop bound/);
+  assert.doesNotMatch(text, /reads one past the end/);
+  const outcome = evaluateReview({ id: "x", markers: ["off-by-one"] }, { ok: true, result });
+  assert.equal(outcome.verdict, "HIT");
+});
+
+test("structuredReview falls back to parsing response on an older agy", () => {
+  assert.deepEqual(structuredReview({ response: JSON.stringify(LIVE_STRUCTURED) }), LIVE_STRUCTURED);
+  assert.equal(structuredReview({ response: "prose" }), null);
+  assert.deepEqual(structuredReview({ response: JSON.stringify(LIVE_STRUCTURED), structured_output: null }), LIVE_STRUCTURED);
+  assert.deepEqual(structuredReview({ response: JSON.stringify(LIVE_STRUCTURED), structured_output: { other: 1 } }), LIVE_STRUCTURED);
+  assert.equal(structuredReview(null), null);
+});
+
+test("an approve in structured_output with an empty response still scores MISS, not ERROR", () => {
+  const result = { response: "", structured_output: { verdict: "approve", summary: "Fine.", findings: [], next_steps: [] } };
+  assert.equal(evaluateReview({ id: "x", markers: ["anything"] }, { ok: true, result }).verdict, "MISS");
 });

@@ -8,14 +8,22 @@
 import process from "node:process";
 import { runPromptWithDenialRecovery } from "../../scripts/lib/agy.mjs";
 
-const PROMPT =
-  "Use your terminal command tool to run 'pwd', then reply with exactly the word READY.";
+// The harness passes a marker path outside the workspace; the command creates
+// it, so whether the command ran is read off the filesystem, not off agy's
+// report.
+const MARKER = process.env.AGY_PROBE_MARKER ?? "/tmp/agy-denial-recovery-marker";
+const PROMPT = `Use your terminal command tool to run 'touch ${MARKER}', then reply with exactly the word READY.`;
 
+// The read-only profile, the one runIsolated gives the commands this recovery
+// serves. Under it agy may refuse the command with a `denied_actions` entry
+// (then the run is resumed once) or decline it in prose; the harness checks
+// the outcome either way: the command must not have run.
 const run = runPromptWithDenialRecovery(PROMPT, {
   cwd: process.cwd(),
   addDir: [process.cwd()],
   printTimeout: "2m",
-  timeoutMs: 3 * 60 * 1000
+  timeoutMs: 3 * 60 * 1000,
+  profile: "read-only"
 });
 
 process.stdout.write(

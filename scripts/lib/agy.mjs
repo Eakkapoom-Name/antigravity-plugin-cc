@@ -4,8 +4,130 @@ import os from "node:os";
 import path from "node:path";
 
 import { commandAvailable, runCommand } from "./process.mjs";
+import { compareVersions, extractVersionNumber, versionCore } from "./version.mjs";
 
 export const DEFAULT_PRINT_TIMEOUT = "8m";
+
+// Every agy run this plugin starts pins its own permission settings for that
+// run, so what the user saved in ~/.gemini/antigravity-cli/settings.json (their
+// Tool Permission, Agent Mode and allow rules) never changes what the plugin's
+// runs may do. `--settings` takes settings.json keys for one session only,
+// merged over the user's file and never saved.
+//
+// Why: agy 1.5.7 made Auto the default Agent Mode for a headless run with no
+// saved mode, and under the stock request-review permission Auto ran commands,
+// shell writes outside the workspace included, that the plugin's read-only
+// paths had relied on being refused. Pinning one value was not enough either:
+// measured live on 1.5.14 (2026-11-23), `--mode plan` with request-review
+// refused commands but still let the file tool write inside and outside the
+// workspace, and a user's saved `command(*)` allow rule let it run commands.
+//
+// Two profiles:
+//   read-only  `--mode plan`, request-review, and a deny rule on every tool kind
+//              that changes anything: write_file (writes and edits), command
+//              (agy's file tools have no delete, so deletion is a command), mcp
+//              and execute_url. agy replaces a saved `permissions` list with
+//              the per-run one rather than combining them (measured on 1.5.14,
+//              2026-11-24: a saved `read_file(<file>)` deny blocked the read on
+//              its own, and the same file was read once the run's --settings
+//              carried a `permissions` block). So `allow: []` drops the
+//              user's allow rules for the run, and the user's saved deny rules
+//              are merged into the run's deny list (readOnlySettings) so they
+//              still apply. read_file and read_url stay allowed otherwise. Measured on 1.5.14
+//              with each refusal checked by outcome (no file written in or
+//              outside the workspace, no command run, including a user
+//              `command(*)` allow rule and a prompt claiming authorization),
+//              while whisper, search, review, adversarial-review, image and the
+//              stop-gate prompt still answered normally.
+//   write      `--mode auto` with always-proceed: agy runs any command and
+//              writes anywhere without asking. Write-capable rescue only.
+// A refusal under these deny rules usually comes back as prose, not as a
+// `denied_actions` entry, so the read-only guarantee is the rules themselves,
+// not the plugin noticing a denial.
+export const READ_ONLY_MODE = "plan";
+export const READ_ONLY_DENY = ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"];
+export const READ_ONLY_SETTINGS = readOnlySettings();
+
+// The read-only settings with the user's saved deny rules kept: their rules
+// first, then the plugin's, each once.
+export function readOnlySettings(savedDeny = []) {
+  const deny = [...new Set([...savedDeny, ...READ_ONLY_DENY])];
+  return JSON.stringify({
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny }
+  });
+}
+
+// The `permissions.deny` rules the user saved in agy's settings.json, as
+// strings. Never throws: a missing or malformed file has no rules. agy accepts
+// a UTF-8 BOM there (changelog 1.5.8), so one is stripped.
+export function savedDenyRules(homeDir = os.homedir()) {
+  try {
+    const text = fs.readFileSync(path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"), "utf8");
+    const deny = JSON.parse(text.replace(/^\uFEFF/, ""))?.permissions?.deny;
+    return Array.isArray(deny) ? deny.filter((rule) => typeof rule === "string" && rule.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+export const WRITE_MODE = "auto";
+export const WRITE_SETTINGS = JSON.stringify({ toolPermission: "always-proceed", agentMode: "auto" });
+
+// Below SETTINGS_FLAG_MIN_VERSION there is no `--settings`, and nothing can be
+// pinned for one run. Such an agy predates the 1.5.7 Auto default, so a
+// read-only run passes no mode (Default, the behaviour this plugin was built
+// on: commands refused under request-review), and a write run keeps
+// `--mode accept-edits`. `--mode plan` is not used there: on 1.2.4 it still
+// edited files headlessly.
+export const LEGACY_WRITE_MODE = "accept-edits";
+
+// The first agy whose `--help` lists `--settings`: bisected on the linux-x64
+// release binaries (1.4.9 has no such flag, 1.4.10, 1.4.11, 1.5.0 and 1.5.7
+// have it). An older agy exits 2 on the unknown flag (`flags provided but not
+// defined: -settings`).
+export const SETTINGS_FLAG_MIN_VERSION = "1.4.10";
+
+// Whether an agy of `version` takes `--settings`. A version that could not be
+// read counts as yes: on an agy that cannot take the flag the run then fails
+// loudly with a usage error, which is safer than a run that silently starts
+// with the user's own permissions.
+export function settingsFlagSupported(version) {
+  return !(version && versionCore(version) !== null && compareVersions(version, SETTINGS_FLAG_MIN_VERSION) < 0);
+}
+
+// The `--mode` and `--settings` a run of `profile` ("read-only" or "write")
+// passes on an agy of `version`; null for a flag that is left out. `savedDeny`
+// is the user's saved deny rules, kept in the read-only run's deny list. The
+// write profile sets no `permissions`, so the user's saved rules apply to it
+// unchanged.
+export function profileFlags(profile, version, savedDeny = []) {
+  const pinned = settingsFlagSupported(version);
+  if (profile === "write") {
+    return pinned ? { mode: WRITE_MODE, settings: WRITE_SETTINGS } : { mode: LEGACY_WRITE_MODE, settings: null };
+  }
+  if (profile === "read-only") {
+    return pinned ? { mode: READ_ONLY_MODE, settings: readOnlySettings(savedDeny) } : { mode: null, settings: null };
+  }
+  throw new Error(`unknown permission profile: ${JSON.stringify(profile)}`);
+}
+
+// `agy --version` once per process (about 0.1 s on 1.5.14), read the way
+// /agy:setup reads it. null when agy is missing or prints no version.
+let detectedAgyVersion;
+
+export function installedAgyVersion(probe = () => runCommand("agy", ["--version"], { encoding: "utf8", timeout: 30 * 1000 })) {
+  if (detectedAgyVersion === undefined) {
+    const out = probe();
+    detectedAgyVersion = out?.error || out?.status !== 0 ? null : extractVersionNumber(String(out?.stdout ?? ""));
+  }
+  return detectedAgyVersion;
+}
+
+// Test seam: forgets the cached version so the next call probes again.
+export function resetInstalledAgyVersion() {
+  detectedAgyVersion = undefined;
+}
 
 // The margin a spawn timeout keeps over the print timeout it is paired with:
 // one minute, the gap DEFAULT_SPAWN_TIMEOUT_MS always kept over
@@ -130,8 +252,22 @@ export function deniedActions(result) {
 // `--effort` is refused for some models before any model call is made (agy
 // 1.2.4: `--effort is not supported for model "..."`, exit 1, status ERROR).
 // Rerunning without the flag spends nothing, so callers can do that once.
+//
+// agy 1.5.14 words the refusal three ways, all exit 1 and status ERROR before
+// any model call, each after an `invalid model selection (...)` prefix:
+//   --effort is not supported for model "claude-sonnet-4-6"   (Claude models)
+//   --model gpt-oss-120b-medium conflicts with --effort=high  (models whose id fixes the level)
+//   gemini-3.8-flash has no "xhigh" effort (available: low, medium, high)
+// The prefix alone is not enough: every pre-model error carries it, including
+// an unknown model (`... model x is not recognized as a known model ...`),
+// which a rerun without the flag would not fix, so only the tails count. With
+// `--effort` set, 1.5.14 words an unknown model as the first text above, so
+// that case still gets its one rerun, which costs no quota and then reports
+// the unknown model.
+const EFFORT_REJECTION = /--effort is not supported for model|conflicts with --effort=|has no "[^"]*" effort/;
+
 export function effortRejected(result) {
-  return /--effort is not supported for model/.test(String(result?.error ?? ""));
+  return EFFORT_REJECTION.test(String(result?.error ?? ""));
 }
 
 export function buildArgs(options = {}) {
@@ -156,6 +292,9 @@ export function buildArgs(options = {}) {
   if (options.jsonSchema) {
     args.push("--json-schema", options.jsonSchema);
   }
+  if (options.settings) {
+    args.push("--settings", options.settings);
+  }
   for (const dir of options.addDir ?? []) {
     args.push("--add-dir", dir);
   }
@@ -168,9 +307,25 @@ export function agyAvailable() {
 }
 
 // The prompt goes in on stdin and never appears in argv at any layer.
-export function runPrompt(prompt, options = {}) {
+//
+// `profile` ("read-only" or "write") pins that profile's mode and settings
+// for the installed agy, replacing any `mode` the caller passed. The version is
+// read here, at the spawn, rather than by the callers, so the stubbed runners
+// the tests pass never spawn agy for it. `detectVersion` and `readSavedDeny`
+// are injectable for the same reason.
+export function promptArgs(options = {}, detectVersion = installedAgyVersion, readSavedDeny = savedDenyRules) {
+  const { profile, ...rest } = options;
+  if (!profile) {
+    return buildArgs(rest);
+  }
+  const { mode, settings } = profileFlags(profile, detectVersion(), profile === "read-only" ? readSavedDeny() : []);
+  return buildArgs({ ...rest, mode: mode ?? undefined, settings });
+}
+
+export function runPrompt(prompt, options = {}, detectVersion = installedAgyVersion) {
   const printTimeout = options.printTimeout ?? DEFAULT_PRINT_TIMEOUT;
-  const spawned = runCommand("agy", buildArgs(options), {
+  const args = promptArgs(options, detectVersion);
+  const spawned = runCommand("agy", args, {
     cwd: options.cwd,
     encoding: "utf8",
     input: buildStreamInput(prompt),
@@ -198,6 +353,12 @@ export function parseAgyError(stderr) {
   }
 }
 
+// agy's own print timeout, named by `finished_reason` on the result or by the
+// AGY_ERROR line's `reason` (1.5.14 prints both).
+export function printTimedOut(result, agyError) {
+  return result?.finished_reason === "print_timeout" || (agyError !== null && typeof agyError === "object" && agyError.reason === "print_timeout");
+}
+
 // Split from runPrompt so the classification can be tested on stubbed spawn
 // results. Exit 3 is a failure whatever the result event says: since 1.2.10
 // agy exits 3 after streaming part of a response, and the JSON then carries
@@ -220,6 +381,14 @@ export function interpretPromptRun(spawned) {
   let failure = null;
   if (normalized.deniedActions.length > 0) {
     failure = "denied";
+  } else if (printTimedOut(result, agyError)) {
+    // Since 1.5.0 a turn cut short by --print-timeout exits 3 with an
+    // AGY_ERROR line, and since 1.4.11 the result names it in
+    // `finished_reason`. Measured live on 1.5.14 (2026-11-23): `status` still
+    // said SUCCESS, so it is not trusted here. The partial response stays on
+    // `result`.
+    ok = false;
+    failure = "timeout";
   } else if (spawned.status === 3 || agyError !== null) {
     ok = false;
     failure = "agy-error";
@@ -264,11 +433,24 @@ export function interpretSlashCommandRun(spawned) {
 // Slash commands are answered by the CLI itself and are unavailable under
 // `--input-format stream-json` (agy says so explicitly), so they keep the
 // classic argv form. Their text is a fixed literal, so there is no size risk.
-export function runSlashCommand(name, options = {}) {
+//
+// A slash command is answered by agy itself and calls no tool, but it is still
+// a plugin-initiated run, so it carries the read-only settings too (never
+// `--mode`), on an agy that takes `--settings`.
+export function slashCommandArgs(name, printTimeout, version, savedDeny = []) {
+  const args = ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout];
+  const { settings } = profileFlags("read-only", version, savedDeny);
+  if (settings) {
+    args.push("--settings", settings);
+  }
+  return args;
+}
+
+export function runSlashCommand(name, options = {}, detectVersion = installedAgyVersion) {
   const printTimeout = options.printTimeout ?? "2m";
   const spawned = runCommand(
     "agy",
-    ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout],
+    slashCommandArgs(name, printTimeout, detectVersion(), savedDenyRules()),
     { cwd: options.cwd, encoding: "utf8", timeout: options.timeoutMs ?? spawnTimeoutMs(printTimeout) }
   );
   return interpretSlashCommandRun(spawned);
@@ -391,6 +573,11 @@ export function runPromptWithDenialRecovery(prompt, options = {}, run = runPromp
 // repository cannot write into it, whatever the model decides. The price is
 // that the reviewer cannot open files around a hunk: the prompt is the whole
 // evidence. The stop gate, rescue and transfer never come through here.
+//
+// The temp workspace bounds command cwd, not what agy may do, so every
+// isolated run also gets the read-only profile (set after the caller's
+// options so no caller can drop it or pass its own `mode`); the denial resume
+// and the effort rerun reuse these options and keep it.
 export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let tmp;
   try {
@@ -410,7 +597,7 @@ export function runIsolated(prompt, options = {}, run = runPrompt, now) {
   let out;
   let thrown;
   try {
-    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp] }, run, now);
+    out = runPromptWithDenialRecovery(prompt, { ...rest, cwd: tmp, addDir: [tmp], profile: "read-only" }, run, now);
   } catch (error) {
     thrown = error;
   }

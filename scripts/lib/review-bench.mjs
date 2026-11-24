@@ -157,13 +157,17 @@ export function matchesAnyMarker(text, markers) {
 // A response that follows `schemas/review-output.schema.json` (what
 // `adversarial-review` asks agy for): a string `verdict` plus a `findings`
 // array. Anything else, including JSON of some other shape, is null.
+function isReviewShape(value) {
+  return Boolean(value) && typeof value === "object" && typeof value.verdict === "string" && Array.isArray(value.findings);
+}
+
 export function parseStructuredReview(response) {
   if (typeof response !== "string" || response.length === 0) {
     return null;
   }
   try {
     const parsed = JSON.parse(response);
-    if (parsed && typeof parsed === "object" && typeof parsed.verdict === "string" && Array.isArray(parsed.findings)) {
+    if (isReviewShape(parsed)) {
       return parsed;
     }
   } catch {
@@ -173,6 +177,20 @@ export function parseStructuredReview(response) {
   return null;
 }
 
+// The schema-shaped review on an agy result. Since agy 1.5.x a `--json-schema`
+// run carries the validated object as `structured_output`, and its `response`
+// is no longer pure JSON: measured on 1.5.14 (2026-11-23) it held the object
+// pretty-printed and then a second, compact copy, so JSON.parse(response)
+// failed. `structured_output` wins when it is schema-shaped; an older agy has
+// no such field, so `response` is still parsed as before.
+export function structuredReview(result) {
+  const structured = result?.structured_output;
+  if (isReviewShape(structured)) {
+    return structured;
+  }
+  return parseStructuredReview(result?.response);
+}
+
 // Pulls the text a marker search should run over out of a companion `review`
 // or `adversarial-review` payload. For a schema-shaped response only the
 // findings count (each finding's title, body, and recommendation): the
@@ -180,11 +198,11 @@ export function parseStructuredReview(response) {
 // "approve" with no findings has nothing to search and scores MISS, however
 // its summary is worded. Any other response is searched as the raw string.
 export function reviewText(payload) {
+  const structured = structuredReview(payload?.result);
   const response = payload?.result?.response;
-  if (typeof response !== "string" || response.length === 0) {
+  if (!structured && (typeof response !== "string" || response.length === 0)) {
     return "";
   }
-  const structured = parseStructuredReview(response);
   if (structured) {
     return structured.findings
       .map((finding) =>
@@ -240,7 +258,7 @@ export function evaluateReview(cassette, payload) {
       detail: `empty diff reported: ${payload.note ?? ""}`
     };
   }
-  const structured = parseStructuredReview(payload.result?.response);
+  const structured = structuredReview(payload.result);
   const text = reviewText(payload);
   if (structured && !text) {
     return {

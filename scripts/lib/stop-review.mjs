@@ -51,7 +51,7 @@ export function judgeReview(run) {
   if (run.failure === "timeout") {
     return {
       ok: false,
-      reason: `The stop-time agy review timed out after 10 minutes. ${OFF_HINT}`
+      reason: `The stop-time agy review timed out before it finished (agy's 9 minute print timeout or the hook's 10 minute limit). ${OFF_HINT}`
     };
   }
   const denied = run.deniedActions ?? [];
@@ -60,7 +60,7 @@ export function judgeReview(run) {
     const rules = denied.map(ruleFor).join(" and ");
     return {
       ok: false,
-      reason: `The stop-time agy review could not run: agy auto-denied its ${names} tool call in headless mode. Add ${rules} to permissions.allow in ~/.gemini/antigravity-cli/settings.json, by hand in your own terminal, then end the turn again. ${OFF_HINT}`
+      reason: `The stop-time agy review could not run: agy auto-denied its ${names} tool call in headless mode. On agy 1.4.10 and later the plugin runs the gate read-only (plan mode, with commands and file writes denied by its own per-run rules), so no rule in your settings lifts a command or write refusal there; on an older agy, add ${rules} to permissions.allow in ~/.gemini/antigravity-cli/settings.json, by hand in your own terminal, then end the turn again. ${OFF_HINT}`
     };
   }
   if (!run.ok) {

@@ -19,10 +19,26 @@ import {
   MIN_RECOVERY_PRINT_TIMEOUT_MS,
   normalizeStreamOutput,
   parseAgyError,
+  printTimedOut,
   printTimeoutMs,
+  promptArgs,
+  installedAgyVersion,
+  LEGACY_WRITE_MODE,
+  profileFlags,
+  READ_ONLY_DENY,
+  READ_ONLY_MODE,
+  READ_ONLY_SETTINGS,
+  readOnlySettings,
+  resetInstalledAgyVersion,
+  savedDenyRules,
+  settingsFlagSupported,
+  slashCommandArgs,
+  WRITE_MODE,
+  WRITE_SETTINGS,
   runIsolated,
   runPromptWithDenialRecovery,
   runSlashCommand,
+  SETTINGS_FLAG_MIN_VERSION,
   SPAWN_TIMEOUT_MARGIN_MS,
   spawnTimeoutMs
 } from "../scripts/lib/agy.mjs";
@@ -151,7 +167,7 @@ test("buildArgs always selects the stdin transport", () => {
 
 test("buildArgs omits every optional flag unless asked", () => {
   const args = buildArgs({});
-  for (const flag of ["--mode", "--model", "--effort", "--json-schema", "--conversation", "-c", "--add-dir"]) {
+  for (const flag of ["--mode", "--model", "--effort", "--json-schema", "--settings", "--conversation", "-c", "--add-dir"]) {
     assert.ok(!args.includes(flag), `${flag} was passed without being requested`);
   }
 });
@@ -1163,4 +1179,265 @@ test("runSlashCommand reports a real spawn timeout as a timeout, not invalid JSO
   } finally {
     process.env.PATH = previous;
   }
+});
+
+// agy 1.5.14 compatibility, F1. Every plugin-initiated run pins its own
+// permissions per run with `--settings`, so the user's saved settings never
+// change what it may do. The expected values are the captain's model, plus the
+// deny list measured live on 1.5.14 (2026-11-23): without it `--mode plan` with
+// request-review still let the file tool write, and a user's `command(*)`
+// allow rule let a command run.
+test("the read-only profile is plan mode, request-review, Auto, and denies every changing tool kind", () => {
+  assert.equal(READ_ONLY_MODE, "plan");
+  assert.deepEqual(JSON.parse(READ_ONLY_SETTINGS), {
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny: ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"] }
+  });
+  assert.deepEqual(READ_ONLY_DENY, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]);
+  // Reads and web reads stay allowed: search, research and every review need them.
+  for (const kind of ["read_file", "read_url"]) {
+    assert.ok(!READ_ONLY_SETTINGS.includes(kind), `${kind} is denied`);
+  }
+});
+
+test("the write profile is Auto mode with always-proceed and no deny list", () => {
+  assert.equal(WRITE_MODE, "auto");
+  assert.deepEqual(JSON.parse(WRITE_SETTINGS), { toolPermission: "always-proceed", agentMode: "auto" });
+});
+
+test("--settings is used from 1.4.10 on, and when the version is unknown", () => {
+  assert.equal(SETTINGS_FLAG_MIN_VERSION, "1.4.10");
+  for (const version of ["1.4.10", "1.4.11", "1.5.7", "1.5.14", "2.0.0", "v1.5.14", "1.4.10.1", null, undefined, "", "not a version"]) {
+    assert.equal(settingsFlagSupported(version), true, String(version));
+  }
+  for (const version of ["1.4.9", "1.2.11", "1.2.4", "1.4.9.9"]) {
+    assert.equal(settingsFlagSupported(version), false, version);
+  }
+});
+
+test("profileFlags pins both profiles, and below 1.4.10 falls back to the pre-1.5.7 behaviour", () => {
+  assert.deepEqual(profileFlags("read-only", "1.5.14"), { mode: "plan", settings: READ_ONLY_SETTINGS });
+  assert.deepEqual(profileFlags("write", "1.5.14"), { mode: "auto", settings: WRITE_SETTINGS });
+  // Below the gate: no --settings exists. Read-only passes no mode (plan mode
+  // still edited files headlessly on 1.2.4); write keeps accept-edits.
+  assert.deepEqual(profileFlags("read-only", "1.4.9"), { mode: null, settings: null });
+  assert.deepEqual(profileFlags("write", "1.4.9"), { mode: LEGACY_WRITE_MODE, settings: null });
+  assert.equal(LEGACY_WRITE_MODE, "accept-edits");
+  assert.throws(() => profileFlags("admin", "1.5.14"), /unknown permission profile/);
+});
+
+test("buildArgs passes --settings only when given one", () => {
+  const args = buildArgs({ settings: READ_ONLY_SETTINGS });
+  assert.equal(args[args.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!buildArgs({ settings: null }).includes("--settings"));
+});
+
+test("promptArgs replaces the caller's mode with the profile's and probes the version only for a profile", () => {
+  const readOnly = promptArgs({ profile: "read-only", mode: "accept-edits", addDir: ["/tmp/x"] }, () => "1.5.14", () => []);
+  assert.equal(readOnly[readOnly.indexOf("--mode") + 1], "plan");
+  assert.equal(readOnly.filter((arg) => arg === "--mode").length, 1);
+  assert.equal(readOnly[readOnly.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!readOnly.includes("profile") && !readOnly.includes("read-only"));
+
+  const write = promptArgs({ profile: "write" }, () => "1.5.14", () => []);
+  assert.equal(write[write.indexOf("--mode") + 1], "auto");
+  assert.equal(write[write.indexOf("--settings") + 1], WRITE_SETTINGS);
+
+  const old = promptArgs({ profile: "read-only", mode: "accept-edits" }, () => "1.4.9", () => []);
+  assert.ok(!old.includes("--settings") && !old.includes("--mode"), `old agy read-only argv: ${old.join(" ")}`);
+  const oldWrite = promptArgs({ profile: "write" }, () => "1.4.9", () => []);
+  assert.equal(oldWrite[oldWrite.indexOf("--mode") + 1], "accept-edits");
+  assert.ok(!oldWrite.includes("--settings"));
+
+  let probed = false;
+  const plain = promptArgs({ mode: "accept-edits" }, () => {
+    probed = true;
+    return "1.5.14";
+  });
+  assert.ok(!plain.includes("--settings"));
+  assert.equal(probed, false, "a run with no profile spent an agy --version call");
+});
+
+test("slash commands carry the read-only settings but never --mode", () => {
+  const args = slashCommandArgs("usage", "2m", "1.5.14");
+  assert.deepEqual(args.slice(0, 6), ["-p", "/usage", "--output-format", "json", "--print-timeout", "2m"]);
+  assert.equal(args[args.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+  assert.ok(!args.includes("--mode"));
+  assert.ok(!slashCommandArgs("usage", "2m", "1.4.9").includes("--settings"));
+});
+
+test("installedAgyVersion reads agy --version once and caches it", () => {
+  resetInstalledAgyVersion();
+  let calls = 0;
+  const probe = () => {
+    calls += 1;
+    return { status: 0, stdout: "1.5.14\n" };
+  };
+  try {
+    assert.equal(installedAgyVersion(probe), "1.5.14");
+    assert.equal(installedAgyVersion(probe), "1.5.14");
+    assert.equal(calls, 1);
+
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ error: { code: "ENOENT" }, status: null, stdout: "" })), null);
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ status: 2, stdout: "" })), null);
+    resetInstalledAgyVersion();
+    assert.equal(installedAgyVersion(() => ({ status: 0, stdout: "garbage" })), null);
+  } finally {
+    resetInstalledAgyVersion();
+  }
+});
+
+test("runIsolated gives every run the read-only profile, and a caller cannot change it", () => {
+  let seen;
+  runIsolated("x", { profile: "write", mode: "auto" }, (_prompt, options) => {
+    seen = options;
+    return { result: {}, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  });
+  assert.equal(seen.profile, "read-only");
+  assert.equal(seen.mode, undefined);
+  const argv = promptArgs(seen, () => "1.5.14", () => []);
+  assert.equal(argv[argv.indexOf("--mode") + 1], "plan");
+  assert.equal(argv[argv.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
+});
+
+test("the pin survives the denial resume inside runIsolated", () => {
+  const calls = [];
+  const out = runIsolated("x", {}, (prompt, options) => {
+    calls.push(options);
+    if (calls.length === 1) {
+      return {
+        result: { status: "SUCCESS", conversation_id: "c-denied", response: "", denied_actions: [{ action: "command" }] },
+        events: [],
+        deniedActions: ["command"],
+        stderr: "",
+        ok: false,
+        failure: "denied"
+      };
+    }
+    return { result: { status: "SUCCESS", conversation_id: "c-denied", response: "ok" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  }, () => 0);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].conversationId, "c-denied");
+  assert.equal(calls[1].profile, "read-only", "the resumed turn lost the read-only profile");
+  assert.equal(out.recovery.attempted, true);
+});
+
+// F2. The three refusal texts agy 1.5.14 prints before any model call, captured
+// live on 2026-11-23 (exit 1, status ERROR, finished_reason error), and the
+// unknown-model text, which is not an effort refusal.
+const EFFORT_REFUSALS_1_5_14 = [
+  'invalid model selection (--model "claude-sonnet-4-6" --effort "high"): --effort is not supported for model "claude-sonnet-4-6"',
+  'invalid model selection (--model "gpt-oss-120b-medium" --effort "high"): --model gpt-oss-120b-medium conflicts with --effort=high',
+  'invalid model selection (--model "gemini-3.8-flash-high" --effort "low"): --model gemini-3.8-flash-high conflicts with --effort=low',
+  'invalid model selection (--model "" --effort "xhigh"): gemini-3.8-flash has no "xhigh" effort (available: low, medium, high)'
+];
+
+test("every effort refusal agy 1.5.14 prints is recognised", () => {
+  for (const error of EFFORT_REFUSALS_1_5_14) {
+    assert.equal(effortRejected({ status: "ERROR", error, finished_reason: "error" }), true, error);
+  }
+});
+
+test("an unknown model is not an effort refusal, even with the shared prefix", () => {
+  const unknown =
+    'invalid model selection (--model "no-such-model-x" --effort ""): model no-such-model-x is not recognized as a known model or custom model in settings\nAvailable models:\n  Gemini 3.8 Flash (High)';
+  assert.equal(effortRejected({ status: "ERROR", error: unknown }), false);
+  assert.equal(effortRejected({ status: "ERROR", error: 'invalid model selection (--model "x" --effort "high"): boom' }), false);
+  assert.equal(effortRejected({ status: "ERROR", error: 'invalid --effort "bogus" (valid: low, medium, high, xhigh, max)' }), false);
+});
+
+// F4. Since agy 1.5.0 a turn cut short by --print-timeout exits 3 with an
+// AGY_ERROR line, and since 1.4.11 the result says finished_reason
+// print_timeout. Shapes captured live through runPrompt on 1.5.14 with
+// printTimeout "1s": status still said SUCCESS.
+const PRINT_TIMEOUT_AGY_ERROR =
+  'AGY_ERROR: {"short_error":"print timeout after 1s with the turn still in progress; the response is partial","status":"DEADLINE_EXCEEDED","retryable":false,"reason":"print_timeout"}';
+
+function printTimeoutStdout(fields = {}) {
+  return `${JSON.stringify({
+    event: "result",
+    result: { conversation_id: "c-timeout", status: "SUCCESS", response: "Half", finished_reason: "print_timeout", ...fields }
+  })}\n`;
+}
+
+test("a print timeout is failure timeout, not agy-error, and keeps the partial response", () => {
+  const out = interpretPromptRun({ status: 3, stdout: printTimeoutStdout(), stderr: `[agy] print timeout after 1s\n${PRINT_TIMEOUT_AGY_ERROR}` });
+  assert.equal(out.ok, false);
+  assert.equal(out.failure, "timeout");
+  assert.equal(out.result.response, "Half");
+  assert.equal(out.result.conversation_id, "c-timeout");
+  assert.equal(out.agyError.reason, "print_timeout");
+});
+
+test("either signal alone marks a print timeout", () => {
+  const byField = interpretPromptRun({ status: 3, stdout: printTimeoutStdout(), stderr: "" });
+  assert.equal(byField.failure, "timeout");
+  const byLine = interpretPromptRun({ status: 3, stdout: printTimeoutStdout({ finished_reason: undefined }), stderr: PRINT_TIMEOUT_AGY_ERROR });
+  assert.equal(byLine.failure, "timeout");
+  assert.equal(printTimedOut({ finished_reason: "error" }, null), false);
+  assert.equal(printTimedOut({}, "raw text"), false);
+  assert.equal(printTimedOut(null, null), false);
+});
+
+test("a denial still wins over a print timeout, and other exit-3 errors stay agy-error", () => {
+  const denied = interpretPromptRun({
+    status: 0,
+    stdout: printTimeoutStdout({ denied_actions: [{ action: "command", display_name: "Bash" }] }),
+    stderr: ""
+  });
+  assert.equal(denied.failure, "denied");
+  const other = interpretPromptRun({ status: 3, stdout: printTimeoutStdout({ finished_reason: "error" }), stderr: "" });
+  assert.equal(other.failure, "agy-error");
+});
+
+// agy replaces a saved `permissions` block with the one --settings carries:
+// measured on 1.5.14 (2026-11-24), a saved `read_file(<file>)` deny blocked the
+// read with no --settings, and the same file was read under the read-only
+// profile's --settings. So the user's saved deny rules are merged in.
+test("readOnlySettings keeps the user's saved deny rules ahead of the plugin's, each once", () => {
+  assert.deepEqual(JSON.parse(readOnlySettings(["read_file(/home/u/.aws/*)", "command(*)"])), {
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny: ["read_file(/home/u/.aws/*)", "command(*)", "write_file(*)", "mcp(*)", "execute_url(*)"] }
+  });
+  assert.equal(readOnlySettings(), READ_ONLY_SETTINGS);
+  assert.equal(readOnlySettings([]), READ_ONLY_SETTINGS);
+});
+
+test("savedDenyRules reads permissions.deny from agy's settings file and never throws", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-saved-deny-"));
+  try {
+    assert.deepEqual(savedDenyRules(home), [], "a missing file has no rules");
+    const dir = path.join(home, ".gemini", "antigravity-cli");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "settings.json");
+    // agy accepts a UTF-8 BOM in settings.json (changelog 1.5.8).
+    fs.writeFileSync(file, `﻿${JSON.stringify({ permissions: { allow: ["command(*)"], deny: ["read_file(/s)", 7, "", "read_url(*)"] } })}`);
+    assert.deepEqual(savedDenyRules(home), ["read_file(/s)", "read_url(*)"]);
+    fs.writeFileSync(file, "{ not json");
+    assert.deepEqual(savedDenyRules(home), []);
+    fs.writeFileSync(file, JSON.stringify({ permissions: { deny: "read_file(/s)" } }));
+    assert.deepEqual(savedDenyRules(home), []);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("read-only runs, slash commands included, carry the saved deny rules; write runs set no permissions", () => {
+  const saved = () => ["read_file(/secret/*)"];
+  const readOnly = promptArgs({ profile: "read-only" }, () => "1.5.14", saved);
+  assert.deepEqual(JSON.parse(readOnly[readOnly.indexOf("--settings") + 1]).permissions.deny.slice(0, 2), ["read_file(/secret/*)", "write_file(*)"]);
+  let read = false;
+  const write = promptArgs({ profile: "write" }, () => "1.5.14", () => {
+    read = true;
+    return ["read_file(/secret/*)"];
+  });
+  assert.equal(read, false, "a write run read the saved rules it does not need");
+  assert.deepEqual(JSON.parse(write[write.indexOf("--settings") + 1]), { toolPermission: "always-proceed", agentMode: "auto" });
+  assert.deepEqual(profileFlags("read-only", "1.5.14", ["x(*)"]).settings, readOnlySettings(["x(*)"]));
+  const slash = slashCommandArgs("usage", "2m", "1.5.14", ["read_file(/secret/*)"]);
+  assert.match(slash[slash.indexOf("--settings") + 1], /"deny":\["read_file\(\/secret\/\*\)"/);
 });

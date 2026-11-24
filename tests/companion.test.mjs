@@ -1904,3 +1904,83 @@ for (const [name, printTimeout, invoke] of [
     assert.equal(out.ok, false);
   });
 }
+
+// agy 1.5.14 compatibility, F2: the GPT-OSS and Gemini refusal texts were not
+// recognised, so whisper returned the refusal instead of rerunning.
+test("whisper reruns without --effort on each refusal text agy 1.5.14 prints", () => {
+  for (const error of [
+    'invalid model selection (--model "gpt-oss-120b-medium" --effort "high"): --model gpt-oss-120b-medium conflicts with --effort=high',
+    'invalid model selection (--model "" --effort "xhigh"): gemini-3.8-flash has no "xhigh" effort (available: low, medium, high)'
+  ]) {
+    const calls = [];
+    const out = whisper("--effort high hi", (prompt, options) => {
+      calls.push(options);
+      if (options.effort) {
+        return { result: { status: "ERROR", error, finished_reason: "error" }, events: [], deniedActions: [], stderr: "", ok: false, failure: "failed" };
+      }
+      return { result: { status: "SUCCESS", response: "hello" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+    }, () => true);
+    assert.equal(calls.length, 2, error);
+    assert.equal(calls[1].effort, undefined);
+    assert.equal(calls[1].profile, "read-only", "the rerun lost the read-only profile");
+    assert.equal(out.effortDropped, true);
+    assert.equal(out.ok, true);
+  }
+});
+
+test("whisper does not rerun an unknown model", () => {
+  const calls = [];
+  const out = whisper("--effort high hi", (prompt, options) => {
+    calls.push(options);
+    return {
+      result: { status: "ERROR", error: 'invalid model selection (--model "x" --effort ""): model x is not recognized as a known model or custom model in settings' },
+      events: [],
+      deniedActions: [],
+      stderr: "",
+      ok: false,
+      failure: "failed"
+    };
+  }, () => true);
+  assert.equal(calls.length, 1);
+  assert.equal(out.effortDropped, false);
+});
+
+// F1: every isolated command runs under the read-only profile.
+test("search and research run under the read-only profile through runIsolated", async () => {
+  const seen = [];
+  const run = (prompt, options) => {
+    seen.push(options);
+    return { result: { status: "SUCCESS", response: "ok", conversation_id: "c" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+  };
+  await search("latest node lts", run, () => true);
+  research("a topic", run, () => true);
+  assert.ok(seen.length >= 2);
+  for (const options of seen) {
+    assert.equal(options.profile, "read-only");
+    assert.equal(options.mode, undefined);
+  }
+});
+
+// F1: transfer only seeds a fresh agy conversation with the brief, so its own
+// run is read-only; the user continues in agy under their own settings.
+test("transfer runs under the read-only profile", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-transfer-profile-"));
+  try {
+    const brief = path.join(dir, "brief.md");
+    fs.writeFileSync(brief, "Goal: continue the refactor.\n");
+    const seen = [];
+    const out = transfer({
+      argument: [brief],
+      run: (prompt, options) => {
+        seen.push(options);
+        return { result: { status: "SUCCESS", response: "ok", conversation_id: "c" }, events: [], deniedActions: [], stderr: "", ok: true, failure: null };
+      },
+      available: () => true
+    });
+    assert.equal(out.ok, true);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].profile, "read-only");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

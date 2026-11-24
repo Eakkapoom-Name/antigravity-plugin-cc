@@ -44,7 +44,8 @@ send, per command:
   temp directory outside that root. The gate on/off/status form of the same command
   sends nothing to agy at all.
 - The stop-review gate: the previous Claude turn, the working-tree diff
-  against HEAD with the paths of untracked files, and whatever agy reads in
+  against HEAD with the paths of untracked files (with no commit yet, the
+  staged and untracked file paths and no diff), and whatever agy reads in
   the repository to check it. The diff gets the same secret scan as
   `/agy:review`: on a hit the diff is withheld and only the changed and
   untracked file paths are sent, though agy can still read those files

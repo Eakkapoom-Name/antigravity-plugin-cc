@@ -35,7 +35,8 @@ The script runs every check itself (agy on PATH, an auth probe, a command probe 
 - `agySettings`: agy's own permission settings, read from
   `~/.gemini/antigravity-cli/settings.json`. Carries `toolPermission` (the
   effective mode), `declaredToolPermission` (what the file literally says, or
-  `null`), `allowNonWorkspaceAccess`, `sandboxMode`, the `path`, and `readable`.
+  `null`), `agentMode` (the saved Agent Mode, `""` for Default, or `null`
+  when none is saved), `allowNonWorkspaceAccess`, `sandboxMode`, the `path`, and `readable`.
 - `auth.failureKind`: why the auth probe failed, or `null` when it passed. One of `environment` (the invoking shell blocked a syscall agy needs, typically a sandbox refusing its loopback listener), `auth` (a real sign-in problem), `spawn-error` (agy could not be started in the workspace root, which the probes use as its working directory), or `unknown` (the stderr named no cause). Never guess a remedy from `detail` alone; branch on this field.
 - `reviewGateEnabled`: current stop-review gate state, read from the same stored state the Stop hook reads, resolved from the same workspace root. The two can no longer disagree when the session sits in a subdirectory.
 - `nextSteps`: the remediation or optional follow-up commands to relay.

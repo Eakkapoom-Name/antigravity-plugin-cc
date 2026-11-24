@@ -136,7 +136,10 @@ send, per command:
   tool write. Write-capable runs (rescue by default, `/agy:continue`, the
   setup command probe) use `--mode auto` with always-proceed: agy runs any
   command and writes any file, anywhere, without asking. A deny rule the
-  user saved still applies to them. Below agy 1.4.10 read-only runs pass no
+  user saved (`permissions.deny`) applies to every run: agy replaces a saved
+  permissions list with the one `--settings` carries (measured on 1.5.14),
+  so the read-only runs add the user's saved deny rules to their own list.
+  Below agy 1.4.10 read-only runs pass no
   mode and write runs pass `--mode accept-edits`, under the user's settings.
 - `/agy:search` refuses loopback, private and link-local targets, non-http
   schemes, and URLs with credentials. Both halves of that command are checked:

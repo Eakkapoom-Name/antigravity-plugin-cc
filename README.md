@@ -522,7 +522,9 @@ sets its own permissions for that run with `--settings`, which agy never saves:
 | a write-capable `/agy:rescue` or `/agy:continue`, the `/agy:setup` command probe | `--mode auto --settings '{"toolPermission":"always-proceed","agentMode":"auto"}'` | **anything**: any command runs and any file is written, anywhere, without asking |
 
 Your own Tool Permission, Agent Mode and allow rules are overridden for these
-runs. A deny rule you saved still applies to write runs. `/agy:transfer`'s own
+runs. A deny rule you saved (`permissions.deny`) still applies to every run:
+agy replaces a saved permissions list with the one a run carries, so the
+plugin adds your saved deny rules to the read-only runs' own list. `/agy:transfer`'s own
 run only seeds the agy conversation with the brief; when you continue it in agy
 yourself, your own settings apply again. Every row of the live harness
 (`npm run test:denials`) checks the result by outcome, not by agy's report:

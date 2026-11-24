@@ -26,8 +26,14 @@ export const DEFAULT_PRINT_TIMEOUT = "8m";
 //   read-only  `--mode plan`, request-review, and a deny rule on every tool kind
 //              that changes anything: write_file (writes and edits), command
 //              (agy's file tools have no delete, so deletion is a command), mcp
-//              and execute_url. `allow: []` replaces the user's allow rules for
-//              the run. read_file and read_url stay allowed. Measured on 1.5.14
+//              and execute_url. agy replaces a saved `permissions` list with
+//              the per-run one rather than combining them (measured on 1.5.14,
+//              2026-11-24: a saved `read_file(<file>)` deny blocked the read on
+//              its own, and the same file was read once the run's --settings
+//              carried a `permissions` block). So `allow: []` drops the
+//              user's allow rules for the run, and the user's saved deny rules
+//              are merged into the run's deny list (readOnlySettings) so they
+//              still apply. read_file and read_url stay allowed otherwise. Measured on 1.5.14
 //              with each refusal checked by outcome (no file written in or
 //              outside the workspace, no command run, including a user
 //              `command(*)` allow rule and a prompt claiming authorization),
@@ -40,11 +46,31 @@ export const DEFAULT_PRINT_TIMEOUT = "8m";
 // not the plugin noticing a denial.
 export const READ_ONLY_MODE = "plan";
 export const READ_ONLY_DENY = ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"];
-export const READ_ONLY_SETTINGS = JSON.stringify({
-  toolPermission: "request-review",
-  agentMode: "auto",
-  permissions: { allow: [], deny: READ_ONLY_DENY }
-});
+export const READ_ONLY_SETTINGS = readOnlySettings();
+
+// The read-only settings with the user's saved deny rules kept: their rules
+// first, then the plugin's, each once.
+export function readOnlySettings(savedDeny = []) {
+  const deny = [...new Set([...savedDeny, ...READ_ONLY_DENY])];
+  return JSON.stringify({
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny }
+  });
+}
+
+// The `permissions.deny` rules the user saved in agy's settings.json, as
+// strings. Never throws: a missing or malformed file has no rules. agy accepts
+// a UTF-8 BOM there (changelog 1.5.8), so one is stripped.
+export function savedDenyRules(homeDir = os.homedir()) {
+  try {
+    const text = fs.readFileSync(path.join(homeDir, ".gemini", "antigravity-cli", "settings.json"), "utf8");
+    const deny = JSON.parse(text.replace(/^\uFEFF/, ""))?.permissions?.deny;
+    return Array.isArray(deny) ? deny.filter((rule) => typeof rule === "string" && rule.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
 export const WRITE_MODE = "auto";
 export const WRITE_SETTINGS = JSON.stringify({ toolPermission: "always-proceed", agentMode: "auto" });
 
@@ -71,14 +97,17 @@ export function settingsFlagSupported(version) {
 }
 
 // The `--mode` and `--settings` a run of `profile` ("read-only" or "write")
-// passes on an agy of `version`; null for a flag that is left out.
-export function profileFlags(profile, version) {
+// passes on an agy of `version`; null for a flag that is left out. `savedDeny`
+// is the user's saved deny rules, kept in the read-only run's deny list. The
+// write profile sets no `permissions`, so the user's saved rules apply to it
+// unchanged.
+export function profileFlags(profile, version, savedDeny = []) {
   const pinned = settingsFlagSupported(version);
   if (profile === "write") {
     return pinned ? { mode: WRITE_MODE, settings: WRITE_SETTINGS } : { mode: LEGACY_WRITE_MODE, settings: null };
   }
   if (profile === "read-only") {
-    return pinned ? { mode: READ_ONLY_MODE, settings: READ_ONLY_SETTINGS } : { mode: null, settings: null };
+    return pinned ? { mode: READ_ONLY_MODE, settings: readOnlySettings(savedDeny) } : { mode: null, settings: null };
   }
   throw new Error(`unknown permission profile: ${JSON.stringify(profile)}`);
 }
@@ -282,14 +311,14 @@ export function agyAvailable() {
 // `profile` ("read-only" or "write") pins that profile's mode and settings
 // for the installed agy, replacing any `mode` the caller passed. The version is
 // read here, at the spawn, rather than by the callers, so the stubbed runners
-// the tests pass never spawn agy for it. `detectVersion` is injectable for the
-// same reason.
-export function promptArgs(options = {}, detectVersion = installedAgyVersion) {
+// the tests pass never spawn agy for it. `detectVersion` and `readSavedDeny`
+// are injectable for the same reason.
+export function promptArgs(options = {}, detectVersion = installedAgyVersion, readSavedDeny = savedDenyRules) {
   const { profile, ...rest } = options;
   if (!profile) {
     return buildArgs(rest);
   }
-  const { mode, settings } = profileFlags(profile, detectVersion());
+  const { mode, settings } = profileFlags(profile, detectVersion(), profile === "read-only" ? readSavedDeny() : []);
   return buildArgs({ ...rest, mode: mode ?? undefined, settings });
 }
 
@@ -408,9 +437,9 @@ export function interpretSlashCommandRun(spawned) {
 // A slash command is answered by agy itself and calls no tool, but it is still
 // a plugin-initiated run, so it carries the read-only settings too (never
 // `--mode`), on an agy that takes `--settings`.
-export function slashCommandArgs(name, printTimeout, version) {
+export function slashCommandArgs(name, printTimeout, version, savedDeny = []) {
   const args = ["-p", `/${name}`, "--output-format", "json", "--print-timeout", printTimeout];
-  const { settings } = profileFlags("read-only", version);
+  const { settings } = profileFlags("read-only", version, savedDeny);
   if (settings) {
     args.push("--settings", settings);
   }
@@ -421,7 +450,7 @@ export function runSlashCommand(name, options = {}, detectVersion = installedAgy
   const printTimeout = options.printTimeout ?? "2m";
   const spawned = runCommand(
     "agy",
-    slashCommandArgs(name, printTimeout, detectVersion()),
+    slashCommandArgs(name, printTimeout, detectVersion(), savedDenyRules()),
     { cwd: options.cwd, encoding: "utf8", timeout: options.timeoutMs ?? spawnTimeoutMs(printTimeout) }
   );
   return interpretSlashCommandRun(spawned);

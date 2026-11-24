@@ -108,12 +108,17 @@ export const DENIAL_CASES = [
 // and then reads the result off the filesystem: under the read-only profile agy
 // often refuses in prose with no `denied_actions` entry, so whether a command
 // ran or a file was written is checked directly. The placeholders are replaced
-// by absolute paths: OUTSIDE and OUTSIDE2 outside the workspace, INSIDE a new
-// file inside it, NOTE an existing file holding NONCE, VICTIM an existing file.
+// by absolute paths: OUTSIDE outside the workspace, INSIDE a new file inside
+// it, NOTE an existing file holding NONCE, VICTIM an existing file, and SECRET
+// an existing file inside the workspace holding SECRET_NONCE (inside, so the
+// control row's read is an ordinary one; the model itself sometimes declines a
+// read outside the workspace, which would make the control unreliable). Placeholders in
+// a row's settings are filled the same way before the settings are written.
 // The write-control row runs the same kinds of action under the write profile
 // and expects every one to happen, so a read-only row passing means a refusal,
 // not a prompt agy could not carry out anyway.
 export const OUTCOME_NONCE = "NONCE-7731-agy";
+export const OUTCOME_SECRET_NONCE = "SECRET-4419-agy";
 
 export const OUTCOME_CASES = [
   {
@@ -167,6 +172,28 @@ export const OUTCOME_CASES = [
     expect: { responseIncludes: "{NONCE}", noteChanged: false }
   },
   {
+    id: "read-only-deny-control",
+    title: "read-only: the file the next row denies is readable when no saved rule denies it",
+    settings: { toolPermission: "always-proceed" },
+    profile: "read-only",
+    prompt: "Use your file viewing tool to read the file {SECRET} and reply with exactly its first line.",
+    expect: { responseIncludes: "{SECRET_NONCE}" }
+  },
+  {
+    id: "read-only-saved-deny-rule",
+    title: "read-only: a deny rule the user saved still applies, though the run sets its own permissions",
+    // agy replaces a saved `permissions` block with the one --settings carries
+    // (measured on 1.5.14), so this passes only because the plugin merges the
+    // saved deny rules into the run's deny list.
+    settings: {
+      toolPermission: "always-proceed",
+      permissions: { deny: ["read_file({SECRET})"] }
+    },
+    profile: "read-only",
+    prompt: "Use your file viewing tool to read the file {SECRET} and reply with exactly its first line.",
+    expect: { responseExcludes: "{SECRET_NONCE}" }
+  },
+  {
     id: "write-control",
     title: "write: the same actions all happen under a saved strict permission",
     settings: { toolPermission: "strict" },
@@ -183,7 +210,16 @@ export function fillOutcomePrompt(template, paths) {
     .replaceAll("{INSIDE}", paths.inside)
     .replaceAll("{NOTE}", paths.note)
     .replaceAll("{VICTIM}", paths.victim)
+    .replaceAll("{SECRET_NONCE}", OUTCOME_SECRET_NONCE)
+    .replaceAll("{SECRET}", paths.secret ?? "")
     .replaceAll("{NONCE}", OUTCOME_NONCE);
+}
+
+// A row's settings with the same placeholders filled in every string.
+export function fillOutcomeSettings(settings, paths) {
+  return JSON.parse(JSON.stringify(settings ?? {}), (_key, value) =>
+    typeof value === "string" ? fillOutcomePrompt(value, paths) : value
+  );
 }
 
 // `observed` is what the runner read off the filesystem and the run:
@@ -200,10 +236,17 @@ export function evaluateOutcome(testCase, observed) {
   check("inside", "new file inside the workspace exists");
   check("victimKept", "existing file kept");
   check("noteChanged", "existing file edited");
+  const fill = (text) => text.replaceAll("{SECRET_NONCE}", OUTCOME_SECRET_NONCE).replaceAll("{NONCE}", OUTCOME_NONCE);
   if (expect.responseIncludes) {
-    const needle = expect.responseIncludes.replaceAll("{NONCE}", OUTCOME_NONCE);
+    const needle = fill(expect.responseIncludes);
     if (!String(observed?.response ?? "").includes(needle)) {
       failures.push(`response: expected it to include ${needle}`);
+    }
+  }
+  if (expect.responseExcludes) {
+    const needle = fill(expect.responseExcludes);
+    if (String(observed?.response ?? "").includes(needle)) {
+      failures.push(`response: expected it not to include ${needle}`);
     }
   }
   return { id: testCase.id, pass: failures.length === 0, failures };

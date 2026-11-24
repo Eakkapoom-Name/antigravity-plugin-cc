@@ -11,7 +11,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-import { deniedActions, profileFlags, READ_ONLY_SETTINGS, SETTINGS_FLAG_MIN_VERSION, settingsFlagSupported, WRITE_SETTINGS } from "./lib/agy.mjs";
+import { deniedActions, profileFlags, READ_ONLY_SETTINGS, savedDenyRules, SETTINGS_FLAG_MIN_VERSION, settingsFlagSupported, WRITE_SETTINGS } from "./lib/agy.mjs";
 import { resolveCommand, runCommand } from "./lib/process.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { compareVersions, extractVersionNumber, versionCore } from "./lib/version.mjs";
@@ -116,9 +116,9 @@ function checkAgy() {
 // user's own Tool Permission, Agent Mode and allow rules therefore do not
 // decide the result, the same as for the runs themselves. Below
 // SETTINGS_FLAG_MIN_VERSION the probes run with the user's settings as before.
-export function probeArgs(prompt, workspaceRoot, version, profile = "read-only") {
+export function probeArgs(prompt, workspaceRoot, version, profile = "read-only", savedDeny = []) {
   const args = ["-p", prompt, "--output-format", "json", "--add-dir", workspaceRoot, "--print-timeout", AGY_PRINT_TIMEOUT];
-  const { mode, settings } = profileFlags(profile, version);
+  const { mode, settings } = profileFlags(profile, version, savedDeny);
   // Below the gate the probes kept their old shape: no --mode at all, which is
   // also what the old command probe measured against the user's settings.
   if (settings) {
@@ -132,7 +132,7 @@ function runProbe(prompt, workspaceRoot, version, profile = "read-only") {
   // literals, so there is no size risk, and this path is the one under test.
   const result = runCommand(
     "agy",
-    probeArgs(prompt, workspaceRoot, version, profile),
+    probeArgs(prompt, workspaceRoot, version, profile, profile === "read-only" ? savedDenyRules() : []),
     { cwd: workspaceRoot, encoding: "utf8", timeout: SPAWN_TIMEOUT_MS }
   );
   if (result.error?.code === "ETIMEDOUT") {
@@ -417,15 +417,16 @@ export function evaluateReadProbe(probe, nonce) {
 // profile (request-review, plan mode, commands and file writes denied), the
 // command probe under the write profile (always-proceed, Auto mode). The
 // user's Tool Permission, Agent Mode and allow rules were overridden for the
-// run, so changing them does not help. What still reaches the write profile is
-// a deny rule the user saved (the read-only profile replaces only the allow
-// list and sets its own deny list), or an organisation policy agy enforces.
+// run, so changing them does not help. What still reaches both profiles is a
+// deny rule the user saved (the write profile sets no permissions; the
+// read-only profile merges the saved deny rules into its own list and drops
+// only the allow list), or an organisation policy agy enforces.
 export function pinnedPermissionNextStep(denied) {
   const names = denied.length > 0 ? denied.join(", ") : "unknown";
   return [
     `Headless delegation is blocked: agy refused ${names} in a probe even though this plugin sets its own permissions for every run.`,
     `Read-only runs (the stop-review gate, review, adversarial-review, search, research, whisper, image, transfer and read-only rescue) run with \`--mode plan --settings '${READ_ONLY_SETTINGS}'\`, which reads files but runs no command and writes no file. Write-capable rescue runs with \`--mode auto --settings '${WRITE_SETTINGS}'\`, which runs any command and writes anywhere without asking.`,
-    "Your own `toolPermission`, Agent Mode and allow rules are overridden for these runs, so changing them does not help. A deny rule you saved under `permissions.deny` in ~/.gemini/antigravity-cli/settings.json still applies to write runs, and an organisation policy can refuse tools on its own; check those.",
+    "Your own `toolPermission`, Agent Mode and allow rules are overridden for these runs, so changing them does not help. A deny rule you saved under `permissions.deny` in ~/.gemini/antigravity-cli/settings.json still applies to every run (the read-only runs carry it in their own deny list), and an organisation policy can refuse tools on its own; check those.",
     "This edit has to be made by hand, by the user, in their own terminal, outside the agent session. In a Claude Code auto mode session the classifier denies the settings edit, `--dangerously-skip-permissions`, and even a read-only `agy -p \"/permissions\"` query, all as [Create Unsafe Agents]; do not attempt any of them from the session."
   ].join(" ");
 }

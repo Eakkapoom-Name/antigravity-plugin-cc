@@ -954,3 +954,10 @@ test("on an agy with --settings the denial advice says the plugin's own settings
   // Below the gate the old per-mode advice still applies.
   assert.match(permissionNextStep(["command"], "request-review", false), /Your `toolPermission` is `request-review`/);
 });
+
+test("the setup read probe keeps the user's saved deny rules; the write probe sets no permissions", () => {
+  const read = probeArgs("x", "/work", "1.5.14", "read-only", ["read_file(/secret/*)"]);
+  assert.deepEqual(JSON.parse(read[read.indexOf("--settings") + 1]).permissions.deny[0], "read_file(/secret/*)");
+  const write = probeArgs("x", "/work", "1.5.14", "write", ["read_file(/secret/*)"]);
+  assert.equal(JSON.parse(write[write.indexOf("--settings") + 1]).permissions, undefined);
+});

@@ -1735,3 +1735,36 @@ test("adversarial-review reads structured_output first and handles a timeout", (
   }
   assert.match(read("skills/agy-result-handling/SKILL.md"), /take the structured object from `structured_output` when it is present/);
 });
+
+// agy replaces a saved `permissions` block with the run's own, so the rescue
+// template adds the user's saved deny rules to agy_read_only before agy runs.
+// The template's own two lines run here under bash with a scratch HOME.
+test("rescue template merges the user's saved deny rules into the read-only settings", { skip: process.platform === "win32" }, () => {
+  const agent = read("agents/agy-rescue.md");
+  const base = agent.split("\n").find((line) => line.startsWith("agy_read_only='"));
+  const merge = agent.split("\n").find((line) => line.startsWith("merged=$("));
+  assert.ok(base && merge, "the template lost its read-only settings or its merge line");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-rescue-deny-"));
+  try {
+    const script = `${base}\n${merge}\nprintf '%s' "$agy_read_only"\n`;
+    const run = (env) => spawnSync("bash", ["-c", script], { encoding: "utf8", env: { ...process.env, HOME: home, ...env } });
+    const plain = JSON.parse(run({}).stdout);
+    assert.deepEqual(plain.permissions.deny, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"], "no settings file must leave the base list");
+    fs.mkdirSync(path.join(home, ".gemini", "antigravity-cli"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".gemini", "antigravity-cli", "settings.json"),
+      `﻿${JSON.stringify({ permissions: { allow: ["command(*)"], deny: ["read_file(/home/u/.aws/*)", "command(*)"] } })}`
+    );
+    const merged = JSON.parse(run({}).stdout);
+    assert.deepEqual(merged.permissions, {
+      allow: [],
+      deny: ["read_file(/home/u/.aws/*)", "command(*)", "write_file(*)", "mcp(*)", "execute_url(*)"]
+    });
+    // With node missing from PATH the template keeps its own list rather than
+    // an empty one.
+    const noNode = JSON.parse(spawnSync("/bin/bash", ["-c", script], { encoding: "utf8", env: { HOME: home, PATH: "/nonexistent" } }).stdout);
+    assert.deepEqual(noNode.permissions.deny, ["write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

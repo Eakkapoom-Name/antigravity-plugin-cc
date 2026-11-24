@@ -108,7 +108,7 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
 // argv and the stdin it was handed, then answers with `response`. Returns the
 // hook's spawn result, the recorded argv (null when agy was never asked to
 // review), and the prompt text agy received.
-function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.") {
+function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.", home = process.env.HOME) {
   const dataDir = path.join(scratch, "data");
   fs.mkdirSync(dataDir, { recursive: true });
   const bin = path.join(scratch, "bin");
@@ -139,6 +139,7 @@ function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.
     encoding: "utf8",
     env: {
       ...process.env,
+      HOME: home,
       PATH: `${bin}${path.delimiter}${process.env.PATH}`,
       CLAUDE_PLUGIN_DATA: dataDir,
       AGY_ARGV_FILE: argvFile,
@@ -334,4 +335,48 @@ test("a print timeout blocks with a timeout reason, not a model error", () => {
   const judged = judgeReview(run({ ok: false, failure: "timeout", result: emptyResult({ status: "SUCCESS", response: "partial", finished_reason: "print_timeout" }) }));
   assert.equal(judged.ok, false);
   assert.match(judged.reason, /timed out before it finished/);
+});
+
+// Staged but never committed: neither untracked nor in `git diff HEAD`, so the
+// gate lists the index too when HEAD is unborn.
+test("a repository with no commit yet lists staged new files for agy too", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = path.join(scratch, "repo");
+    fs.mkdirSync(root);
+    assert.equal(spawnSync("git", ["init", "--quiet"], { cwd: root }).status, 0);
+    fs.writeFileSync(path.join(root, "staged.js"), "export {};\n");
+    assert.equal(spawnSync("git", ["add", "staged.js"], { cwd: root }).status, 0);
+    const { hook, prompt } = runHookWithFakeAgy(scratch, root, "ALLOW: fine");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(prompt, "the gate did not run the review");
+    assert.match(prompt, /No diff is available/);
+    assert.match(prompt, /Staged files/);
+    assert.match(prompt, /^staged\.js$/m, "the staged new file is not listed for agy to read");
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// agy replaces a saved `permissions` block with the run's own, so the gate's
+// read-only settings must carry the user's saved deny rules (measured on 1.5.14).
+test("the gate's read-only settings keep a deny rule the user saved", { skip: process.platform === "win32" }, () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "agy-stop-hook-"));
+  try {
+    const root = path.join(scratch, "repo");
+    fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+    const home = path.join(scratch, "home");
+    fs.mkdirSync(path.join(home, ".gemini", "antigravity-cli"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".gemini", "antigravity-cli", "settings.json"),
+      JSON.stringify({ permissions: { deny: ["read_file(/home/u/.aws/*)"] } })
+    );
+    const { hook, argv } = runHookWithFakeAgy(scratch, root, "ALLOW: fine", "Edited src/a.js.", home);
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.ok(argv, "the hook never ran the review through agy");
+    const deny = JSON.parse(argv[argv.indexOf("--settings") + 1]).permissions.deny;
+    assert.deepEqual(deny, ["read_file(/home/u/.aws/*)", "write_file(*)", "command(*)", "mcp(*)", "execute_url(*)"]);
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  }
 });

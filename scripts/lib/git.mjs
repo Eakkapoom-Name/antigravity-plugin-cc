@@ -180,6 +180,13 @@ export function changedFiles(cwd) {
   return pathList(git(["diff", "-z", "--name-only", "--no-ext-diff", "HEAD"], cwd));
 }
 
+// Paths staged in the index against HEAD, or against the empty tree when HEAD
+// is unborn (no commit yet), which is when the gate needs them: such files are
+// neither untracked nor in `git diff HEAD`.
+export function stagedFiles(cwd) {
+  return pathList(git(["diff", "-z", "--cached", "--name-only", "--no-ext-diff"], cwd));
+}
+
 function pathList(result) {
   if (result.status !== 0) {
     return [];

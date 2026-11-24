@@ -10,7 +10,7 @@ import fs from "node:fs";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { runPrompt } from "./lib/agy.mjs";
-import { changedFiles, collectDiff, screenDiff, untrackedFiles } from "./lib/git.mjs";
+import { changedFiles, collectDiff, screenDiff, stagedFiles, untrackedFiles } from "./lib/git.mjs";
 import { gateEnabled } from "./lib/state.mjs";
 import { renderPrompt } from "./lib/prompts.mjs";
 import { judgeReview } from "./lib/stop-review.mjs";
@@ -100,7 +100,10 @@ function diffBlock(cwd) {
   const untracked = pathSection("Untracked files, not in the diff (read any the previous turn created)", untrackedFiles(cwd));
   const collected = collectDiff("", cwd);
   if (!collected.ok) {
-    return `${untracked}No diff is available for this workspace (${collected.error}).`;
+    // With no commit yet (an unborn HEAD) files the previous turn created and
+    // staged are neither in a diff nor untracked, so they are listed too.
+    const staged = pathSection("Staged files (read any the previous turn created)", stagedFiles(cwd));
+    return `${staged}${untracked}No diff is available for this workspace (${collected.error}).`;
   }
   if (collected.empty) {
     return `${untracked}Diff of the working tree against HEAD: empty, no uncommitted changes to tracked files. Changes already committed are not shown: read the files the previous response names to check them.`;

@@ -8,10 +8,12 @@ import {
   DENIAL_CASES,
   OUTCOME_CASES,
   OUTCOME_NONCE,
+  OUTCOME_SECRET_NONCE,
   assertScratchHome,
   evaluateCase,
   evaluateOutcome,
   fillOutcomePrompt,
+  fillOutcomeSettings,
   mergeSettings
 } from "../scripts/lib/denial-matrix.mjs";
 
@@ -343,6 +345,8 @@ test("outcome rows cover every read-only refusal the addendum names, with a writ
     "read-only-file-write",
     "read-only-file-edit",
     "read-only-read",
+    "read-only-deny-control",
+    "read-only-saved-deny-rule",
     "write-control"
   ]) {
     assert.ok(ids.includes(id), `no outcome row ${id}`);
@@ -383,4 +387,23 @@ test("evaluateOutcome fails the write control when an action did not happen", ()
   const entry = OUTCOME_CASES.find((row) => row.id === "write-control");
   assert.equal(evaluateOutcome(entry, { outside: true, victimKept: false, inside: true, noteChanged: true }).pass, true);
   assert.equal(evaluateOutcome(entry, { outside: true, victimKept: true, inside: true, noteChanged: true }).pass, false);
+});
+
+const SECRET_PATHS = { ...PATHS, secret: "/ws/secret.txt" };
+
+test("the saved-deny row writes the rule with the real secret path and expects the secret withheld", () => {
+  const row = OUTCOME_CASES.find((entry) => entry.id === "read-only-saved-deny-rule");
+  assert.equal(row.profile, "read-only");
+  const settings = fillOutcomeSettings(row.settings, SECRET_PATHS);
+  assert.deepEqual(settings.permissions.deny, ["read_file(/ws/secret.txt)"]);
+  assert.equal(fillOutcomePrompt(row.prompt, SECRET_PATHS).includes("/ws/secret.txt"), true);
+  assert.equal(evaluateOutcome(row, { response: "Blocked by a deny rule." }).pass, true);
+  const leaked = evaluateOutcome(row, { response: `${OUTCOME_SECRET_NONCE}\n` });
+  assert.equal(leaked.pass, false);
+  assert.match(leaked.failures.join(" | "), /not to include SECRET-4419-agy/);
+  // Its control reads the same file with no rule saved, so a pass is a refusal.
+  const control = OUTCOME_CASES.find((entry) => entry.id === "read-only-deny-control");
+  assert.equal(control.prompt, row.prompt);
+  assert.equal(control.settings.permissions, undefined);
+  assert.equal(evaluateOutcome(control, { response: `${OUTCOME_SECRET_NONCE}\n` }).pass, true);
 });

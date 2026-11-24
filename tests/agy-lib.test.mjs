@@ -28,7 +28,9 @@ import {
   READ_ONLY_DENY,
   READ_ONLY_MODE,
   READ_ONLY_SETTINGS,
+  readOnlySettings,
   resetInstalledAgyVersion,
+  savedDenyRules,
   settingsFlagSupported,
   slashCommandArgs,
   WRITE_MODE,
@@ -1232,19 +1234,19 @@ test("buildArgs passes --settings only when given one", () => {
 });
 
 test("promptArgs replaces the caller's mode with the profile's and probes the version only for a profile", () => {
-  const readOnly = promptArgs({ profile: "read-only", mode: "accept-edits", addDir: ["/tmp/x"] }, () => "1.5.14");
+  const readOnly = promptArgs({ profile: "read-only", mode: "accept-edits", addDir: ["/tmp/x"] }, () => "1.5.14", () => []);
   assert.equal(readOnly[readOnly.indexOf("--mode") + 1], "plan");
   assert.equal(readOnly.filter((arg) => arg === "--mode").length, 1);
   assert.equal(readOnly[readOnly.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
   assert.ok(!readOnly.includes("profile") && !readOnly.includes("read-only"));
 
-  const write = promptArgs({ profile: "write" }, () => "1.5.14");
+  const write = promptArgs({ profile: "write" }, () => "1.5.14", () => []);
   assert.equal(write[write.indexOf("--mode") + 1], "auto");
   assert.equal(write[write.indexOf("--settings") + 1], WRITE_SETTINGS);
 
-  const old = promptArgs({ profile: "read-only", mode: "accept-edits" }, () => "1.4.9");
+  const old = promptArgs({ profile: "read-only", mode: "accept-edits" }, () => "1.4.9", () => []);
   assert.ok(!old.includes("--settings") && !old.includes("--mode"), `old agy read-only argv: ${old.join(" ")}`);
-  const oldWrite = promptArgs({ profile: "write" }, () => "1.4.9");
+  const oldWrite = promptArgs({ profile: "write" }, () => "1.4.9", () => []);
   assert.equal(oldWrite[oldWrite.indexOf("--mode") + 1], "accept-edits");
   assert.ok(!oldWrite.includes("--settings"));
 
@@ -1296,7 +1298,7 @@ test("runIsolated gives every run the read-only profile, and a caller cannot cha
   });
   assert.equal(seen.profile, "read-only");
   assert.equal(seen.mode, undefined);
-  const argv = promptArgs(seen, () => "1.5.14");
+  const argv = promptArgs(seen, () => "1.5.14", () => []);
   assert.equal(argv[argv.indexOf("--mode") + 1], "plan");
   assert.equal(argv[argv.indexOf("--settings") + 1], READ_ONLY_SETTINGS);
 });
@@ -1389,4 +1391,53 @@ test("a denial still wins over a print timeout, and other exit-3 errors stay agy
   assert.equal(denied.failure, "denied");
   const other = interpretPromptRun({ status: 3, stdout: printTimeoutStdout({ finished_reason: "error" }), stderr: "" });
   assert.equal(other.failure, "agy-error");
+});
+
+// agy replaces a saved `permissions` block with the one --settings carries:
+// measured on 1.5.14 (2026-11-24), a saved `read_file(<file>)` deny blocked the
+// read with no --settings, and the same file was read under the read-only
+// profile's --settings. So the user's saved deny rules are merged in.
+test("readOnlySettings keeps the user's saved deny rules ahead of the plugin's, each once", () => {
+  assert.deepEqual(JSON.parse(readOnlySettings(["read_file(/home/u/.aws/*)", "command(*)"])), {
+    toolPermission: "request-review",
+    agentMode: "auto",
+    permissions: { allow: [], deny: ["read_file(/home/u/.aws/*)", "command(*)", "write_file(*)", "mcp(*)", "execute_url(*)"] }
+  });
+  assert.equal(readOnlySettings(), READ_ONLY_SETTINGS);
+  assert.equal(readOnlySettings([]), READ_ONLY_SETTINGS);
+});
+
+test("savedDenyRules reads permissions.deny from agy's settings file and never throws", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-saved-deny-"));
+  try {
+    assert.deepEqual(savedDenyRules(home), [], "a missing file has no rules");
+    const dir = path.join(home, ".gemini", "antigravity-cli");
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "settings.json");
+    // agy accepts a UTF-8 BOM in settings.json (changelog 1.5.8).
+    fs.writeFileSync(file, `﻿${JSON.stringify({ permissions: { allow: ["command(*)"], deny: ["read_file(/s)", 7, "", "read_url(*)"] } })}`);
+    assert.deepEqual(savedDenyRules(home), ["read_file(/s)", "read_url(*)"]);
+    fs.writeFileSync(file, "{ not json");
+    assert.deepEqual(savedDenyRules(home), []);
+    fs.writeFileSync(file, JSON.stringify({ permissions: { deny: "read_file(/s)" } }));
+    assert.deepEqual(savedDenyRules(home), []);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("read-only runs, slash commands included, carry the saved deny rules; write runs set no permissions", () => {
+  const saved = () => ["read_file(/secret/*)"];
+  const readOnly = promptArgs({ profile: "read-only" }, () => "1.5.14", saved);
+  assert.deepEqual(JSON.parse(readOnly[readOnly.indexOf("--settings") + 1]).permissions.deny.slice(0, 2), ["read_file(/secret/*)", "write_file(*)"]);
+  let read = false;
+  const write = promptArgs({ profile: "write" }, () => "1.5.14", () => {
+    read = true;
+    return ["read_file(/secret/*)"];
+  });
+  assert.equal(read, false, "a write run read the saved rules it does not need");
+  assert.deepEqual(JSON.parse(write[write.indexOf("--settings") + 1]), { toolPermission: "always-proceed", agentMode: "auto" });
+  assert.deepEqual(profileFlags("read-only", "1.5.14", ["x(*)"]).settings, readOnlySettings(["x(*)"]));
+  const slash = slashCommandArgs("usage", "2m", "1.5.14", ["read_file(/secret/*)"]);
+  assert.match(slash[slash.indexOf("--settings") + 1], /"deny":\["read_file\(\/secret\/\*\)"/);
 });

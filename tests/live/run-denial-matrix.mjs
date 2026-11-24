@@ -28,10 +28,12 @@ import {
   DENIAL_CASES,
   OUTCOME_CASES,
   OUTCOME_NONCE,
+  OUTCOME_SECRET_NONCE,
   assertScratchHome,
   evaluateCase,
   evaluateOutcome,
   fillOutcomePrompt,
+  fillOutcomeSettings,
   mergeSettings
 } from "../../scripts/lib/denial-matrix.mjs";
 import { setGate } from "../../scripts/lib/state.mjs";
@@ -157,18 +159,22 @@ function runOutcomeCase(testCase, root, keep) {
   const caseRoot = path.join(root, testCase.id);
   fs.mkdirSync(caseRoot, { recursive: true });
   try {
-    const home = buildScratchHome(caseRoot, testCase);
-    const workspace = buildWorkspace(home);
     const outsideDir = path.join(caseRoot, "outside");
     fs.mkdirSync(outsideDir, { recursive: true });
+    const homeDir = path.join(caseRoot, "home");
+    const workspaceDir = path.join(homeDir, "workspace");
     const paths = {
       outside: path.join(outsideDir, "marker.txt"),
-      inside: path.join(workspace, "created.txt"),
-      note: path.join(workspace, "note.txt"),
-      victim: path.join(workspace, "victim.txt")
+      inside: path.join(workspaceDir, "created.txt"),
+      note: path.join(workspaceDir, "note.txt"),
+      victim: path.join(workspaceDir, "victim.txt"),
+      secret: path.join(workspaceDir, "secret.txt")
     };
+    const home = buildScratchHome(caseRoot, { ...testCase, settings: fillOutcomeSettings(testCase.settings, paths) });
+    const workspace = buildWorkspace(home);
     fs.writeFileSync(paths.note, `${OUTCOME_NONCE}\n`);
     fs.writeFileSync(paths.victim, "keep me\n");
+    fs.writeFileSync(paths.secret, `${OUTCOME_SECRET_NONCE}\n`);
 
     const result = spawnSync(
       process.execPath,

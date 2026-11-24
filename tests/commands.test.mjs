@@ -1392,7 +1392,6 @@ test("the docs carry a dated per-model effort table and no model agy does not li
 
 // F113. The setting exists in agy's binary; what it does was never measured.
 test("no doc claims what allowNonWorkspaceAccess does", () => {
-  assert.match(read("README.md"), /`allowNonWorkspaceAccess`\s+setting, but its effect is unmeasured/);
   assert.doesNotMatch(read("README.md"), /allowNonWorkspaceAccess[^.]*still reaches outside/);
   assert.match(read("skills/agy-cli-runtime/SKILL.md"), /`allowNonWorkspaceAccess` settings key[^.]*whose effect is unmeasured/);
   assert.match(read("SECURITY.md").replace(/\s+/g, " "), /`allowNonWorkspaceAccess` setting, whose effect is unmeasured here; nothing in this document relies on it/);
@@ -1636,7 +1635,6 @@ test("the effort rerun docs name the insufficient-time skip", () => {
   assert.doesNotMatch(runtime, /for transfer, its own rerun/);
   assert.match(runtime, /all of which run through `runWithEffortFallback`\) and reports `effortDropped: true`, unless too little of the run's time budget is left/);
   assert.match(runtime, /`effortRetry\.skipped: "insufficient-time"` with `effortDropped: false`/);
-  assert.match(read("README.md").replace(/\s+/g, " "), /skip that rerun when too little of the run's time budget is left, and report it as `effortRetry\.skipped`/);
   assert.match(read("skills/agy-result-handling/SKILL.md"), /`effortRetry\.skipped: "insufficient-time"`/);
 });
 
@@ -1697,7 +1695,6 @@ test("every --model id in the docs is one agy models lists", () => {
   assert.match(runtime, /which 1\.5\.14 no longer lists here/);
   assert.match(runtime, /Earlier, only one cell was measured: agy 1\.2\.4 refused `--effort` for `claude-opus-4-6-thinking`/);
   assert.doesNotMatch(runtime, /the pro model may list its effort inside the id/);
-  assert.match(read("README.md"), /Only one refusal was measured/);
 });
 
 // agy 1.5.14 compatibility. F1: the rescue template pins one of two profiles

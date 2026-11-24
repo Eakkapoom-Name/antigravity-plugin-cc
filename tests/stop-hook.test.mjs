@@ -108,7 +108,8 @@ test("the hook runs agy through the shared runPrompt and judges through the shar
 // argv and the stdin it was handed, then answers with `response`. Returns the
 // hook's spawn result, the recorded argv (null when agy was never asked to
 // review), and the prompt text agy received.
-function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.", home = process.env.HOME) {
+function runHookWithFakeAgy(scratch, root, response, message = "Edited src/a.js.", home = path.join(scratch, "empty-home")) {
+  fs.mkdirSync(home, { recursive: true });
   const dataDir = path.join(scratch, "data");
   fs.mkdirSync(dataDir, { recursive: true });
   const bin = path.join(scratch, "bin");

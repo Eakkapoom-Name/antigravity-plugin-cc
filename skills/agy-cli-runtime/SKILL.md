@@ -81,7 +81,7 @@ Interactive mode gotchas (1.2.4):
 - `agy -i --mode accept-edits "<prompt>"` exits 2: `-i` takes the next token as its prompt. Attach the prompt to the flag, `agy --mode accept-edits -i="$(cat prompt.md)"`, and put every other flag before it.
 - Interactive mode needs a TTY. From a tool shell it fails with `bubbletea: could not open TTY: open /dev/tty: no such device or address`. The `! agy` sign-in hint works only where the host gives the command a terminal.
 
-Headless permission scope. agy's own settings in `~/.gemini/antigravity-cli/settings.json` (`toolPermission`, since 1.5.7 the Agent Mode `agentMode`, and `permissions.allow` / `permissions.deny` rules) decide what a headless run may do, not workspace membership. On agy 1.4.10 and later the plugin overrides them for every run it starts with `--settings`, so what the user saved does not change what the plugin's runs may do.
+Headless permission scope. agy's own settings in `~/.gemini/antigravity-cli/settings.json` (`toolPermission`, since 1.5.7 the Agent Mode `agentMode`, and `permissions.allow` / `permissions.deny` rules) decide what a headless run may do, not workspace membership. On agy 1.4.10 and later the plugin overrides the user's Tool Permission, Agent Mode and allow rules for every run it starts with `--settings`; the user's saved deny rules still apply to every run.
 
 The two profiles (lib/agy.mjs; measured on 1.5.14 on 2026-11-23, every refusal checked by outcome, with the write profile running the same actions as a control):
 

@@ -488,10 +488,11 @@ No. Every delegation is a call to the same local `agy` binary you would use dire
 
 ### Will it use the same agy settings I already have?
 
-Mostly. Your sign-in, model and other agy settings, yes. Permissions, no: on
-agy 1.4.10 and later the plugin sets its own permissions for every run it
-starts (the table further down). On an older agy, your own settings decide,
-as follows.
+Mostly. Your sign-in, model and other agy settings, yes. Permissions, partly:
+on agy 1.4.10 and later the plugin overrides your Tool Permission, Agent Mode
+and allow rules for every run it starts (the table further down), and your
+saved deny rules still apply. On an older agy, your own settings decide, as
+follows.
 
 agy's `toolPermission` setting decides whether headless delegation can work at
 all on an agy older than 1.4.10, and it is set in `~/.gemini/antigravity-cli/settings.json` or through agy's

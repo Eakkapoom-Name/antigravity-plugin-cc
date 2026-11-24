@@ -5,6 +5,32 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-11-25
+
+### Fixed
+
+- On agy 1.4.10 and later, every agy run passes its own permission profile
+  through `--settings`, so your saved Tool Permission and Agent Mode no
+  longer decide what a delegation may do. Read-only runs (stop-review gate,
+  review, adversarial-review, search, research, whisper, image, transfer,
+  read-only rescue and the setup probes) use `--mode plan` with
+  `request-review` and deny file writes, commands, MCP and URL execution,
+  merged with your own saved deny rules. Write-capable rescue uses
+  `--mode auto` with `always-proceed`. Older agy keeps the previous flags.
+- The stop-review gate and the review commands screen the diff for secrets,
+  unmerged paths and unparseable output before it reaches agy. When the
+  gate's diff is flagged, it lists the changed paths instead of blocking the
+  stop.
+- Updated for agy 1.5.14: every effort refusal triggers the rerun without
+  `--effort`, adversarial-review reads `structured_output` first, and a
+  `print_timeout` finish is reported as a timeout.
+
+### Changed
+
+- The CLI contract is verified on agy 1.5.14, and `/agy:setup` explains the
+  pinned per-run profiles in its next steps.
+- The README explains each command in fewer words.
+
 ## [0.7.1] - 2026-10-01
 
 ### Added

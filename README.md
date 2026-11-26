@@ -15,7 +15,7 @@ This plugin is for Claude Code users who want an easy way to start using Antigra
 - `/agy:rescue`, `/agy:status`, `/agy:result`, and `/agy:cancel` for task delegation and job management
 - `/agy:continue` to follow up in an existing agy conversation
 - `/agy:whisper` for a one-shot question to agy with no repository context
-- `/agy:search` for a web search or a single page fetch through agy, second in the web tool order after Claude Code's own tools
+- `/agy:search` for a web search or a single page fetch through agy, for when Claude Code's own web tools fail
 - `/agy:research` for a web-grounded investigation with a fixed report shape and sources, optionally written to a file
 - `/agy:image` to generate an image with agy and copy it into the project on request
 - `/agy:transfer` to hand the current session over to a resumable agy conversation

@@ -1561,7 +1561,7 @@ test("no command, skill or README passage offers /agy:continue for the isolated 
   };
   const passages = [
     ...isolated.map((name) => [`commands/${name}.md`, read(`commands/${name}.md`)]),
-    ["skills/agy-web/SKILL.md", read("skills/agy-web/SKILL.md")],
+    ["skills/agy-web-search/SKILL.md", read("skills/agy-web-search/SKILL.md")],
     ...[...isolated, "result"].map((name) => [`README.md ${name} section`, section(name)])
   ];
   for (const [label, text] of passages) {
@@ -1596,7 +1596,7 @@ test("no command, skill or README passage offers /agy:continue for the isolated 
     assert.match(source, /there is no safe continue path for it/, name);
     assert.match(source, new RegExp(`rerun \`/agy:${name}\` with the refined request`), name);
   }
-  assert.match(read("skills/agy-web/SKILL.md").replace(/\s+/g, " "), /There is no safe continue path for a follow-up/);
+  assert.match(read("skills/agy-web-search/SKILL.md").replace(/\s+/g, " "), /There is no safe continue path for a follow-up/);
   assert.match(section("whisper").replace(/\s+/g, " "), /there is no safe continue path for it/);
   // /agy:continue itself refuses to be pointed at an isolated conversation.
   const guard = /must not be (?:pointed at|used on) a conversation from `\/agy:search`, `\/agy:research`, `\/agy:whisper`, `\/agy:image`, `\/agy:review` or `\/agy:adversarial-review`/;

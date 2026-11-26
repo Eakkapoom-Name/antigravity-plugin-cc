@@ -5,6 +5,16 @@ All notable changes to the `agy` plugin are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] - 2026-11-26
+
+### Fixed
+
+- The web skill no longer lists other search tools or a fixed ranking that
+  did not belong in the plugin. It now says only to use `/agy:search` when
+  Claude Code's own WebSearch and WebFetch fail, and the README and the
+  skill test match.
+- The `agy-web` skill is renamed `agy-web-search`.
+
 ## [0.7.2] - 2026-11-25
 
 ### Fixed
@@ -406,9 +416,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only, no credentials). The same guard also covers a URL-shaped word inside
   a search query, not only a bare URL. It covers `/agy:search` and nothing
   else: `/agy:whisper`, `/agy:research` and `/agy:image` pass their text to
-  the same web-capable agy unguarded. The `agy-web` skill places it second
-  in the web tool order, after Claude Code's own tools and before Tavily, and
-  states what the guard cannot cover: that scope, redirects, and DNS
+  the same web-capable agy unguarded. The `agy-web` skill points to it when
+  Claude Code's own web tools fail, and states what the guard cannot cover: that scope, redirects, and DNS
   rebinding, the last two happening in agy's own fetch after the guard has
   already returned.
 - `/agy:research`: a web-grounded investigation with a fixed report shape

@@ -1,5 +1,5 @@
 ---
-name: agy-web
+name: agy-web-search
 description: When Claude Code should reach past its own WebSearch and WebFetch to /agy:search, and what that command's search and fetch modes return
 user-invocable: false
 ---
@@ -8,13 +8,9 @@ user-invocable: false
 
 Claude Code's own WebSearch and WebFetch run first for any web lookup.
 `/agy:search <query or URL>` runs a web search, or fetches one page, through
-the Antigravity CLI, and sits **second** in the web tool order:
-
-1. Claude Code's own WebSearch and WebFetch first.
-2. `/agy:search` when they fail: a 403, a bot challenge, a truncated summary, a
-   raw text file that WebFetch will not render, or a page that needs a model
-   to extract the content.
-3. Tavily (`tvly`), then ddg-search, after that.
+the Antigravity CLI. Reach for it when the built-in tools fail: a 403, a bot
+challenge, a truncated summary, a raw text file that WebFetch will not
+render, or a page that needs a model to extract the content.
 
 ## What comes back
 
@@ -27,8 +23,7 @@ the Antigravity CLI, and sits **second** in the web tool order:
 ## Rules
 
 - Every answer must carry source URLs. Refuse to cite an `/agy:search` result
-  that has none; rerun with the question rephrased or fall through to the
-  next tier.
+  that has none; rerun with the question rephrased or use another source.
 - Fetch mode refuses local, private, and link-local targets, non-http
   schemes, and URLs with credentials. That is not a transient error; do not
   retry the same URL. Search mode applies the same refusal to a URL-shaped

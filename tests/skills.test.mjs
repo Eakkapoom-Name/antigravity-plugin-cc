@@ -203,20 +203,14 @@ test("the rescue agent loads the prompting skill", () => {
   assert.match(read("agents/agy-rescue.md"), /^\s+- agy-prompting$/m);
 });
 
-// The web skill places agy second: after Claude Code's own WebSearch and
-// WebFetch, before Tavily and ddg, matching the user's tool order.
-const WEB = read("skills/agy-web/SKILL.md");
+// The web skill points to Claude Code's own WebSearch and WebFetch first and
+// names /agy:search as the fallback when they fail.
+const WEB = read("skills/agy-web-search/SKILL.md");
 
-// A raw indexOf comparison would pass on a scrambled document as long as the
-// three words happened to appear in the right relative order somewhere in
-// the file. Parsing the skill's own numbered list ties the assertion to the
-// actual authored tier order instead.
-test("the web skill places /agy:search second in the tool order and demands sources", () => {
-  const items = [...WEB.matchAll(/^\d+\.\s+(.+)$/gm)].map((match) => match[1]);
-  assert.equal(items.length, 3, "the web skill's tool-order list is not exactly three items");
-  assert.match(items[0], /WebSearch/, "item 1 is not the built-in tools");
-  assert.match(items[1], /\/agy:search/, "item 2 is not /agy:search");
-  assert.match(items[2], /Tavily/, "item 3 is not Tavily");
+test("the web skill points to the built-in tools first, names no other search tools, and demands sources", () => {
+  assert.match(WEB, /WebSearch and WebFetch run first/);
+  assert.match(WEB, /\/agy:search/);
+  assert.doesNotMatch(WEB, /tavily|tvly|ddg|duckduckgo/i);
   assert.match(WEB, /source URLs?/i);
   assert.match(WEB, /not a results list/);
   assert.match(WEB, /not raw/);
